@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 /**
- * feishu-acp CLI entry point.
+ * lark-acp CLI entry point.
  *
  * Usage:
- *   feishu-acp --agent copilot
- *   feishu-acp --agent claude --cwd /path/to/project
- *   feishu-acp --agent "opencode acp"
- *   feishu-acp setup                 Re-run first-time setup
- *   feishu-acp agents                List built-in agent presets
+ *   lark-acp --agent copilot
+ *   lark-acp --agent claude --cwd /path/to/project
+ *   lark-acp --agent "opencode acp"
+ *   lark-acp setup                 Re-run first-time setup
+ *   lark-acp agents                List built-in agent presets
  */
 
 import path from "node:path";
+import { select } from "@inquirer/prompts";
 import { FeishuAcpBridge } from "../src/bridge.js";
+import { FeishuClient } from "../src/feishu/client.js";
 import {
   defaultConfig,
   loadSavedConfig,
@@ -26,12 +28,12 @@ const VERSION = "0.1.0";
 function usage(): void {
   const presets = Object.keys(BUILT_IN_AGENTS).join(", ");
   console.log(`
-feishu-acp v${VERSION} — Bridge Feishu/Lark to any ACP-compatible AI agent
+lark-acp v${VERSION} — Bridge Feishu/Lark to any ACP-compatible AI agent
 
 Usage:
-  feishu-acp --agent <preset|command>  [options]
-  feishu-acp setup                     Configure App ID & Secret
-  feishu-acp agents                    List built-in agent presets
+  lark-acp --agent <preset|command>  [options]
+  lark-acp setup                     Configure App ID & Secret
+  lark-acp agents                    List built-in agent presets
 
 Options:
   --agent <value>      Built-in preset or raw command
@@ -96,11 +98,25 @@ function log(msg: string): void {
   console.log(`[${ts}] ${msg}`);
 }
 
+function printBanner(): void {
+  console.log(`
+ ██╗      █████╗ ██████╗ ██╗  ██╗      █████╗  ██████╗██████╗ 
+ ██║     ██╔══██╗██╔══██╗██║ ██╔╝     ██╔══██╗██╔════╝██╔══██╗
+ ██║     ███████║██████╔╝█████╔╝      ███████║██║     ██████╔╝
+ ██║     ██╔══██║██╔══██╗██╔═██╗      ██╔══██║██║     ██╔═══╝ 
+ ███████╗██║  ██║██║  ██║██║  ██╗     ██║  ██║╚██████╗██║     
+ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝    ╚═╝  ╚═╝ ╚═════╝╚═╝     
+                                               v${VERSION} 🐦
+`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
 
   if (args.help) { usage(); return; }
-  if (args.version) { console.log(`feishu-acp v${VERSION}`); return; }
+  if (args.version) { console.log(`lark-acp v${VERSION}`); return; }
+
+  printBanner();
 
   const config = defaultConfig();
   const storageDir = config.storage.dir;
@@ -112,12 +128,13 @@ async function main(): Promise<void> {
     config.feishu.appSecret = creds.appSecret;
     // After setup, prompt for agent if not already specified
     if (!args.agent) {
-      const presetList = Object.keys(BUILT_IN_AGENTS).join(", ");
-      const readline = await import("node:readline");
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const agentAnswer = await new Promise<string>((resolve) =>
-        rl.question(`\nWhich agent to connect? (${presetList}): `, (a) => { rl.close(); resolve(a.trim()); })
-      );
+      const agentAnswer = await select({
+        message: "Which agent to connect?",
+        choices: Object.entries(BUILT_IN_AGENTS).map(([id, preset]) => ({
+          name: preset.label,
+          value: id,
+        })),
+      });
       if (!agentAnswer) { console.log("No agent selected — exiting."); return; }
       args.agent = agentAnswer;
     }
@@ -180,10 +197,22 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 
-  log(`Starting feishu-acp with agent: ${resolved.label ?? agentSelection}`);
+  log(`Starting lark-acp with agent: ${resolved.label ?? agentSelection}`);
   log(`Working directory: ${config.agent.cwd}`);
   bridge.start();
   log("Bridge running. Press Ctrl+C to stop.");
+
+  // Print bot chat link so the user can jump straight into Feishu
+  const feishuClient = new FeishuClient({
+    appId: config.feishu.appId,
+    appSecret: config.feishu.appSecret,
+  });
+  feishuClient.getBotChatLink().then((link) => {
+    if (link) {
+      console.log(`\n  🐦 Chat with your bot on Feishu:`);
+      console.log(`     ${link}\n`);
+    }
+  }).catch(() => {});
 }
 
 main().catch((err) => {

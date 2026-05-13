@@ -13,31 +13,6 @@ import { feishuMessageToPrompt } from "./adapter/inbound.js";
 import { formatForFeishu, splitText } from "./adapter/outbound.js";
 import type { FeishuAcpConfig } from "./config.js";
 
-const AGENT_LABELS: Record<string, string> = {
-  copilot: "GitHub Copilot",
-  claude:  "Claude Code",
-  codex:   "OpenAI Codex",
-  gemini:  "Gemini CLI",
-  opencode: "OpenCode",
-};
-
-function buildWelcomeMessage(preset?: string): string {
-  const agentName = (preset && AGENT_LABELS[preset]) ?? preset ?? "your AI agent";
-  return [
-    `👋 Hi there! I'm your **${agentName}** assistant, powered by feishu-acp.`,
-    ``,
-    `Just send me a message and I'll get to work! Here's what I can do:`,
-    `• 💬 Answer questions about your code`,
-    `• 🔧 Help debug and fix issues`,
-    `• ✨ Write and review code`,
-    `• 📁 Navigate your project files`,
-    ``,
-    `🤔 I'll show a thinking reaction while I'm working on your request.`,
-    ``,
-    `_Type anything to get started!_`,
-  ].join("\n");
-}
-
 export class FeishuAcpBridge {
   private config: FeishuAcpConfig;
   private feishuClient: FeishuClient;
@@ -46,7 +21,7 @@ export class FeishuAcpBridge {
 
   constructor(config: FeishuAcpConfig, log?: (msg: string) => void) {
     this.config = config;
-    this.log = log ?? ((msg) => console.log(`[feishu-acp] ${msg}`));
+    this.log = log ?? ((msg) => console.log(`[lark-acp] ${msg}`));
     this.feishuClient = new FeishuClient({
       appId: config.feishu.appId,
       appSecret: config.feishu.appSecret,
@@ -65,8 +40,8 @@ export class FeishuAcpBridge {
       showThoughts: this.config.agent.showThoughts,
       log: this.log,
       onReply: (messageId, chatId, text) => this.sendReply(messageId, chatId, text),
-      onTyping: (messageId) => this.feishuClient.addReaction(messageId, "THINKING"),
-      onWelcome: (chatId) => this.feishuClient.sendText(chatId, buildWelcomeMessage(this.config.agent.preset)),
+      onTyping: (messageId) => this.feishuClient.addReaction(messageId, "EYES"),
+      onStopTyping: (messageId, reactionId) => this.feishuClient.removeReaction(messageId, reactionId),
     });
     this.sessionManager.start();
 

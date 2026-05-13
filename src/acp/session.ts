@@ -34,8 +34,8 @@ export interface SessionManagerOpts {
   showThoughts: boolean;
   log: (msg: string) => void;
   onReply: (messageId: string, chatId: string, text: string) => Promise<void>;
-  onTyping: (messageId: string) => Promise<void>;
-  onWelcome: (chatId: string) => Promise<void>;
+  onTyping: (messageId: string) => Promise<string | null>;
+  onStopTyping: (messageId: string, reactionId: string) => Promise<void>;
 }
 
 export class SessionManager {
@@ -90,11 +90,8 @@ export class SessionManager {
   private async createSession(userId: string, firstMessage: PendingMessage): Promise<UserSession> {
     this.opts.log(`Creating session for user ${userId}`);
 
-    // Send welcome message on first contact
-    this.opts.onWelcome(firstMessage.chatId).catch(() => {});
-
     const client = new FeishuAcpClient({
-      onTyping: () => this.opts.onTyping(firstMessage.messageId),
+      onTyping: () => this.opts.onTyping(firstMessage.messageId).then(() => {}),
       onThought: (text) => this.opts.onReply(firstMessage.messageId, firstMessage.chatId, text),
       showThoughts: this.opts.showThoughts,
       log: (msg) => this.opts.log(`[${userId}] ${msg}`),
@@ -134,20 +131,24 @@ export class SessionManager {
 
         // Point callbacks at current message
         session.client.updateCallbacks({
-          onTyping: () => this.opts.onTyping(pending.messageId),
+          onTyping: () => this.opts.onTyping(pending.messageId).then(() => {}),
           onThought: (text) => this.opts.onReply(pending.messageId, pending.chatId, text),
         });
 
         await session.client.flush(); // reset buffers
 
         try {
-          this.opts.onTyping(pending.messageId).catch(() => {});
+          const reactionId = await this.opts.onTyping(pending.messageId).catch(() => null);
           this.opts.log(`[${session.userId}] Sending prompt to agent`);
-
           const result = await session.agentInfo.connection.prompt({
             sessionId: session.agentInfo.sessionId,
             prompt: pending.prompt,
           });
+
+          // Remove the thinking reaction now that we have a reply
+          if (reactionId) {
+            this.opts.onStopTyping(pending.messageId, reactionId).catch(() => {});
+          }
 
           let reply = await session.client.flush();
           if (result.stopReason === "cancelled") reply += "\n[cancelled]";

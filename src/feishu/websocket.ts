@@ -29,7 +29,6 @@ export class FeishuWsConnection {
   start(): void {
     const dispatcher = new Lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data) => {
-        // data is typed by the SDK as the event payload
         const event = data as unknown as FeishuMessageEvent;
         try {
           this.opts.onMessage(event);

@@ -47,15 +47,16 @@ export class FeishuClient {
     });
   }
 
-  /** Add an emoji reaction to a message (best-effort, used as typing indicator). */
-  async addReaction(messageId: string, emoji = "THINKING"): Promise<void> {
+  /** Add an emoji reaction. Returns the reaction ID needed to remove it later. */
+  async addReaction(messageId: string, emoji = "EYES"): Promise<string | null> {
     try {
-      await this.client.im.messageReaction.create({
+      const res = await this.client.im.messageReaction.create({
         path: { message_id: messageId },
         data: { reaction_type: { emoji_type: emoji } },
       });
+      return (res as any)?.reaction_id ?? null;
     } catch {
-      // reactions are best-effort
+      return null;
     }
   }
 

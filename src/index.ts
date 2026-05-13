@@ -1,4 +1,4 @@
-/** feishu-acp — public API */
+/** lark-acp — public API */
 
 export { FeishuAcpBridge } from "./bridge.js";
 export type { FeishuAcpConfig, AgentPreset } from "./config.js";

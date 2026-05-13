@@ -1,5 +1,5 @@
 /**
- * Configuration types, defaults, and persistence for feishu-acp.
+ * Configuration types, defaults, and persistence for lark-acp.
  */
 
 import fs from "node:fs";
@@ -70,7 +70,7 @@ export const BUILT_IN_AGENTS: Record<string, AgentPreset> = {
 };
 
 export function defaultStorageDir(): string {
-  return path.join(os.homedir(), ".feishu-acp");
+  return path.join(os.homedir(), ".lark-acp");
 }
 
 export function defaultConfig(): FeishuAcpConfig {

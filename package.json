@@ -1,5 +1,5 @@
 {
-  "name": "feishu-acp",
+  "name": "lark-acp",
   "version": "0.1.0",
   "description": "Bridge Feishu/Lark to any ACP-compatible AI agent",
   "type": "module",
@@ -9,7 +9,7 @@
     "package.json"
   ],
   "bin": {
-    "feishu-acp": "./dist/bin/feishu-acp.js"
+    "lark-acp": "./dist/bin/lark-acp.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -22,11 +22,12 @@
   "scripts": {
     "build": "tsc",
     "prepack": "npm run build",
-    "start": "node dist/bin/feishu-acp.js",
+    "start": "node dist/bin/lark-acp.js",
     "dev": "tsc --watch"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",
+    "@inquirer/prompts": "^8.4.3",
     "@larksuite/cli": "^1.0.29",
     "@larksuiteoapi/node-sdk": "^1.7.0"
   },
@@ -39,7 +40,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JiaqiZhang-Dev/feishu-acp.git"
+    "url": "git+https://github.com/JiaqiZhang-Dev/lark-acp.git"
   },
   "license": "MIT",
   "keywords": [

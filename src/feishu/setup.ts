@@ -1,18 +1,9 @@
-/**
- * Interactive first-run setup.
- *
- * Priority order:
- *  1. ~/.lark-channel/config.json  (written by `lark-cli config bind --source lark-channel`)
- *  2. ~/.feishu-acp/config.json    (our own saved config)
- *  3. lark-cli guided flow         (installs lark-cli if needed, then browser OAuth)
- *  4. Manual App ID / App Secret   (fallback)
- */
-
 import { execSync, spawn } from "node:child_process";
 import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { saveConfig, loadSavedConfig } from "../config.js";
 
 // ~/.lark-channel/config.json schema (matches lark-cli's lark-channel-bridge format)
@@ -36,12 +27,22 @@ function readLarkChannelConfig(): { appId: string; appSecret: string } | null {
   return null;
 }
 
-function isLarkCliAvailable(): boolean {
+/**
+ * Resolve the lark-cli binary path.
+ * Priority: local node_modules/.bin → global PATH
+ * @larksuite/cli is a direct dependency so the local binary should always win.
+ */
+function resolveLarkCliBin(): string {
+  const __dir = path.dirname(fileURLToPath(import.meta.url));
+  // dist/src/feishu/ → project root is 3 levels up
+  const projectRoot = path.resolve(__dir, "..", "..", "..");
+  const localBin = path.join(projectRoot, "node_modules", ".bin", "lark-cli");
   try {
-    execSync("lark-cli --version", { stdio: "ignore" });
-    return true;
+    execSync(`"${localBin}" --version`, { stdio: "ignore" });
+    return localBin;
   } catch {
-    return false;
+    // fall back to global
+    return "lark-cli";
   }
 }
 
@@ -50,43 +51,21 @@ function prompt(rl: readline.Interface, question: string): Promise<string> {
 }
 
 async function runLarkCliSetup(log: (msg: string) => void): Promise<boolean> {
-  log("Running: lark-cli config init --new");
+  const bin = resolveLarkCliBin();
+  log(`Running: ${bin} config init --new`);
   log("A browser window will open — follow the prompts to create your Feishu app.\n");
 
-  // Step 1: config init --new (interactive, pass through stdio)
   const initOk = await new Promise<boolean>((resolve) => {
-    const proc = spawn("lark-cli", ["config", "init", "--new"], { stdio: "inherit" });
+    const proc = spawn(bin, ["config", "init", "--new"], { stdio: "inherit", shell: true });
     proc.on("close", (code) => resolve(code === 0));
   });
   if (!initOk) return false;
 
-  log("\nRunning: lark-cli config bind --source lark-channel");
+  log(`\nRunning: ${bin} config bind --source lark-channel`);
   log("This writes your App ID and Secret to ~/.lark-channel/config.json\n");
 
-  // Step 2: config bind --source lark-channel (writes our config file)
   const bindOk = await new Promise<boolean>((resolve) => {
-    const proc = spawn("lark-cli", ["config", "bind", "--source", "lark-channel"], {
-      stdio: "inherit",
-    });
-    proc.on("close", (code) => resolve(code === 0));
-  });
-  return bindOk;
-}
-
-async function runNpxLarkCliSetup(log: (msg: string) => void): Promise<boolean> {
-  log("lark-cli not found — installing temporarily via npx...\n");
-
-  const initOk = await new Promise<boolean>((resolve) => {
-    const proc = spawn("npx", ["@larksuite/cli", "config", "init", "--new"], {
-      stdio: "inherit",
-      shell: true,
-    });
-    proc.on("close", (code) => resolve(code === 0));
-  });
-  if (!initOk) return false;
-
-  const bindOk = await new Promise<boolean>((resolve) => {
-    const proc = spawn("npx", ["@larksuite/cli", "config", "bind", "--source", "lark-channel"], {
+    const proc = spawn(bin, ["config", "bind", "--source", "lark-channel"], {
       stdio: "inherit",
       shell: true,
     });
@@ -130,9 +109,7 @@ export async function runSetup(
     );
 
     if (useLarkCli.toLowerCase() !== "n") {
-      const success = isLarkCliAvailable()
-        ? await runLarkCliSetup(log)
-        : await runNpxLarkCliSetup(log);
+      const success = await runLarkCliSetup(log);
 
       if (success) {
         const creds = readLarkChannelConfig();

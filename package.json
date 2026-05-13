@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",
+    "@larksuite/cli": "^1.0.29",
     "@larksuiteoapi/node-sdk": "^1.7.0"
   },
   "devDependencies": {

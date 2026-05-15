@@ -10,6 +10,7 @@ export interface AgentProcessInfo {
   process: ChildProcess;
   connection: acp.ClientSideConnection;
   sessionId: string;
+  capabilities: Record<string, unknown>;
 }
 
 export interface SpawnAgentOpts {
@@ -22,6 +23,93 @@ export interface SpawnAgentOpts {
 }
 
 export async function spawnAgent(opts: SpawnAgentOpts): Promise<AgentProcessInfo> {
+  const { cwd, log } = opts;
+  const { proc, connection, initResult } = await spawnAndInit(opts);
+
+  // Create a new session
+  let sessionResult: Awaited<ReturnType<typeof connection.newSession>>;
+  try {
+    sessionResult = await connection.newSession({ cwd, mcpServers: [] });
+  } catch (err) {
+    throw new Error(`Failed to create agent session.\n${err instanceof Error ? err.message : err}`);
+  }
+  log(`Agent initialized, session: ${sessionResult.sessionId}`);
+
+  return {
+    process: proc,
+    connection,
+    sessionId: sessionResult.sessionId,
+    capabilities: (initResult.agentCapabilities ?? {}) as Record<string, unknown>,
+  };
+}
+
+/**
+ * Spawn a new agent process and try to resume a previous session.
+ * Falls back to creating a new session on the same process if resume isn't supported or fails.
+ */
+export async function spawnAndResumeAgent(
+  opts: SpawnAgentOpts,
+  previousSessionId: string,
+): Promise<{ agentInfo: AgentProcessInfo; resumed: boolean }> {
+  const { cwd, log } = opts;
+  const { proc, connection, initResult } = await spawnAndInit(opts);
+  const agentCaps = initResult.agentCapabilities;
+  const caps = (agentCaps ?? {}) as Record<string, unknown>;
+
+  log(`Agent capabilities: loadSession=${!!agentCaps?.loadSession}, resume=${!!agentCaps?.sessionCapabilities?.resume}`);
+
+  // Try unstable_resumeSession first (lightweight, no history replay)
+  const hasResume = !!agentCaps?.sessionCapabilities?.resume;
+
+  // Fall back to loadSession
+  const hasLoad = !!agentCaps?.loadSession;
+
+  if (hasResume || hasLoad) {
+    try {
+      if (hasResume) {
+        log(`Resuming session ${previousSessionId} (resume)...`);
+        await connection.unstable_resumeSession({ sessionId: previousSessionId });
+        log(`Session resumed: ${previousSessionId}`);
+      } else {
+        log(`Loading session ${previousSessionId} (load)...`);
+        await connection.loadSession({ sessionId: previousSessionId, cwd, mcpServers: [] });
+        log(`Session loaded: ${previousSessionId}`);
+      }
+
+      return {
+        agentInfo: { process: proc, connection, sessionId: previousSessionId, capabilities: caps },
+        resumed: true,
+      };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : JSON.stringify(err);
+      log(`Failed to resume session ${previousSessionId}: ${detail}`);
+    }
+  } else {
+    log(`Agent does not support session resume or load`);
+  }
+
+  // Fall back to a new session on the same already-initialized process
+  log(`Creating new session on existing agent process`);
+  let sessionResult: Awaited<ReturnType<typeof connection.newSession>>;
+  try {
+    sessionResult = await connection.newSession({ cwd, mcpServers: [] });
+  } catch (err) {
+    throw new Error(`Failed to create agent session.\n${err instanceof Error ? err.message : err}`);
+  }
+  log(`Agent initialized, session: ${sessionResult.sessionId}`);
+
+  return {
+    agentInfo: { process: proc, connection, sessionId: sessionResult.sessionId, capabilities: caps },
+    resumed: false,
+  };
+}
+
+/** Spawn agent process, initialize protocol, and authenticate. */
+async function spawnAndInit(opts: SpawnAgentOpts): Promise<{
+  proc: ChildProcess;
+  connection: acp.ClientSideConnection;
+  initResult: Awaited<ReturnType<acp.ClientSideConnection["initialize"]>>;
+}> {
   const { command, args, cwd, env, client, log } = opts;
 
   log(`Spawning agent: ${command} ${args.join(" ")}`);
@@ -30,7 +118,7 @@ export async function spawnAgent(opts: SpawnAgentOpts): Promise<AgentProcessInfo
     cwd,
     env: { ...process.env, ...(env ?? {}) },
     stdio: ["pipe", "pipe", "pipe"],
-    shell: process.platform === "win32", // npx/npm not on PATH without shell on Windows
+    shell: process.platform === "win32",
   });
 
   proc.stderr?.on("data", (chunk: Buffer) => {
@@ -38,14 +126,12 @@ export async function spawnAgent(opts: SpawnAgentOpts): Promise<AgentProcessInfo
     if (line) log(`[agent stderr] ${line}`);
   });
 
-  // Wrap Node streams into Web streams for the ACP SDK
   const input = Writable.toWeb(proc.stdin!);
   const output = Readable.toWeb(proc.stdout!);
   const stream = acp.ndJsonStream(input, output);
 
   const connection = new acp.ClientSideConnection(() => client, stream);
 
-  // Initialize protocol
   let initResult: Awaited<ReturnType<typeof connection.initialize>>;
   try {
     initResult = await connection.initialize({
@@ -58,8 +144,6 @@ export async function spawnAgent(opts: SpawnAgentOpts): Promise<AgentProcessInfo
     throw new Error(`Failed to initialize agent (${command} ${args.join(" ")}). Is the agent installed?\n${err instanceof Error ? err.message : err}`);
   }
 
-  // Authenticate if the agent advertises any auth methods.
-  // For cloud/hosted agents this is required before newSession() and prompt().
   if (initResult.authMethods && initResult.authMethods.length > 0) {
     const method = initResult.authMethods[0];
     log(`Agent requires authentication (method: ${method.id} / ${method.name}), authenticating...`);
@@ -71,16 +155,7 @@ export async function spawnAgent(opts: SpawnAgentOpts): Promise<AgentProcessInfo
     log(`Authentication complete`);
   }
 
-  // Create a session
-  let sessionResult: Awaited<ReturnType<typeof connection.newSession>>;
-  try {
-    sessionResult = await connection.newSession({ cwd, mcpServers: [] });
-  } catch (err) {
-    throw new Error(`Failed to create agent session.\n${err instanceof Error ? err.message : err}`);
-  }
-  log(`Agent initialized, session: ${sessionResult.sessionId}`);
-
-  return { process: proc, connection, sessionId: sessionResult.sessionId };
+  return { proc, connection, initResult };
 }
 
 export function killAgent(proc: ChildProcess): void {

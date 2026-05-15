@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+### Features
+
+- Session persistence — conversations survive lark-acp restarts via `~/.lark-acp/sessions.json`.
+- Session resume/load — automatically tries `resumeSession` or `loadSession` on reconnect, falls back to new session.
+
+### Bug Fixes
+
+- Fixed capability detection using wrong property path on `InitializeResponse`.
+- Fixed `loadSession` missing required `cwd` and `mcpServers` params.
+- Fixed non-Error objects logged as `[object Object]`.
+
 ## 0.2.0
 
 ### Features

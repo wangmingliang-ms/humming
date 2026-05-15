@@ -24,7 +24,7 @@ import {
 } from "../src/config.js";
 import { runSetup } from "../src/feishu/setup.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 function usage(): void {
   const presets = Object.keys(BUILT_IN_AGENTS).join(", ");

@@ -35,6 +35,7 @@ export class FeishuAcpBridge {
       agentCwd: this.config.agent.cwd,
       agentEnv: this.config.agent.env,
       agentPreset: this.config.agent.preset,
+      storageDir: this.config.storage.dir,
       idleTimeoutMs: this.config.session.idleTimeoutMs,
       maxConcurrentUsers: this.config.session.maxConcurrentUsers,
       showThoughts: this.config.agent.showThoughts,

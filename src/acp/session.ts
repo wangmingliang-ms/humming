@@ -6,7 +6,8 @@
 
 import type * as acp from "@agentclientprotocol/sdk";
 import { FeishuAcpClient } from "./client.js";
-import { spawnAgent, killAgent, type AgentProcessInfo } from "./agent-manager.js";
+import { spawnAgent, spawnAndResumeAgent, killAgent, type AgentProcessInfo } from "./agent-manager.js";
+import { SessionStore } from "./session-store.js";
 
 export interface PendingMessage {
   prompt: acp.ContentBlock[];
@@ -29,6 +30,7 @@ export interface SessionManagerOpts {
   agentCwd: string;
   agentEnv?: Record<string, string>;
   agentPreset?: string;
+  storageDir: string;
   idleTimeoutMs: number;
   maxConcurrentUsers: number;
   showThoughts: boolean;
@@ -51,9 +53,11 @@ export class SessionManager {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private aborted = false;
   private opts: SessionManagerOpts;
+  private store: SessionStore;
 
   constructor(opts: SessionManagerOpts) {
     this.opts = opts;
+    this.store = new SessionStore(opts.storageDir);
   }
 
   start(): void {
@@ -105,13 +109,36 @@ export class SessionManager {
       log: (msg) => this.opts.log(`[${userId}] ${msg}`),
     });
 
-    const agentInfo = await spawnAgent({
+    const spawnOpts = {
       command: this.opts.agentCommand,
       args: this.opts.agentArgs,
       cwd: this.opts.agentCwd,
       env: this.opts.agentEnv,
       client,
-      log: (msg) => this.opts.log(`[${userId}] ${msg}`),
+      log: (msg: string) => this.opts.log(`[${userId}] ${msg}`),
+    };
+
+    // Try to resume a previous session from the store
+    let agentInfo: AgentProcessInfo;
+    const previous = this.store.get(userId);
+    if (previous) {
+      this.opts.log(`[${userId}] Found previous session ${previous.sessionId}, attempting resume...`);
+      const result = await spawnAndResumeAgent(spawnOpts, previous.sessionId);
+      agentInfo = result.agentInfo;
+      if (result.resumed) {
+        this.opts.log(`[${userId}] Resumed previous session ${previous.sessionId}`);
+      } else {
+        this.opts.log(`[${userId}] Could not resume, started new session ${agentInfo.sessionId}`);
+      }
+    } else {
+      agentInfo = await spawnAgent(spawnOpts);
+    }
+
+    // Persist the session mapping
+    this.store.set(userId, {
+      sessionId: agentInfo.sessionId,
+      cwd: this.opts.agentCwd,
+      updatedAt: Date.now(),
     });
 
     agentInfo.process.on("exit", () => {

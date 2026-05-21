@@ -77,23 +77,16 @@ function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: st
   };
 }
 
-/** Build a "thinking" card. Uses compact note element for thought content. */
+/** Build a "thinking" card. */
 function buildThinkingCard(text?: string, isDone?: boolean): object {
   const header = {
     title: { tag: "plain_text" as const, content: isDone ? "💭 思考完成" : "💭 思考中..." },
     template: (isDone ? "purple" : "wathet") as string,
   };
-  if (!text) {
-    return {
-      config: { wide_screen_mode: true },
-      header,
-      elements: [{ tag: "markdown", content: "正在分析..." }],
-    };
-  }
   return {
     config: { wide_screen_mode: true },
     header,
-    elements: [{ tag: "note" as const, elements: [{ tag: "plain_text" as const, content: text }] }],
+    elements: [{ tag: "markdown", content: text || "正在分析..." }],
   };
 }
 

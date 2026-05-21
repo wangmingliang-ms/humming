@@ -45,10 +45,9 @@ export class FeishuAcpClient implements acp.Client {
   /** Prevents concurrent thinking card creation (race condition guard). */
   private thinkingCardCreating: Promise<string | null> | null = null;
 
-  /** Unified activity card — tracks all tool items in this prompt turn. */
+  /** Unified activity card — one card per prompt turn, tracked by toolCallId. */
   private activityCardId: string | null = null;
-  private toolItems: ToolItem[] = [];
-  private toolCallIds: string[] = [];
+  private toolItems = new Map<string, ToolItem>();
 
   constructor(opts: FeishuAcpClientOpts) {
     this.opts = opts;
@@ -236,36 +235,34 @@ export class FeishuAcpClient implements acp.Client {
     kind: string,
     status: ToolItem["status"],
   ): void {
-    const key = toolCallId ?? `${kind}:${title}`;
-    // Replace or append
-    const idx = this.toolItems.findIndex((item, i) => {
-      if (toolCallId && toolCallId === this.toolCallIds[i]) return true;
-      return item.title === title && item.kind === kind && status !== "failed"; // don't match failed items
-    });
-    if (idx >= 0) {
-      this.toolItems[idx] = { title, kind, status };
-      if (toolCallId) this.toolCallIds[idx] = toolCallId;
+    const id = toolCallId ?? `${kind}:${title}:${this.toolItems.size}`;
+    const existing = this.toolItems.get(id);
+    if (existing) {
+      // Update status; preserve original title/kind (updates may omit them)
+      if (title !== "unknown") existing.title = title;
+      existing.status = status;
     } else {
-      this.toolItems.push({ title, kind, status });
-      this.toolCallIds.push(toolCallId ?? "");
+      this.toolItems.set(id, { title, kind, status });
     }
   }
 
   private async refreshActivityCard(): Promise<void> {
     if (!this.currentMessageId) return;
 
+    const items = [...this.toolItems.values()];
+
     if (!this.activityCardId) {
-      const id = await this.opts.sendActivityCard(this.currentMessageId, this.toolItems);
+      const id = await this.opts.sendActivityCard(this.currentMessageId, items);
       if (id) {
         this.activityCardId = id;
-        this.opts.log(`[activity-card] created id=${id} items=${this.toolItems.length}`);
+        this.opts.log(`[activity-card] created id=${id} items=${items.length}`);
       } else {
         this.opts.log(`[activity-card] create returned null`);
       }
       return;
     }
-    this.opts.log(`[activity-card] updating id=${this.activityCardId} items=${this.toolItems.length}`);
-    await this.opts.updateActivityCard(this.activityCardId, this.toolItems).catch((err) => {
+    this.opts.log(`[activity-card] updating id=${this.activityCardId} items=${items.length}`);
+    await this.opts.updateActivityCard(this.activityCardId, items).catch((err) => {
       this.opts.log(`[activity-card] update failed: ${String(err)}`);
     });
   }

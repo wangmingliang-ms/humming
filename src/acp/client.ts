@@ -48,6 +48,8 @@ export class FeishuAcpClient implements acp.Client {
   /** Unified activity card — one card per prompt turn, tracked by toolCallId. */
   private activityCardId: string | null = null;
   private toolItems = new Map<string, ToolItem>();
+  private activityFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private activityFlushing = false;
 
   constructor(opts: FeishuAcpClientOpts) {
     this.opts = opts;
@@ -138,7 +140,7 @@ export class FeishuAcpClient implements acp.Client {
         const status = (u.status ?? "in_progress") as ToolItem["status"];
         this.opts.log(`[event] tool_call id=${toolCallId ?? "?"} title="${title}" kind=${kind} status=${status}`);
         this.upsertToolItem(toolCallId, title, kind, status);
-        this.refreshActivityCard().catch(() => {});
+        this.refreshActivityCard();
         await this.maybeSendTyping();
         break;
       }
@@ -163,7 +165,7 @@ export class FeishuAcpClient implements acp.Client {
           }
           const status = u.status as ToolItem["status"];
           this.upsertToolItem(toolCallId, u.title ?? "unknown", kind, status);
-          this.refreshActivityCard().catch(() => {});
+          this.refreshActivityCard();
         }
         break;
       }
@@ -186,6 +188,11 @@ export class FeishuAcpClient implements acp.Client {
     const text = this.chunks.join("");
     this.chunks = [];
     this.lastTypingAt = 0;
+    // Reset activity card for next prompt turn
+    this.activityCardId = null;
+    this.toolItems.clear();
+    if (this.activityFlushTimer) clearTimeout(this.activityFlushTimer);
+    this.activityFlushing = false;
     return text;
   }
 
@@ -246,25 +253,44 @@ export class FeishuAcpClient implements acp.Client {
     }
   }
 
-  private async refreshActivityCard(): Promise<void> {
+  private refreshActivityCard(): void {
     if (!this.currentMessageId) return;
 
-    const items = [...this.toolItems.values()];
+    // Batch rapid updates: if already flushing, mark dirty and skip.
+    // When flush completes, the dirty flag will trigger another flush.
+    if (this.activityFlushing) return;
 
-    if (!this.activityCardId) {
-      const id = await this.opts.sendActivityCard(this.currentMessageId, items);
-      if (id) {
-        this.activityCardId = id;
-        this.opts.log(`[activity-card] created id=${id} items=${items.length}`);
+    if (this.activityFlushTimer) clearTimeout(this.activityFlushTimer);
+
+    // Wait 100ms for more tool events before flushing
+    this.activityFlushTimer = setTimeout(() => {
+      this.activityFlushTimer = null;
+      this.flushActivityCard().catch(() => {});
+    }, 100);
+  }
+
+  private async flushActivityCard(): Promise<void> {
+    this.activityFlushing = true;
+    try {
+      const items = [...this.toolItems.values()];
+
+      if (!this.activityCardId) {
+        const id = await this.opts.sendActivityCard(this.currentMessageId, items);
+        if (id) {
+          this.activityCardId = id;
+          this.opts.log(`[activity-card] created id=${id} items=${items.length}`);
+        } else {
+          this.opts.log(`[activity-card] create returned null`);
+        }
       } else {
-        this.opts.log(`[activity-card] create returned null`);
+        this.opts.log(`[activity-card] updating id=${this.activityCardId} items=${items.length}`);
+        await this.opts.updateActivityCard(this.activityCardId, items).catch((err) => {
+          this.opts.log(`[activity-card] update failed: ${String(err)}`);
+        });
       }
-      return;
+    } finally {
+      this.activityFlushing = false;
     }
-    this.opts.log(`[activity-card] updating id=${this.activityCardId} items=${items.length}`);
-    await this.opts.updateActivityCard(this.activityCardId, items).catch((err) => {
-      this.opts.log(`[activity-card] update failed: ${String(err)}`);
-    });
   }
 
   private async maybeSendTyping(): Promise<void> {

@@ -43,7 +43,7 @@ interface ChatRuntimeState {
 
 /**
  * Per-chat ACP runtime: owns one agent subprocess, one `LarkAcpClient`,
- * and a FIFO queue of pending Feishu messages.
+ * and a FIFO queue of pending Lark messages.
  *
  * Constructed lazily by {@link LarkBridge} on the first message for a
  * chat. Subsequent messages are enqueued via {@link enqueue}; the runtime
@@ -72,7 +72,7 @@ export class ChatRuntime {
     return this.state?.lastActivity ?? 0;
   }
 
-  /** Enqueue a Feishu message; spawns the agent on first call. */
+  /** Enqueue a Lark message; spawns the agent on first call. */
   async enqueue(message: PendingMessage): Promise<void> {
     if (!this.state) {
       this.state = await this.bootstrap(message);

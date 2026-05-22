@@ -1,5 +1,5 @@
 /**
- * `lark-acp` — bridge a Lark / Feishu bot to any ACP-compatible AI agent.
+ * `lark-acp` — bridge a Lark bot to any ACP-compatible AI agent.
  *
  * Top-level exports:
  *
@@ -12,7 +12,7 @@
 export { LarkBridge } from "./bridge/bridge.js";
 export type {
   LarkBridgeOptions,
-  LarkBridgeFeishuOptions,
+  LarkBridgeLarkOptions,
   LarkBridgeAgentOptions,
   LarkBridgeSessionOptions,
 } from "./bridge/bridge.js";
@@ -26,6 +26,8 @@ export { createPinoLogger } from "./logger/logger.js";
 export type {
   AgentStatus,
   LarkPresenter,
+  NoticeCardSpec,
+  NoticeTemplate,
   TimelineEntry,
   ToolStatus,
   UnifiedCardState,

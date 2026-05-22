@@ -67,7 +67,7 @@ export interface LarkAcpClientOptions {
 }
 
 /**
- * `acp.Client` implementation for one Feishu chat. Builds a unified
+ * `acp.Client` implementation for one Lark chat. Builds a unified
  * timeline (text / thought / tool entries) per prompt and patches a
  * single Lark card as the agent works.
  *
@@ -115,7 +115,7 @@ export class LarkAcpClient implements acp.Client {
     this.callbacks = cbs;
   }
 
-  /** Bind the current Feishu message context so cards reply to the right message. */
+  /** Bind the current Lark message context so cards reply to the right message. */
   setContext(messageId: string, chatId: string): void {
     this.currentMessageId = messageId;
     this.currentChatId = chatId;
@@ -254,9 +254,9 @@ export class LarkAcpClient implements acp.Client {
 
       case "tool_call": {
         if (!this.showTools) return;
-        const toolCallId = (u as Record<string, unknown>).toolCallId as string | undefined;
+        const toolCallId = u.toolCallId;
         if (!toolCallId) return;
-        const rawInput = (u as Record<string, unknown>).rawInput;
+        const rawInput = u.rawInput;
         const detail = typeof rawInput === "string" ? rawInput : undefined;
         this.upsertTool(
           toolCallId,
@@ -273,7 +273,7 @@ export class LarkAcpClient implements acp.Client {
 
       case "tool_call_update": {
         if (!this.showTools) return;
-        const toolCallId = (u as Record<string, unknown>).toolCallId as string | undefined;
+        const toolCallId = u.toolCallId;
         if (!toolCallId) return;
         if (u.status !== "completed" && u.status !== "failed") return;
 

@@ -1,9 +1,9 @@
 /**
- * Lark message interpreter — translate a Lark / Feishu message event into
+ * Lark message interpreter — translate a Lark message event into
  * the ACP `ContentBlock[]` shape an agent expects as its prompt.
  *
  * Content shapes are based on the Lark Open Platform docs:
- * https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/im-v1/message/events/message_content
+ * https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/im-v1/message/events/message_content
  */
 
 import type * as acp from "@agentclientprotocol/sdk";
@@ -123,20 +123,68 @@ interface LocationPayload {
 // ---- Public API ----
 
 /**
- * Translate a Lark inbound message event into the ACP `ContentBlock[]`
- * an agent expects as its prompt.
+ * High-level commands a user can issue via plain-text messages.
+ *
+ * Detection is intentionally strict: only exact, whitespace-trimmed matches
+ * after stripping the bot's own self-mention. Anything else falls through
+ * to {@link InterpretedMessage} `kind: "prompt"`.
+ */
+export type LarkCommand = { readonly kind: "cancel" } | { readonly kind: "new" };
+
+/**
+ * Outcome of interpreting a Lark inbound message.
+ *
+ * - `empty`: no actionable content (e.g. a stripped-to-nothing self-mention).
+ * - `command`: a recognised slash-style command — bridge should act on it
+ *   directly without sending anything to the agent.
+ * - `prompt`: ACP content blocks ready to forward to the agent.
+ */
+export type InterpretedMessage =
+  | { readonly kind: "empty" }
+  | { readonly kind: "command"; readonly command: LarkCommand }
+  | { readonly kind: "prompt"; readonly blocks: acp.ContentBlock[] };
+
+export interface InterpretOptions {
+  /**
+   * Bot's own `open_id`, used to recognise and drop self-mentions in text
+   * messages. When omitted, all mentions are rendered as `@{name}`.
+   */
+  readonly botOpenId?: string;
+}
+
+const CANCEL_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/cancel", "/stop", "取消", "停止"]);
+const NEW_SESSION_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/new", "/restart"]);
+
+/**
+ * Interpret a Lark inbound message event.
+ *
+ * Text messages (and only text messages) are eligible to be classified as
+ * commands. Every other message type becomes a `prompt` (or `empty`).
  *
  * No binary attachments are downloaded — images, files, audio, video and
  * stickers are all rendered as descriptive text placeholders carrying
  * `message_id` / `image_key` / `file_key` so the agent can fetch them
  * out-of-band (e.g. through a future Lark MCP tool) if it needs to.
  */
-export function larkMessageToPrompt(event: Lark.RawMessageEvent): acp.ContentBlock[] {
+export function interpretLarkMessage(
+  event: Lark.RawMessageEvent,
+  opts: InterpretOptions = {},
+): InterpretedMessage {
   const { message } = event;
 
+  if (message.message_type === "text") {
+    const text = extractTextContent(message.content, message.mentions, opts.botOpenId);
+    if (!text) return { kind: "empty" };
+    const command = detectCommand(text);
+    if (command) return { kind: "command", command };
+    return { kind: "prompt", blocks: [{ type: "text", text }] };
+  }
+
+  return blocksToPrompt(parseNonTextMessage(message));
+}
+
+function parseNonTextMessage(message: Lark.RawMessageEvent["message"]): acp.ContentBlock[] {
   switch (message.message_type) {
-    case "text":
-      return parseText(message.content, message.mentions);
     case "post":
       return parsePost(message.content, message.message_id);
     case "image":
@@ -162,22 +210,41 @@ export function larkMessageToPrompt(event: Lark.RawMessageEvent): acp.ContentBlo
   }
 }
 
+function blocksToPrompt(blocks: acp.ContentBlock[]): InterpretedMessage {
+  return blocks.length ? { kind: "prompt", blocks } : { kind: "empty" };
+}
+
+function detectCommand(text: string): LarkCommand | null {
+  if (CANCEL_COMMAND_TOKENS.has(text)) return { kind: "cancel" };
+  if (NEW_SESSION_COMMAND_TOKENS.has(text)) return { kind: "new" };
+  return null;
+}
+
 // ---- Private parsers ----
 
-function parseText(raw: string, mentions?: LarkRawMention[]): acp.ContentBlock[] {
+/**
+ * Decode a Lark text-message payload into a plain string with mentions
+ * inlined. The bot's own self-mention is stripped entirely (it's routing
+ * metadata, not user content); other users' mentions become `@{name}`.
+ */
+function extractTextContent(
+  raw: string,
+  mentions: LarkRawMention[] | undefined,
+  botOpenId: string | undefined,
+): string {
   const payload = safeParse<TextPayload>(raw);
   let text = payload?.text ?? "";
 
   if (mentions) {
     for (const m of mentions) {
-      const key = m.key ?? "@_user_";
-      const name = m.name ?? m.id?.open_id ?? key;
-      text = text.replace(new RegExp(escapeRegExp(key), "g"), `@{${name}}`);
+      const key = m.key;
+      if (!key) continue;
+      const isSelf = botOpenId !== undefined && m.id?.open_id === botOpenId;
+      const replacement = isSelf ? "" : `@{${m.name ?? m.id?.open_id ?? key}}`;
+      text = text.replaceAll(key, replacement);
     }
   }
-  text = text.trim();
-  if (!text) return [];
-  return [{ type: "text", text }];
+  return text.trim();
 }
 
 function parsePost(raw: string, messageId: string): acp.ContentBlock[] {
@@ -339,8 +406,4 @@ function safeParse<T>(raw: string): T | null {
   } catch {
     return null;
   }
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -5,6 +5,7 @@ import { markdownToPost, splitMarkdown } from "./lark-markdown.js";
 import type {
   AgentStatus,
   LarkPresenter,
+  NoticeCardSpec,
   TimelineEntry,
   ToolStatus,
   UnifiedCardState,
@@ -96,6 +97,17 @@ function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: st
   };
 }
 
+function buildNoticeCard(notice: NoticeCardSpec): object {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: "plain_text" as const, content: notice.title },
+      template: notice.template,
+    },
+    elements: [{ tag: "markdown", content: notice.body }],
+  };
+}
+
 function buildExpiredCard(reason: string): object {
   return {
     config: { wide_screen_mode: true },
@@ -172,7 +184,7 @@ export interface LarkCardPresenterOptions {
 }
 
 /**
- * Default {@link LarkPresenter} implementation using Lark / Feishu
+ * Default {@link LarkPresenter} implementation using Lark
  * interactive cards via {@link LarkHttpClient}.
  */
 export class LarkCardPresenter implements LarkPresenter {
@@ -222,6 +234,14 @@ export class LarkCardPresenter implements LarkPresenter {
       await this.http.patchCard(messageId, buildExpiredCard(reason));
     } catch (err) {
       this.logger.warn({ err, messageId }, "expirePermissionCard failed");
+    }
+  }
+
+  async replyNoticeCard(replyToMessageId: string, notice: NoticeCardSpec): Promise<void> {
+    try {
+      await this.http.replyCard(replyToMessageId, buildNoticeCard(notice));
+    } catch (err) {
+      this.logger.warn({ err, replyToMessageId }, "replyNoticeCard failed");
     }
   }
 

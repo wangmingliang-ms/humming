@@ -28,6 +28,19 @@ export type TimelineEntry =
       detail?: string;
     };
 
+/**
+ * Lark interactive card header colour palette. Matches the templates the
+ * Lark Open Platform exposes for the `header.template` field.
+ */
+export type NoticeTemplate = "blue" | "wathet" | "green" | "grey" | "red" | "orange";
+
+/** A short, single-card notice (e.g. command acknowledgement). */
+export interface NoticeCardSpec {
+  readonly title: string;
+  readonly body: string;
+  readonly template: NoticeTemplate;
+}
+
 /** Snapshot the presenter renders into a single Lark interactive card. */
 export interface UnifiedCardState {
   status: AgentStatus;
@@ -89,6 +102,13 @@ export interface LarkPresenter {
 
   /** Replace a permission card with a "no longer actionable" notice. */
   expirePermissionCard(messageId: string, reason: string): Promise<void>;
+
+  /**
+   * Reply to `replyToMessageId` with a single-card notice — used for
+   * lightweight system acknowledgements (e.g. confirming a chat command
+   * was accepted) where {@link UnifiedCardState} would be overkill.
+   */
+  replyNoticeCard(replyToMessageId: string, notice: NoticeCardSpec): Promise<void>;
 
   /**
    * Send the per-prompt unified card. Returns the card's message id so

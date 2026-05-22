@@ -1,7 +1,7 @@
 export { LarkBridge } from "./bridge.js";
 export type {
   LarkBridgeOptions,
-  LarkBridgeFeishuOptions,
+  LarkBridgeLarkOptions,
   LarkBridgeAgentOptions,
   LarkBridgeSessionOptions,
 } from "./bridge.js";

@@ -4,13 +4,16 @@ import { LarkHttpClient } from "../lark/lark-http.js";
 import { LarkWsConnection } from "../lark/lark-ws.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
-import { larkMessageToPrompt } from "../interpreter/lark-interpreter.js";
+import {
+  interpretLarkMessage,
+  type InterpretedMessage,
+  type LarkCommand,
+} from "../interpreter/lark-interpreter.js";
 import { ChatRuntime, type PendingMessage } from "./chat-runtime.js";
 import type { PermissionMode } from "../acp/lark-acp-client.js";
+import type { NoticeCardSpec } from "../presenter/presenter.js";
 import type { SessionStore } from "../session-store/session-store.js";
-
-const CANCEL_COMMANDS = new Set(["/cancel", "取消", "/stop", "停止"]);
-const NEW_SESSION_COMMANDS = new Set(["/new", "/restart"]);
+import type * as acp from "@agentclientprotocol/sdk";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 24 * 60 * 60_000;
 const DEFAULT_MAX_CONCURRENT_CHATS = 10;
@@ -26,8 +29,22 @@ const ORPHAN_CARD_REASON = "会话已结束，本次确认已失效";
 const SENDER_TYPE_USER = "user";
 const CHAT_TYPE_GROUP = "group";
 
-const REPLY_CANCELLED = "已取消当前任务";
-const REPLY_RESTARTED = "已创建新会话，下次消息将重新启动 agent";
+const COMMAND_NOTICES: Readonly<Record<LarkCommand["kind"], NoticeCardSpec>> = {
+  cancel: {
+    title: "已取消",
+    body: "已取消当前任务，agent 进程保留以便后续消息继续。",
+    template: "grey",
+  },
+  new: {
+    title: "已重置会话",
+    body: "下次消息将启动一个全新的 agent 会话。",
+    template: "green",
+  },
+};
+
+function assertNever(x: never): never {
+  throw new Error(`unexpected: ${String(x)}`);
+}
 
 interface CardActionPayload {
   /** Permission request id (set on permission cards). */
@@ -46,7 +63,7 @@ interface CardActionPayload {
   cancel?: boolean;
 }
 
-export interface LarkBridgeFeishuOptions {
+export interface LarkBridgeLarkOptions {
   appId: string;
   appSecret: string;
 }
@@ -93,7 +110,7 @@ export interface LarkBridgeSessionOptions {
 }
 
 export interface LarkBridgeOptions {
-  feishu: LarkBridgeFeishuOptions;
+  lark: LarkBridgeLarkOptions;
   agent: LarkBridgeAgentOptions;
   session?: LarkBridgeSessionOptions;
 
@@ -103,13 +120,13 @@ export interface LarkBridgeOptions {
   logger?: LarkLogger;
   /**
    * Override the default {@link LarkCardPresenter}. When omitted the bridge
-   * builds one from `feishu.appId` / `feishu.appSecret`.
+   * builds one from `lark.appId` / `lark.appSecret`.
    */
   presenter?: LarkPresenter;
 }
 
 /**
- * Top-level bridge that connects a Feishu/Lark bot to an ACP agent.
+ * Top-level bridge that connects a Lark bot to an ACP agent.
  *
  * Owns: Lark HTTP client, Lark WebSocket subscription, logger, presenter,
  * session store handle, and one {@link ChatRuntime} per active chat.
@@ -130,7 +147,7 @@ export class LarkBridge {
     Pick<LarkBridgeAgentOptions, "env" | "preset">;
   private readonly idleTimeoutMs: number;
   private readonly maxConcurrentChats: number;
-  private readonly feishu: LarkBridgeFeishuOptions;
+  private readonly lark: LarkBridgeLarkOptions;
 
   private readonly chats = new Map<string, ChatRuntime>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -138,13 +155,13 @@ export class LarkBridge {
   private started = false;
 
   constructor(opts: LarkBridgeOptions) {
-    this.feishu = opts.feishu;
+    this.lark = opts.lark;
     this.logger = opts.logger ?? createPinoLogger();
     this.sessionStore = opts.sessionStore;
 
     this.http = new LarkHttpClient({
-      appId: opts.feishu.appId,
-      appSecret: opts.feishu.appSecret,
+      appId: opts.lark.appId,
+      appSecret: opts.lark.appSecret,
       logger: this.logger,
     });
 
@@ -183,8 +200,8 @@ export class LarkBridge {
     this.cleanupTimer.unref();
 
     this.ws = new LarkWsConnection({
-      appId: this.feishu.appId,
-      appSecret: this.feishu.appSecret,
+      appId: this.lark.appId,
+      appSecret: this.lark.appSecret,
       logger: this.logger,
       onMessage: (event) => this.handleMessage(event),
       onCardAction: (event) => this.handleCardAction(event),
@@ -233,9 +250,10 @@ export class LarkBridge {
     chatId: string,
   ): Promise<void> {
     const { message } = event;
+    const isGroup = message.chat_type === CHAT_TYPE_GROUP;
 
-    if (message.chat_type === CHAT_TYPE_GROUP) {
-      let botOpenId: string;
+    let botOpenId: string | undefined;
+    if (isGroup) {
       try {
         botOpenId = await this.http.getBotOpenId();
       } catch (err) {
@@ -252,45 +270,49 @@ export class LarkBridge {
       }
     }
 
-    const prompt = larkMessageToPrompt(event);
-    if (!prompt.length) return;
-
-    if (await this.maybeHandleCommand(prompt, chatId, messageId)) return;
-
-    await this.enqueueWithContext(event, chatId, userId, messageId, prompt);
+    const interpreted: InterpretedMessage = interpretLarkMessage(event, { botOpenId });
+    switch (interpreted.kind) {
+      case "empty":
+        return;
+      case "command":
+        await this.handleCommand(interpreted.command, chatId, messageId);
+        return;
+      case "prompt":
+        await this.enqueueWithContext(event, chatId, userId, messageId, interpreted.blocks);
+        return;
+      default:
+        return assertNever(interpreted);
+    }
   }
 
-  private async maybeHandleCommand(
-    prompt: Awaited<ReturnType<typeof larkMessageToPrompt>>,
+  private async handleCommand(
+    command: LarkCommand,
     chatId: string,
     messageId: string,
-  ): Promise<boolean> {
-    const firstBlock = prompt[0];
-    if (firstBlock?.type !== "text") return false;
-
-    const text = firstBlock.text.trim();
-    if (CANCEL_COMMANDS.has(text)) {
-      this.logger.info({ chatId }, "cancel command");
-      const runtime = this.chats.get(chatId);
-      try {
-        await runtime?.cancel();
-        await this.presenter.replyText(messageId, REPLY_CANCELLED);
-      } catch (err) {
-        this.logger.warn({ err, chatId }, "cancel command failed");
+  ): Promise<void> {
+    switch (command.kind) {
+      case "cancel": {
+        this.logger.info({ chatId }, "cancel command");
+        const runtime = this.chats.get(chatId);
+        try {
+          await runtime?.cancel();
+        } catch (err) {
+          this.logger.warn({ err, chatId }, "cancel command failed");
+        }
+        await this.presenter.replyNoticeCard(messageId, COMMAND_NOTICES.cancel);
+        return;
       }
-      return true;
+      case "new": {
+        this.logger.info({ chatId }, "new session command");
+        const runtime = this.chats.get(chatId);
+        runtime?.shutdown();
+        this.chats.delete(chatId);
+        await this.presenter.replyNoticeCard(messageId, COMMAND_NOTICES.new);
+        return;
+      }
+      default:
+        return assertNever(command);
     }
-    if (NEW_SESSION_COMMANDS.has(text)) {
-      this.logger.info({ chatId }, "restart command");
-      const runtime = this.chats.get(chatId);
-      runtime?.shutdown();
-      this.chats.delete(chatId);
-      this.presenter
-        .replyText(messageId, REPLY_RESTARTED)
-        .catch((err) => this.logger.warn({ err }, "restart reply failed"));
-      return true;
-    }
-    return false;
   }
 
   private async enqueueWithContext(
@@ -298,7 +320,7 @@ export class LarkBridge {
     chatId: string,
     userId: string,
     messageId: string,
-    prompt: Awaited<ReturnType<typeof larkMessageToPrompt>>,
+    prompt: acp.ContentBlock[],
   ): Promise<void> {
     const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
     const [userName, chatName] = await Promise.all([

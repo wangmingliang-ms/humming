@@ -76,19 +76,19 @@ lark-acp proxy -- node ./my-acp-server.js --port 9000
 
 ### 全局选项
 
-| 选项                   | 说明                                              |
-| ---------------------- | ------------------------------------------------- |
-| `--cwd <dir>`          | agent 子进程工作目录（默认当前目录）              |
-| `--config <path>`      | 覆盖配置文件路径                                  |
-| `--data-dir <dir>`     | 覆盖会话存储目录                                  |
-| `--idle-timeout <min>` | 闲置 N 分钟后驱逐 chat（`0` 表示永不，默认 1440） |
-| `--max-chats <n>`      | 最大并发 chat 数（默认 10）                       |
-| `--hide-thoughts`      | 不在卡片中渲染 `agent_thought_chunk`              |
-| `--hide-tools`         | 不在卡片中渲染 `tool_call` 时间线条目             |
-| `--hide-cancel-button` | 不渲染卡片底部的"中断当前任务"按钮                |
+| 选项                    | 说明                                                                                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cwd <dir>`           | agent 子进程工作目录（默认当前目录）                                                                                                        |
+| `--config <path>`       | 覆盖配置文件路径                                                                                                                            |
+| `--data-dir <dir>`      | 覆盖会话存储目录                                                                                                                            |
+| `--idle-timeout <min>`  | 闲置 N 分钟后驱逐 chat（`0` 表示永不，默认 1440）                                                                                           |
+| `--max-chats <n>`       | 最大并发 chat 数（默认 10）                                                                                                                 |
+| `--hide-thoughts`       | 不在卡片中渲染 `agent_thought_chunk`                                                                                                        |
+| `--hide-tools`          | 不在卡片中渲染 `tool_call` 时间线条目                                                                                                       |
+| `--hide-cancel-button`  | 不渲染卡片底部的"中断当前任务"按钮                                                                                                          |
 | `--permission-mode <m>` | Agent 工具授权策略：`alwaysAsk`（默认，转发卡片让用户选）/ `alwaysAllow`（自动选第一个 `allow_*`）/ `alwaysDeny`（自动选第一个 `reject_*`） |
-| `-h`, `--help`         | 显示帮助                                          |
-| `-v`, `--version`      | 显示版本                                          |
+| `-h`, `--help`          | 显示帮助                                                                                                                                    |
+| `-v`, `--version`       | 显示版本                                                                                                                                    |
 
 ### 配置文件
 
@@ -117,13 +117,13 @@ CLI 读取一份**通用配置文件**（默认 `$XDG_CONFIG_HOME/lark-acp/confi
 
 文件路径和敏感字段的覆盖关系：
 
-| 字段                              | 来源（高 → 低）                                                   |
-| --------------------------------- | ----------------------------------------------------------------- |
-| `credentials.appId` / `appSecret` | 环境变量 `LARK_ACP_APP_ID` / `LARK_ACP_APP_SECRET` → 配置文件     |
-| 配置文件路径                      | `--config` → 环境变量 `LARK_ACP_CONFIG` → XDG 默认                |
-| `dataDir`                         | `--data-dir` → 环境变量 `LARK_ACP_DATA_DIR` → 配置文件 → XDG 默认 |
+| 字段                              | 来源（高 → 低）                                                                    |
+| --------------------------------- | ---------------------------------------------------------------------------------- |
+| `credentials.appId` / `appSecret` | 环境变量 `LARK_ACP_APP_ID` / `LARK_ACP_APP_SECRET` → 配置文件                      |
+| 配置文件路径                      | `--config` → 环境变量 `LARK_ACP_CONFIG` → XDG 默认                                 |
+| `dataDir`                         | `--data-dir` → 环境变量 `LARK_ACP_DATA_DIR` → 配置文件 → XDG 默认                  |
 | `runtime.permissionMode`          | `--permission-mode` → 环境变量 `LARK_ACP_PERMISSION_MODE` → 配置文件 → `alwaysAsk` |
-| `runtime.*` (其它)                | 同名 CLI flag → 配置文件 → 内置默认                               |
+| `runtime.*` (其它)                | 同名 CLI flag → 配置文件 → 内置默认                                                |
 
 > 在飞书开放平台 [开发者后台](https://open.larksuite.com/app) 创建一个"自建应用"，从「凭证与基础信息」页拿 `App ID` / `App Secret`；在「事件与回调」里把订阅模式切到 **长连接 (WebSocket)**，并订阅 `im.message.receive_v1` / `card.action.trigger`。
 
@@ -261,7 +261,7 @@ lark-acp proxy -- node ./my-acp-server.js --port 9000
 import { LarkBridge, FileSessionStore } from "lark-acp";
 
 const bridge = new LarkBridge({
-  feishu: { appId, appSecret },
+  lark: { appId, appSecret },
 
   agent: {
     command: "npx",
@@ -272,6 +272,7 @@ const bridge = new LarkBridge({
     showTools: true,              // 是否渲染 tool_call / tool_call_update
     showCancelButton: true,       // 是否渲染卡片底部"中断当前任务"按钮
     permissionTimeoutMs: 300_000, // 授权卡片自动 cancel 超时
+    permissionMode: "alwaysAsk",  // 'alwaysAsk' | 'alwaysAllow' | 'alwaysDeny'
   },
 
   session: {

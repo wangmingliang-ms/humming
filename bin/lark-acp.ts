@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `lark-acp` — bridge a Feishu/Lark bot to any ACP-compatible AI agent.
+ * `lark-acp` — bridge a Lark bot to any ACP-compatible AI agent.
  *
  * Synopsis:
  *
@@ -9,7 +9,7 @@
  * The CLI is a thin wrapper around {@link LarkBridge}. It reads a
  * general config file (credentials + runtime defaults), merges in
  * environment variables and command-line overrides, then spawns the
- * agent subprocess specified after `proxy --` and pipes Feishu traffic
+ * agent subprocess specified after `proxy --` and pipes Lark traffic
  * through it.
  *
  * Precedence (highest first):
@@ -475,7 +475,7 @@ function resolveConfig(args: ParsedArgs, configPath: string): EffectiveConfig {
   const appSecret = envSecret ?? file.credentials.appSecret;
   if (!appId || !appSecret) {
     const lines = [
-      "Feishu credentials missing.",
+      "Lark credentials missing.",
       "",
       "Provide them via either:",
       `  • environment variables ${ENV_APP_ID} and ${ENV_APP_SECRET}`,
@@ -552,7 +552,7 @@ function printVersion(): void {
 function printHelp(): void {
   const presetIds = Object.keys(BUILT_IN_AGENTS).join(" | ");
   const lines = [
-    `${APP_NAME} v${VERSION} — bridge Feishu/Lark to any ACP-compatible AI agent`,
+    `${APP_NAME} v${VERSION} — bridge Lark to any ACP-compatible AI agent`,
     ``,
     `Usage:`,
     `  ${APP_NAME} [global-options] proxy --agent <preset> [-- <extra-args>...]`,
@@ -580,7 +580,7 @@ function printHelp(): void {
     `  -v, --version          Show version and exit`,
     ``,
     `Subcommands:`,
-    `  proxy                  Spawn an ACP agent subprocess and bridge it to Feishu/Lark.`,
+    `  proxy                  Spawn an ACP agent subprocess and bridge it to Lark.`,
     `    --agent <preset>     Use a built-in preset: ${presetIds}`,
     `    -- <cmd> [args...]   Or pass a raw command. Tokens after \`--\` are forwarded`,
     `                         verbatim, so the agent's own flags are never re-parsed.`,
@@ -662,7 +662,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   const sessionStore = new FileSessionStore(cfg.dataDir);
 
   const bridge = new LarkBridge({
-    feishu: { appId: cfg.appId, appSecret: cfg.appSecret },
+    lark: { appId: cfg.appId, appSecret: cfg.appSecret },
     agent: {
       command: args.agentCommand,
       args: [...args.agentArgs],

@@ -1,6 +1,8 @@
 export type {
   AgentStatus,
   LarkPresenter,
+  NoticeCardSpec,
+  NoticeTemplate,
   TimelineEntry,
   ToolStatus,
   UnifiedCardState,

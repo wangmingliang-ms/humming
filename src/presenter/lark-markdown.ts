@@ -8,7 +8,7 @@
  * are converted to text-aligned `code_block` paragraphs.
  *
  * Lark post payload shape per:
- * https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/im-v1/message-content-description/create_json
+ * https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/im-v1/message-content-description/create_json
  */
 
 import { marked, type Token, type Tokens } from "marked";

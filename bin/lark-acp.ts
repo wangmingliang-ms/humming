@@ -32,8 +32,9 @@ import {
   BUILT_IN_AGENTS,
   resolveAgent,
   createPinoLogger,
+  PERMISSION_MODES,
 } from "../src/index.js";
-import type { LarkLogger } from "../src/index.js";
+import type { LarkLogger, PermissionMode } from "../src/index.js";
 
 const VERSION = "0.4.0";
 
@@ -44,9 +45,11 @@ const ENV_APP_ID = "LARK_ACP_APP_ID";
 const ENV_APP_SECRET = "LARK_ACP_APP_SECRET";
 const ENV_CONFIG = "LARK_ACP_CONFIG";
 const ENV_DATA_DIR = "LARK_ACP_DATA_DIR";
+const ENV_PERMISSION_MODE = "LARK_ACP_PERMISSION_MODE";
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
+const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 
 // ---------- paths ---------------------------------------------------------
 
@@ -90,6 +93,7 @@ type FileRuntime = {
   readonly hideThoughts?: boolean;
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
+  readonly permissionMode?: PermissionMode;
 };
 
 type FileConfig = {
@@ -138,6 +142,18 @@ function asObjectOpt(label: string, value: unknown): Record<string, unknown> | u
   return value as Record<string, unknown>;
 }
 
+function asPermissionModeOpt(label: string, value: unknown): PermissionMode | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !isPermissionMode(value)) {
+    throw new CliError(`${label} must be one of: ${PERMISSION_MODES.join(" | ")}`);
+  }
+  return value;
+}
+
+function isPermissionMode(value: string): value is PermissionMode {
+  return (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
 /**
  * Read and validate the JSON config file if present.
  *
@@ -174,6 +190,11 @@ function readConfigFile(filePath: string): FileConfig {
       : {}),
   };
 
+  const permissionMode = asPermissionModeOpt(
+    "runtime.permissionMode",
+    runtimeObj["permissionMode"],
+  );
+
   const runtime: FileRuntime = {
     ...optStringField("runtime.cwd", runtimeObj["cwd"]),
     ...optNumberField(
@@ -189,6 +210,7 @@ function readConfigFile(filePath: string): FileConfig {
     ...optBoolField("runtime.hideThoughts", runtimeObj["hideThoughts"]),
     ...optBoolField("runtime.hideTools", runtimeObj["hideTools"]),
     ...optBoolField("runtime.hideCancelButton", runtimeObj["hideCancelButton"]),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
   };
 
   const dataDir = asStringOpt("dataDir", root["dataDir"]);
@@ -238,6 +260,7 @@ type ParsedArgs = {
   readonly hideThoughts?: boolean;
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
+  readonly permissionMode?: PermissionMode;
 };
 
 const HELP_FLAGS = new Set(["-h", "--help"]);
@@ -262,6 +285,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let hideThoughts: boolean | undefined;
   let hideTools: boolean | undefined;
   let hideCancelButton: boolean | undefined;
+  let permissionMode: PermissionMode | undefined;
   let agentPreset: string | undefined;
 
   const takeValue = (flag: string): string => {
@@ -324,6 +348,16 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       case "--hide-cancel-button":
         hideCancelButton = true;
         break;
+      case "--permission-mode": {
+        const raw = takeValue("--permission-mode");
+        if (!isPermissionMode(raw)) {
+          throw new CliError(
+            `--permission-mode must be one of: ${PERMISSION_MODES.join(" | ")} (got: ${raw})`,
+          );
+        }
+        permissionMode = raw;
+        break;
+      }
       default:
         if (token.startsWith("-")) throw new CliError(`unknown option: ${token}`);
         throw new CliError(`unexpected positional argument before subcommand: ${token}`);
@@ -403,6 +437,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(hideThoughts !== undefined ? { hideThoughts } : {}),
       ...(hideTools !== undefined ? { hideTools } : {}),
       ...(hideCancelButton !== undefined ? { hideCancelButton } : {}),
+      ...(permissionMode !== undefined ? { permissionMode } : {}),
     };
   }
 }
@@ -420,6 +455,7 @@ type EffectiveConfig = {
   readonly showThoughts: boolean;
   readonly showTools: boolean;
   readonly showCancelButton: boolean;
+  readonly permissionMode: PermissionMode;
 };
 
 /**
@@ -475,6 +511,18 @@ function resolveConfig(args: ParsedArgs, configPath: string): EffectiveConfig {
   const hideTools = args.hideTools ?? file.runtime.hideTools ?? false;
   const hideCancelButton = args.hideCancelButton ?? file.runtime.hideCancelButton ?? false;
 
+  const envPermissionMode = process.env[ENV_PERMISSION_MODE];
+  if (envPermissionMode !== undefined && !isPermissionMode(envPermissionMode)) {
+    throw new CliError(
+      `${ENV_PERMISSION_MODE} must be one of: ${PERMISSION_MODES.join(" | ")} (got: ${envPermissionMode})`,
+    );
+  }
+  const permissionMode =
+    args.permissionMode ??
+    (envPermissionMode as PermissionMode | undefined) ??
+    file.runtime.permissionMode ??
+    DEFAULT_PERMISSION_MODE;
+
   return {
     appId,
     appSecret,
@@ -486,6 +534,7 @@ function resolveConfig(args: ParsedArgs, configPath: string): EffectiveConfig {
     showThoughts: !hideThoughts,
     showTools: !hideTools,
     showCancelButton: !hideCancelButton,
+    permissionMode,
   };
 }
 
@@ -525,6 +574,8 @@ function printHelp(): void {
     `  --hide-thoughts        Skip agent_thought_chunk events in the unified card`,
     `  --hide-tools           Skip tool_call events in the unified card`,
     `  --hide-cancel-button   Don't render the in-card "interrupt" button`,
+    `  --permission-mode <m>  How to handle agent permission requests:`,
+    `                         ${PERMISSION_MODES.join(" | ")} (default ${DEFAULT_PERMISSION_MODE})`,
     `  -h, --help             Show this help and exit`,
     `  -v, --version          Show version and exit`,
     ``,
@@ -547,17 +598,20 @@ function printHelp(): void {
     `      "maxChats": ${DEFAULT_MAX_CHATS},`,
     `      "hideThoughts": false,`,
     `      "hideTools": false,`,
-    `      "hideCancelButton": false`,
+    `      "hideCancelButton": false,`,
+    `      "permissionMode": "${DEFAULT_PERMISSION_MODE}"`,
     `    }`,
     `  }`,
     ``,
     `  All fields are optional. CLI flags override file values; env vars`,
-    `  ${ENV_APP_ID} / ${ENV_APP_SECRET} override the credentials block.`,
+    `  ${ENV_APP_ID} / ${ENV_APP_SECRET} override the credentials block;`,
+    `  ${ENV_PERMISSION_MODE} overrides runtime.permissionMode.`,
     ``,
     `Examples:`,
     `  ${APP_NAME} proxy --agent claude`,
     `  ${APP_NAME} --cwd /work/project proxy --agent opencode`,
     `  ${APP_NAME} --hide-thoughts proxy --agent copilot`,
+    `  ${APP_NAME} --permission-mode alwaysAllow proxy --agent claude`,
     `  ${APP_NAME} proxy -- node ./my-acp-server.js`,
     ``,
   ];
@@ -603,6 +657,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   cliLogger.info(`agent:       ${agentLabel}`.trimEnd());
   cliLogger.info(`cwd:         ${cfg.cwd}`);
   cliLogger.info(`data:        ${cfg.dataDir}`);
+  cliLogger.info(`permission:  ${cfg.permissionMode}`);
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
 
@@ -615,6 +670,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       showThoughts: cfg.showThoughts,
       showTools: cfg.showTools,
       showCancelButton: cfg.showCancelButton,
+      permissionMode: cfg.permissionMode,
     },
     session: {
       idleTimeoutMs: cfg.idleTimeoutMs,

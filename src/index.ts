@@ -17,6 +17,9 @@ export type {
   LarkBridgeSessionOptions,
 } from "./bridge/bridge.js";
 
+export type { PermissionMode } from "./acp/lark-acp-client.js";
+export { PERMISSION_MODES } from "./acp/lark-acp-client.js";
+
 export type { LarkLogger } from "./logger/logger.js";
 export { createPinoLogger } from "./logger/logger.js";
 

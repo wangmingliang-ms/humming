@@ -86,6 +86,7 @@ lark-acp proxy -- node ./my-acp-server.js --port 9000
 | `--hide-thoughts`      | 不在卡片中渲染 `agent_thought_chunk`              |
 | `--hide-tools`         | 不在卡片中渲染 `tool_call` 时间线条目             |
 | `--hide-cancel-button` | 不渲染卡片底部的"中断当前任务"按钮                |
+| `--permission-mode <m>` | Agent 工具授权策略：`alwaysAsk`（默认，转发卡片让用户选）/ `alwaysAllow`（自动选第一个 `allow_*`）/ `alwaysDeny`（自动选第一个 `reject_*`） |
 | `-h`, `--help`         | 显示帮助                                          |
 | `-v`, `--version`      | 显示版本                                          |
 
@@ -109,6 +110,7 @@ CLI 读取一份**通用配置文件**（默认 `$XDG_CONFIG_HOME/lark-acp/confi
     "hideThoughts": false, // 等价 --hide-thoughts
     "hideTools": false,
     "hideCancelButton": false,
+    "permissionMode": "alwaysAsk", // 等价 --permission-mode；亦可被 LARK_ACP_PERMISSION_MODE 覆盖
   },
 }
 ```
@@ -120,7 +122,8 @@ CLI 读取一份**通用配置文件**（默认 `$XDG_CONFIG_HOME/lark-acp/confi
 | `credentials.appId` / `appSecret` | 环境变量 `LARK_ACP_APP_ID` / `LARK_ACP_APP_SECRET` → 配置文件     |
 | 配置文件路径                      | `--config` → 环境变量 `LARK_ACP_CONFIG` → XDG 默认                |
 | `dataDir`                         | `--data-dir` → 环境变量 `LARK_ACP_DATA_DIR` → 配置文件 → XDG 默认 |
-| `runtime.*`                       | 同名 CLI flag → 配置文件 → 内置默认                               |
+| `runtime.permissionMode`          | `--permission-mode` → 环境变量 `LARK_ACP_PERMISSION_MODE` → 配置文件 → `alwaysAsk` |
+| `runtime.*` (其它)                | 同名 CLI flag → 配置文件 → 内置默认                               |
 
 > 在飞书开放平台 [开发者后台](https://open.larksuite.com/app) 创建一个"自建应用"，从「凭证与基础信息」页拿 `App ID` / `App Secret`；在「事件与回调」里把订阅模式切到 **长连接 (WebSocket)**，并订阅 `im.message.receive_v1` / `card.action.trigger`。
 

@@ -29,6 +29,24 @@ export interface LarkAcpClientCallbacks {
   onTyping: () => Promise<void>;
 }
 
+/**
+ * Strategy for handling agent-side permission requests.
+ *
+ * - `alwaysAsk` (default) — forward every request to the user as a Lark card
+ *   and block the agent until they pick an option.
+ * - `alwaysAllow` — auto-pick the agent's first `allow_*` option without
+ *   bothering the user. Falls back to `cancelled` if no allow option exists.
+ * - `alwaysDeny` — auto-pick the agent's first `reject_*` option, falling
+ *   back to `cancelled` (which the agent treats as a denial).
+ */
+export type PermissionMode = "alwaysAllow" | "alwaysDeny" | "alwaysAsk";
+
+export const PERMISSION_MODES: readonly PermissionMode[] = [
+  "alwaysAsk",
+  "alwaysAllow",
+  "alwaysDeny",
+] as const;
+
 export interface LarkAcpClientOptions {
   presenter: LarkPresenter;
   logger: LarkLogger;
@@ -44,6 +62,8 @@ export interface LarkAcpClientOptions {
   callbacks: LarkAcpClientCallbacks;
   /** Resolve a pending permission as `cancelled` after this many ms (0 = never). */
   permissionTimeoutMs: number;
+  /** Permission gate strategy — see {@link PermissionMode}. */
+  permissionMode: PermissionMode;
 }
 
 /**
@@ -61,6 +81,7 @@ export class LarkAcpClient implements acp.Client {
   private readonly showTools: boolean;
   private readonly showCancelButton: boolean;
   private readonly permissionTimeoutMs: number;
+  private readonly permissionMode: PermissionMode;
   private callbacks: LarkAcpClientCallbacks;
 
   private timeline: TimelineEntry[] = [];
@@ -86,6 +107,7 @@ export class LarkAcpClient implements acp.Client {
     this.showTools = opts.showTools;
     this.showCancelButton = opts.showCancelButton;
     this.permissionTimeoutMs = opts.permissionTimeoutMs;
+    this.permissionMode = opts.permissionMode;
     this.callbacks = opts.callbacks;
   }
 
@@ -104,6 +126,10 @@ export class LarkAcpClient implements acp.Client {
   async requestPermission(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
+    if (this.permissionMode !== "alwaysAsk") {
+      return this.autoResolvePermission(params, this.permissionMode);
+    }
+
     if (!this.currentMessageId) {
       this.logger.warn(
         { tool: params.toolCall?.title ?? "unknown" },
@@ -142,6 +168,30 @@ export class LarkAcpClient implements acp.Client {
           resolve({ outcome: { outcome: "cancelled" } });
         });
     });
+  }
+
+  private autoResolvePermission(
+    params: acp.RequestPermissionRequest,
+    mode: "alwaysAllow" | "alwaysDeny",
+  ): acp.RequestPermissionResponse {
+    const wantAllow = mode === "alwaysAllow";
+    const prefix = wantAllow ? "allow_" : "reject_";
+    const match = params.options.find((o) => o.kind.startsWith(prefix));
+    const tool = params.toolCall?.title ?? "unknown";
+
+    if (!match) {
+      this.logger.warn(
+        { mode, tool, kinds: params.options.map((o) => o.kind) },
+        "permissionMode auto-resolve found no matching option, falling back to cancelled",
+      );
+      return { outcome: { outcome: "cancelled" } };
+    }
+
+    this.logger.info(
+      { mode, tool, optionId: match.optionId, kind: match.kind },
+      "permissionMode auto-resolved",
+    );
+    return { outcome: { outcome: "selected", optionId: match.optionId } };
   }
 
   handleCardAction(requestId: string, optionId: string): boolean {

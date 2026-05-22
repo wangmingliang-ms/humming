@@ -1,7 +1,7 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type { AgentStatus, LarkPresenter } from "../presenter/presenter.js";
-import { LarkAcpClient } from "../acp/lark-acp-client.js";
+import { LarkAcpClient, type PermissionMode } from "../acp/lark-acp-client.js";
 import {
   spawnAgent,
   spawnAndResumeAgent,
@@ -27,6 +27,7 @@ export interface ChatRuntimeOptions {
   showTools: boolean;
   showCancelButton: boolean;
   permissionTimeoutMs: number;
+  permissionMode: PermissionMode;
   presenter: LarkPresenter;
   sessionStore: SessionStore;
   logger: LarkLogger;
@@ -133,6 +134,7 @@ export class ChatRuntime {
       showTools: this.opts.showTools,
       showCancelButton: this.opts.showCancelButton,
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
+      permissionMode: this.opts.permissionMode,
       callbacks: {
         onTyping: () => this.opts.presenter.addReaction(firstMessage.messageId).then(() => {}),
       },

@@ -6,6 +6,7 @@ import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
 import { larkMessageToPrompt } from "../interpreter/lark-interpreter.js";
 import { ChatRuntime, type PendingMessage } from "./chat-runtime.js";
+import type { PermissionMode } from "../acp/lark-acp-client.js";
 import type { SessionStore } from "../session-store/session-store.js";
 
 const CANCEL_COMMANDS = new Set(["/cancel", "取消", "/stop", "停止"]);
@@ -17,6 +18,7 @@ const DEFAULT_SHOW_THOUGHTS = true;
 const DEFAULT_SHOW_TOOLS = true;
 const DEFAULT_SHOW_CANCEL_BUTTON = true;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 const IDLE_CLEANUP_INTERVAL_MS = 2 * 60_000;
 
 const ORPHAN_CARD_REASON = "会话已结束，本次确认已失效";
@@ -74,6 +76,13 @@ export interface LarkBridgeAgentOptions {
    * forever, preventing the chat runtime from being evicted.
    */
   permissionTimeoutMs?: number;
+  /**
+   * How to handle agent-side permission requests. Default `"alwaysAsk"`
+   * (forwards the request to the user as a Lark card). `"alwaysAllow"` /
+   * `"alwaysDeny"` auto-resolve without involving the user — useful for
+   * trusted sandboxes or read-only deployments.
+   */
+  permissionMode?: PermissionMode;
 }
 
 export interface LarkBridgeSessionOptions {
@@ -152,6 +161,7 @@ export class LarkBridge {
       showTools: opts.agent.showTools ?? DEFAULT_SHOW_TOOLS,
       showCancelButton: opts.agent.showCancelButton ?? DEFAULT_SHOW_CANCEL_BUTTON,
       permissionTimeoutMs: opts.agent.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS,
+      permissionMode: opts.agent.permissionMode ?? DEFAULT_PERMISSION_MODE,
     };
 
     this.idleTimeoutMs = opts.session?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
@@ -323,6 +333,7 @@ export class LarkBridge {
       showTools: this.agentOpts.showTools,
       showCancelButton: this.agentOpts.showCancelButton,
       permissionTimeoutMs: this.agentOpts.permissionTimeoutMs,
+      permissionMode: this.agentOpts.permissionMode,
       presenter: this.presenter,
       sessionStore: this.sessionStore,
       logger: this.logger,

@@ -1,11 +1,17 @@
 /**
  * Convert agent-emitted markdown into Lark's `post` rich-text payload.
  *
- * Uses `marked.lexer()` to obtain a token tree, then walks it and emits
- * the post-element shape Lark accepts. Lists / blockquotes — which have
- * no native post tag — are delegated to the `md` tag (per the Lark docs:
- * `md` natively renders these). Tables — which `md` does not support —
- * are converted to text-aligned `code_block` paragraphs.
+ * Lark's `post` element zoo has several blind spots — most notably no
+ * inline-code tag and uneven coverage of nested inline styles. The
+ * `md` tag, however, accepts a markdown string and renders it natively
+ * with full inline support (bold, italic, codespan, links, lists,
+ * blockquotes, fenced code, ...).
+ *
+ * Strategy: walk the `marked` token tree to **rebuild a normalized
+ * markdown string**, then hand the whole thing to a single `md` block.
+ * This keeps us in control of edge cases (notably code fences without
+ * a language, which Lark fails to render as code) without having to
+ * regex over the raw source.
  *
  * Lark post payload shape per:
  * https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/im-v1/message-content-description/create_json
@@ -18,74 +24,16 @@ import { marked, type Token, type Tokens } from "marked";
  *  avoids one runaway code block blocking the whole reply. */
 const MAX_MARKDOWN_CHUNK = 4000;
 
-/** Lark code-block languages (case-insensitive on the wire, but the docs
- *  list them in upper case). Anything else is dropped. */
-const LARK_CODE_LANGS = new Set([
-  "PYTHON",
-  "C",
-  "CPP",
-  "GO",
-  "JAVA",
-  "KOTLIN",
-  "SWIFT",
-  "PHP",
-  "RUBY",
-  "RUST",
-  "JAVASCRIPT",
-  "TYPESCRIPT",
-  "BASH",
-  "SHELL",
-  "SQL",
-  "JSON",
-  "XML",
-  "YAML",
-  "HTML",
-  "THRIFT",
-]);
-
-const LANG_ALIASES: Record<string, string> = {
-  JS: "JAVASCRIPT",
-  TS: "TYPESCRIPT",
-  PY: "PYTHON",
-  RB: "RUBY",
-  "C++": "CPP",
-  SH: "BASH",
-  ZSH: "BASH",
-};
-
-type TextStyle = "bold" | "underline" | "lineThrough" | "italic";
-
-interface PostElText {
-  tag: "text";
-  text: string;
-  style?: TextStyle[];
-}
-
-interface PostElA {
-  tag: "a";
-  text: string;
-  href: string;
-  style?: TextStyle[];
-}
-
-interface PostElCodeBlock {
-  tag: "code_block";
-  language?: string;
-  text: string;
-}
-
-interface PostElHr {
-  tag: "hr";
-}
+/** Lark's `md` tag refuses to render fenced blocks that omit a language.
+ *  Default to `plaintext` so a bare ``` fence still ends up as a code box. */
+const DEFAULT_CODE_LANG = "plaintext";
 
 interface PostElMd {
   tag: "md";
   text: string;
 }
 
-type PostElement = PostElText | PostElA | PostElCodeBlock | PostElHr | PostElMd;
-
-type PostParagraph = PostElement[];
+type PostParagraph = PostElMd[];
 
 export interface PostPayload {
   title?: string;
@@ -93,17 +41,13 @@ export interface PostPayload {
 }
 
 /**
- * Parse `text` as markdown and return a Lark post payload. Always
- * produces a payload with at least one paragraph; an empty input
- * yields a payload with `content: [[]]` so the caller can rely on
- * structural validity.
+ * Parse `text` as markdown and return a Lark post payload containing a
+ * single `md` block whose content is the normalized markdown string.
  */
 export function markdownToPost(text: string): PostPayload {
   const tokens = marked.lexer(text);
-  const paragraphs: PostParagraph[] = [];
-  for (const token of tokens) walkBlock(token, paragraphs);
-  if (!paragraphs.length) paragraphs.push([{ tag: "text", text: "" }]);
-  return { content: paragraphs };
+  const md = renderBlocks(tokens).trim();
+  return { content: [[{ tag: "md", text: md }]] };
 }
 
 /**
@@ -130,58 +74,61 @@ export function splitMarkdown(text: string, limit = MAX_MARKDOWN_CHUNK): string[
   return chunks;
 }
 
-// ---- Block-level walker -----------------------------------------------------
+// ---- Block-level renderer ---------------------------------------------------
 
-function walkBlock(token: Token, out: PostParagraph[]): void {
+function renderBlocks(tokens: Token[]): string {
+  const blocks: string[] = [];
+  for (const t of tokens) {
+    const rendered = renderBlock(t);
+    if (rendered !== undefined) blocks.push(rendered);
+  }
+  return blocks.join("\n\n");
+}
+
+function renderBlock(token: Token): string | undefined {
   switch (token.type) {
     case "heading": {
-      const inline = walkInline(token.tokens ?? []);
-      out.push(applyStyleAll(inline, "bold"));
-      return;
+      const heading = token as Tokens.Heading;
+      const hashes = "#".repeat(Math.max(1, Math.min(6, heading.depth)));
+      return `${hashes} ${renderInlineTokens(heading.tokens ?? [])}`;
     }
     case "paragraph": {
-      const inline = walkInline(token.tokens ?? []);
-      if (inline.length) out.push(inline);
-      return;
+      const para = token as Tokens.Paragraph;
+      const inline = renderInlineTokens(para.tokens ?? []);
+      return inline ? inline : undefined;
     }
     case "code": {
       const code = token as Tokens.Code;
-      const lang = normalizeLang(code.lang);
-      const block: PostElCodeBlock =
-        lang === undefined
-          ? { tag: "code_block", text: code.text }
-          : { tag: "code_block", language: lang, text: code.text };
-      out.push([block]);
-      return;
+      const lang = (code.lang ?? "").trim() || DEFAULT_CODE_LANG;
+      return `\`\`\`${lang}\n${code.text}\n\`\`\``;
     }
     case "hr":
-      out.push([{ tag: "hr" }]);
-      return;
+      return "---";
     case "blockquote":
     case "list": {
-      // The `md` tag is the only post element that natively renders lists
-      // and blockquotes. Strip trailing newlines so consecutive lists don't
-      // produce visible blank paragraphs.
-      const text = token.raw.replace(/\s+$/, "");
-      if (text) out.push([{ tag: "md", text }]);
-      return;
+      // Lark's md tag renders both natively. Keep marked's raw form;
+      // strip trailing whitespace so consecutive blocks don't double-space.
+      const raw = (token as { raw: string }).raw.replace(/\s+$/, "");
+      return raw ? raw : undefined;
     }
     case "table": {
-      if (isTable(token)) out.push([{ tag: "code_block", text: tableToText(token) }]);
-      return;
+      // md tag does render markdown tables, but column alignment varies
+      // wildly with cell width. A fixed-width code block is the most
+      // reliable rendering across clients.
+      if (isTable(token)) {
+        return `\`\`\`${DEFAULT_CODE_LANG}\n${tableToText(token)}\n\`\`\``;
+      }
+      return undefined;
     }
     case "space":
-      return;
+      return undefined;
     case "html": {
-      // We don't try to interpret raw HTML — pass through as text. Lark's
-      // text tag does not parse HTML, so this is rendered literally.
-      const text = (token as Tokens.HTML).text.trim();
-      if (text) out.push([{ tag: "text", text }]);
-      return;
+      const html = (token as Tokens.HTML).text.trim();
+      return html ? html : undefined;
     }
     default: {
       const raw = (token as { raw?: string }).raw?.trim();
-      if (raw) out.push([{ tag: "text", text: raw }]);
+      return raw ? raw : undefined;
     }
   }
 }
@@ -190,85 +137,56 @@ function isTable(token: Token): token is Tokens.Table {
   return token.type === "table" && Array.isArray((token as Tokens.Table).header);
 }
 
-// ---- Inline walker ----------------------------------------------------------
+// ---- Inline renderer --------------------------------------------------------
 
-function walkInline(tokens: Token[]): PostElement[] {
-  const out: PostElement[] = [];
-  for (const t of tokens) appendInline(t, out);
+function renderInlineTokens(tokens: Token[]): string {
+  let out = "";
+  for (const t of tokens) out += renderInline(t);
   return out;
 }
 
-function appendInline(token: Token, out: PostElement[]): void {
+function renderInline(token: Token): string {
   switch (token.type) {
     case "text": {
       const text = token as Tokens.Text;
-      if (text.tokens?.length) {
-        for (const child of text.tokens) appendInline(child, out);
-      } else if (text.text) {
-        out.push({ tag: "text", text: text.text });
-      }
-      return;
+      if (text.tokens?.length) return renderInlineTokens(text.tokens);
+      return text.text ?? "";
     }
-    case "strong": {
-      const styled = applyStyleAll(walkInline(token.tokens ?? []), "bold");
-      out.push(...styled);
-      return;
-    }
-    case "em": {
-      const styled = applyStyleAll(walkInline(token.tokens ?? []), "italic");
-      out.push(...styled);
-      return;
-    }
-    case "del": {
-      const styled = applyStyleAll(walkInline(token.tokens ?? []), "lineThrough");
-      out.push(...styled);
-      return;
-    }
-    case "codespan": {
-      // post has no inline-code element. Keep visual fidelity with backticks.
-      out.push({ tag: "text", text: "`" + token.text + "`" });
-      return;
-    }
+    case "strong":
+      return `**${renderInlineTokens((token as Tokens.Strong).tokens ?? [])}**`;
+    case "em":
+      return `*${renderInlineTokens((token as Tokens.Em).tokens ?? [])}*`;
+    case "del":
+      return `~~${renderInlineTokens((token as Tokens.Del).tokens ?? [])}~~`;
+    case "codespan":
+      return `\`${(token as Tokens.Codespan).text}\``;
     case "link": {
-      out.push({ tag: "a", text: token.text || token.href, href: token.href });
-      return;
+      const link = token as Tokens.Link;
+      const label = renderInlineTokens(link.tokens ?? []) || link.text || link.href;
+      return `[${label}](${link.href})`;
     }
     case "image": {
-      // Agents emit URL-based images; post's `img` tag needs an uploaded
-      // image_key we don't have. Render as a link so the user can still
-      // reach the image.
-      const label = token.text || "图片";
-      out.push({ tag: "a", text: `[图片] ${label}`, href: token.href });
-      return;
+      // Agents emit URL-based images; post can only render uploaded
+      // image_keys. Render as a link so the user can still reach it.
+      const img = token as Tokens.Image;
+      const label = img.text || "图片";
+      return `[图片 ${label}](${img.href})`;
     }
     case "br":
-      out.push({ tag: "text", text: "\n" });
-      return;
+      return "\n";
     case "escape":
-      out.push({ tag: "text", text: token.text });
-      return;
+      // Re-add the backslash so the md tag's parser preserves the literal.
+      return `\\${(token as Tokens.Escape).text}`;
     case "html":
-      out.push({ tag: "text", text: token.text });
-      return;
+      return (token as Tokens.HTML).text;
     default: {
       const raw = (token as { raw?: string }).raw;
-      if (raw) out.push({ tag: "text", text: raw });
+      return raw ?? "";
     }
   }
 }
 
 // ---- Helpers ----------------------------------------------------------------
-
-function applyStyleAll(elements: PostElement[], style: TextStyle): PostElement[] {
-  return elements.map((el) => addStyle(el, style));
-}
-
-function addStyle(el: PostElement, style: TextStyle): PostElement {
-  if (el.tag !== "text" && el.tag !== "a") return el;
-  const styles = new Set<TextStyle>(el.style ?? []);
-  styles.add(style);
-  return { ...el, style: [...styles] };
-}
 
 function tableToText(table: Tokens.Table): string {
   const rows = [table.header.map((c) => c.text), ...table.rows.map((r) => r.map((c) => c.text))];
@@ -290,12 +208,4 @@ function tableToText(table: Tokens.Table): string {
   const separator = colWidths.map((w) => "-".repeat(w)).join("-+-");
   lines.splice(1, 0, separator);
   return lines.join("\n");
-}
-
-function normalizeLang(lang: string | undefined): string | undefined {
-  if (!lang) return undefined;
-  const upper = lang.trim().toUpperCase();
-  if (!upper) return undefined;
-  const mapped = LANG_ALIASES[upper] ?? upper;
-  return LARK_CODE_LANGS.has(mapped) ? mapped : undefined;
 }

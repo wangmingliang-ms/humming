@@ -5,12 +5,15 @@ import type { LarkLogger } from "../logger/logger.js";
 
 const STDIO_PIPED: ["pipe", "pipe", "pipe"] = ["pipe", "pipe", "pipe"];
 const WIN32_PLATFORM = "win32";
+const STDERR_BUFFER_LINES = 50;
 
 export interface AgentProcess {
   process: ChildProcess;
   connection: acp.ClientSideConnection;
   sessionId: string;
   capabilities: Record<string, unknown>;
+  /** Most recent stderr lines (up to {@link STDERR_BUFFER_LINES}). */
+  getRecentStderr: () => readonly string[];
 }
 
 export interface SpawnAgentOptions {
@@ -26,6 +29,7 @@ interface SpawnInternal {
   proc: ChildProcess;
   connection: acp.ClientSideConnection;
   initResult: Awaited<ReturnType<acp.ClientSideConnection["initialize"]>>;
+  getRecentStderr: () => readonly string[];
 }
 
 /**
@@ -36,7 +40,7 @@ interface SpawnInternal {
  *         protocol mismatch, etc.) or when `newSession` rejects.
  */
 export async function spawnAgent(opts: SpawnAgentOptions): Promise<AgentProcess> {
-  const { proc, connection, initResult } = await spawnAndInit(opts);
+  const { proc, connection, initResult, getRecentStderr } = await spawnAndInit(opts);
 
   let sessionResult: Awaited<ReturnType<typeof connection.newSession>>;
   try {
@@ -51,6 +55,7 @@ export async function spawnAgent(opts: SpawnAgentOptions): Promise<AgentProcess>
     connection,
     sessionId: sessionResult.sessionId,
     capabilities: (initResult.agentCapabilities ?? {}) as Record<string, unknown>,
+    getRecentStderr,
   };
 }
 
@@ -66,7 +71,7 @@ export async function spawnAndResumeAgent(
   opts: SpawnAgentOptions,
   previousSessionId: string,
 ): Promise<{ agent: AgentProcess; resumed: boolean }> {
-  const { proc, connection, initResult } = await spawnAndInit(opts);
+  const { proc, connection, initResult, getRecentStderr } = await spawnAndInit(opts);
   const agentCaps = initResult.agentCapabilities;
   const caps = (agentCaps ?? {}) as Record<string, unknown>;
 
@@ -95,7 +100,13 @@ export async function spawnAndResumeAgent(
         "session resumed",
       );
       return {
-        agent: { process: proc, connection, sessionId: previousSessionId, capabilities: caps },
+        agent: {
+          process: proc,
+          connection,
+          sessionId: previousSessionId,
+          capabilities: caps,
+          getRecentStderr,
+        },
         resumed: true,
       };
     } catch (err) {
@@ -112,7 +123,13 @@ export async function spawnAndResumeAgent(
   opts.logger.info({ sessionId: sessionResult.sessionId }, "fresh session created");
 
   return {
-    agent: { process: proc, connection, sessionId: sessionResult.sessionId, capabilities: caps },
+    agent: {
+      process: proc,
+      connection,
+      sessionId: sessionResult.sessionId,
+      capabilities: caps,
+      getRecentStderr,
+    },
     resumed: false,
   };
 }
@@ -129,10 +146,31 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
     shell: process.platform === WIN32_PLATFORM,
   });
 
+  const stderrBuffer: string[] = [];
+  let stderrCarry = "";
   proc.stderr?.on("data", (chunk: Buffer) => {
-    const line = chunk.toString().trim();
-    if (line) logger.debug({ stream: "stderr" }, line);
+    stderrCarry += chunk.toString();
+    const parts = stderrCarry.split("\n");
+    stderrCarry = parts.pop() ?? "";
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line) continue;
+      logger.debug({ stream: "stderr" }, line);
+      stderrBuffer.push(line);
+      if (stderrBuffer.length > STDERR_BUFFER_LINES) stderrBuffer.shift();
+    }
   });
+
+  proc.on("error", (err) => logger.error({ err }, "agent process error"));
+  proc.on("exit", (code, signal) => {
+    if (code === 0 || code === null) {
+      logger.info({ code, signal }, "agent process exited");
+    } else {
+      logger.error({ code, signal }, "agent process exited unexpectedly");
+    }
+  });
+
+  const getRecentStderr = (): readonly string[] => [...stderrBuffer];
 
   // Non-null asserted: stdio: STDIO_PIPED guarantees pipe streams exist.
   const input = Writable.toWeb(proc.stdin!);
@@ -150,8 +188,10 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
       },
     });
   } catch (err) {
+    const tail = getRecentStderr();
+    const stderrSuffix = tail.length > 0 ? `\nstderr:\n${tail.join("\n")}` : "";
     throw new Error(
-      `Failed to initialize agent (${command} ${args.join(" ")}). Is the agent installed?`,
+      `Failed to initialize agent (${command} ${args.join(" ")}). Is the agent installed?${stderrSuffix}`,
       { cause: err },
     );
   }
@@ -161,7 +201,7 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
     logger.debug({ authMethods: ids }, "agent advertised auth methods (informational only)");
   }
 
-  return { proc, connection, initResult };
+  return { proc, connection, initResult, getRecentStderr };
 }
 
 export function killAgent(proc: ChildProcess): void {

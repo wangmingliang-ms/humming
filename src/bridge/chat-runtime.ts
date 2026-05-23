@@ -39,6 +39,8 @@ interface ChatRuntimeState {
   queue: PendingMessage[];
   processing: boolean;
   lastActivity: number;
+  /** Last messageId we processed — used to attach exit notices to a thread. */
+  lastMessageId: string | null;
 }
 
 /**
@@ -54,6 +56,8 @@ export class ChatRuntime {
   private readonly logger: LarkLogger;
   private state: ChatRuntimeState | null = null;
   private aborted = false;
+  /** Set while a prompt is in-flight — exit handler defers to handlePromptError then. */
+  private promptInFlight = false;
 
   constructor(opts: ChatRuntimeOptions) {
     this.opts = opts;
@@ -72,10 +76,20 @@ export class ChatRuntime {
     return this.state?.lastActivity ?? 0;
   }
 
-  /** Enqueue a Lark message; spawns the agent on first call. */
+  /**
+   * Enqueue a Lark message; spawns the agent on first call.
+   *
+   * @throws if bootstrap (spawn / initialize / newSession / resume) fails.
+   *         The runtime is left in an unusable state — caller must drop it.
+   */
   async enqueue(message: PendingMessage): Promise<void> {
     if (!this.state) {
-      this.state = await this.bootstrap(message);
+      try {
+        this.state = await this.bootstrap(message);
+      } catch (err) {
+        this.aborted = true;
+        throw err;
+      }
     }
 
     this.state.lastActivity = Date.now();
@@ -118,12 +132,6 @@ export class ChatRuntime {
     return this.state?.client.handleCardAction(requestId, optionId) ?? false;
   }
 
-  /** Notification callback invoked when the underlying agent process exits. */
-  onAgentExit(handler: () => void): void {
-    if (!this.state) return;
-    this.state.agent.process.on("exit", handler);
-  }
-
   private async bootstrap(firstMessage: PendingMessage): Promise<ChatRuntimeState> {
     this.logger.info("creating chat runtime");
 
@@ -161,13 +169,44 @@ export class ChatRuntime {
 
     await this.persistSession(agent.sessionId);
 
+    agent.process.on("exit", (code, signal) => {
+      this.handleUnexpectedExit(code, signal);
+    });
+
     return {
       client,
       agent,
       queue: [],
       processing: false,
       lastActivity: Date.now(),
+      lastMessageId: firstMessage.messageId,
     };
+  }
+
+  private handleUnexpectedExit(code: number | null, signal: NodeJS.Signals | null): void {
+    // If a prompt is in-flight or we've torn down deliberately, the prompt
+    // error path / shutdown already covers user-facing notification.
+    if (this.promptInFlight || this.aborted || !this.state) return;
+
+    const exitedNormally = code === 0 || code === null;
+    if (exitedNormally) {
+      this.logger.info({ code, signal }, "agent exited while idle");
+    } else {
+      this.logger.error({ code, signal }, "agent exited unexpectedly while idle");
+    }
+
+    const messageId = this.state.lastMessageId;
+    const tail = this.state.agent.getRecentStderr();
+    this.state = null;
+    this.aborted = true;
+
+    if (!messageId || exitedNormally) return;
+
+    const stderrSuffix = tail.length > 0 ? `\n\nstderr (最后 ${tail.length} 行):\n${tail.join("\n")}` : "";
+    const summary = `⚠️ Agent 进程意外退出 (code=${code ?? "null"}, signal=${signal ?? "null"})${stderrSuffix}`;
+    this.opts.presenter
+      .replyText(messageId, summary)
+      .catch((err) => this.logger.warn({ err }, "exit notice reply failed"));
   }
 
   private async processQueue(): Promise<void> {
@@ -177,6 +216,7 @@ export class ChatRuntime {
     try {
       while (state.queue.length > 0 && !this.aborted) {
         const pending = state.queue.shift()!;
+        state.lastMessageId = pending.messageId;
 
         state.client.updateCallbacks({
           onTyping: () => this.opts.presenter.addReaction(pending.messageId).then(() => {}),
@@ -184,11 +224,14 @@ export class ChatRuntime {
 
         state.client.setContext(pending.messageId, pending.chatId);
 
+        this.promptInFlight = true;
         try {
           await this.runPrompt(state, pending);
         } catch (err) {
           await this.handlePromptError(state, pending, err);
           if (!this.state) return; // shut down by error handler
+        } finally {
+          this.promptInFlight = false;
         }
       }
     } finally {
@@ -227,6 +270,9 @@ export class ChatRuntime {
     const errMsg = formatAgentError(err);
     const isAuthError = isAuthenticationError(err);
     const procDead = state.agent.process.killed || state.agent.process.exitCode !== null;
+    const stderrTail = procDead ? state.agent.getRecentStderr() : [];
+    const stderrSuffix =
+      stderrTail.length > 0 ? `\n\nstderr (最后 ${stderrTail.length} 行):\n${stderrTail.join("\n")}` : "";
 
     // Always finalize the unified card as failed so the in-progress state
     // doesn't get stuck. Best-effort — if presenter rejects we still surface
@@ -238,8 +284,8 @@ export class ChatRuntime {
     if (isAuthError || procDead) {
       this.shutdown();
       const summary = isAuthError
-        ? `⚠️ Agent authentication failed: ${errMsg}`
-        : `⚠️ Agent crashed: ${errMsg}`;
+        ? `⚠️ Agent authentication failed: ${errMsg}${stderrSuffix}`
+        : `⚠️ Agent crashed: ${errMsg}${stderrSuffix}`;
       this.logger.error({ err, isAuthError }, "agent died");
       await this.opts.presenter
         .replyText(pending.messageId, summary)

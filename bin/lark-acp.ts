@@ -26,15 +26,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import process from "node:process";
-import {
-  LarkBridge,
-  FileSessionStore,
-  BUILT_IN_AGENTS,
-  resolveAgent,
-  createPinoLogger,
-  PERMISSION_MODES,
-} from "../src/index.js";
+import { LarkBridge, FileSessionStore, createPinoLogger, PERMISSION_MODES } from "../src/index.js";
 import type { LarkLogger, PermissionMode } from "../src/index.js";
+import { buildRegistry, type Registry, type UserPresetPatch } from "./agents.js";
 
 const VERSION = "0.4.0";
 
@@ -100,9 +94,10 @@ type FileConfig = {
   readonly credentials: FileCredentials;
   readonly dataDir?: string;
   readonly runtime: FileRuntime;
+  readonly agents: Readonly<Record<string, UserPresetPatch>>;
 };
 
-const EMPTY_FILE_CONFIG: FileConfig = { credentials: {}, runtime: {} };
+const EMPTY_FILE_CONFIG: FileConfig = { credentials: {}, runtime: {}, agents: {} };
 
 class CliError extends Error {}
 
@@ -214,12 +209,71 @@ function readConfigFile(filePath: string): FileConfig {
   };
 
   const dataDir = asStringOpt("dataDir", root["dataDir"]);
+  const agents = parseAgentsBlock(root["agents"]);
 
   return {
     credentials,
     ...(dataDir !== undefined ? { dataDir } : {}),
     runtime,
+    agents,
   };
+}
+
+function parseAgentsBlock(value: unknown): Readonly<Record<string, UserPresetPatch>> {
+  const obj = asObjectOpt("agents", value);
+  if (!obj) return {};
+  const out: Record<string, UserPresetPatch> = {};
+  for (const [id, raw] of Object.entries(obj)) {
+    const entry = asObjectOpt(`agents.${id}`, raw);
+    if (!entry) continue;
+    out[id] = parseAgentPatch(id, entry);
+  }
+  return out;
+}
+
+function parseAgentPatch(id: string, entry: Record<string, unknown>): UserPresetPatch {
+  const label = asStringOpt(`agents.${id}.label`, entry["label"]);
+  const command = asStringOpt(`agents.${id}.command`, entry["command"]);
+  const description = asStringOpt(`agents.${id}.description`, entry["description"]);
+  const args = parseAgentArgs(id, entry["args"]);
+  const env = parseAgentEnv(id, entry["env"]);
+
+  return {
+    ...(label !== undefined ? { label } : {}),
+    ...(command !== undefined ? { command } : {}),
+    ...(args !== undefined ? { args } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(env !== undefined ? { env } : {}),
+  };
+}
+
+function parseAgentArgs(id: string, value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new CliError(`config: agents.${id}.args must be an array of strings`);
+  }
+  return value.map((token, idx) => {
+    if (typeof token !== "string") {
+      throw new CliError(`config: agents.${id}.args[${idx}] must be a string`);
+    }
+    return token;
+  });
+}
+
+function parseAgentEnv(
+  id: string,
+  value: unknown,
+): Readonly<Record<string, string>> | undefined {
+  const obj = asObjectOpt(`agents.${id}.env`, value);
+  if (!obj) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (typeof val !== "string") {
+      throw new CliError(`config: agents.${id}.env.${key} must be a string`);
+    }
+    out[key] = val;
+  }
+  return out;
 }
 
 function optStringField(label: string, value: unknown): Record<string, string> {
@@ -249,9 +303,12 @@ function optNumberField(
 
 type ParsedArgs = {
   readonly command: "proxy" | "agents" | "help" | "version";
+  /** Preset id (`--agent <id>`); resolved against the registry in {@link runProxy}. */
   readonly agentPreset?: string;
-  readonly agentCommand?: string;
-  readonly agentArgs: readonly string[];
+  /** Raw command from `proxy -- <cmd>`; mutually exclusive with `agentPreset`. */
+  readonly agentRawCommand?: string;
+  /** Extra args: appended to the preset, or following the raw command. */
+  readonly agentExtraArgs: readonly string[];
   readonly cwd?: string;
   readonly configPath?: string;
   readonly dataDir?: string;
@@ -389,8 +446,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   if (sawDashDash) i++;
   const trailing = argv.slice(i);
 
-  let agentCommand: string | undefined;
-  let agentArgs: readonly string[];
+  let agentRawCommand: string | undefined;
+  let agentExtraArgs: readonly string[];
 
   if (agentPreset !== undefined) {
     if (!sawDashDash && trailing.length > 0) {
@@ -398,37 +455,30 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         "cannot combine --agent with a positional command; pass extra flags after `--`",
       );
     }
-    const resolved = resolveAgent(agentPreset, BUILT_IN_AGENTS);
-    if (resolved.source === "raw") {
-      throw new CliError(
-        `unknown agent preset: ${agentPreset} (run \`lark-acp agents\` to list presets)`,
-      );
-    }
-    agentCommand = resolved.command;
-    agentArgs = [...resolved.args, ...trailing];
+    agentExtraArgs = trailing;
   } else {
-    agentCommand = trailing[0];
-    if (!agentCommand) {
+    agentRawCommand = trailing[0];
+    if (!agentRawCommand) {
       throw new CliError(
         "proxy requires either --agent <preset> or a command after `--`. " +
           "Example: lark-acp proxy --agent claude",
       );
     }
-    agentArgs = trailing.slice(1);
+    agentExtraArgs = trailing.slice(1);
   }
 
-  return finalize("proxy", agentCommand, agentArgs);
+  return finalize("proxy", agentRawCommand, agentExtraArgs);
 
   function finalize(
     command: ParsedArgs["command"],
-    agentCmd?: string,
-    agentArgsList: readonly string[] = [],
+    agentRawCmd?: string,
+    agentExtraList: readonly string[] = [],
   ): ParsedArgs {
     return {
       command,
       ...(agentPreset !== undefined ? { agentPreset } : {}),
-      ...(agentCmd !== undefined ? { agentCommand: agentCmd } : {}),
-      agentArgs: agentArgsList,
+      ...(agentRawCmd !== undefined ? { agentRawCommand: agentRawCmd } : {}),
+      agentExtraArgs: agentExtraList,
       ...(cwd !== undefined ? { cwd } : {}),
       ...(configPath !== undefined ? { configPath } : {}),
       ...(dataDir !== undefined ? { dataDir } : {}),
@@ -465,9 +515,7 @@ type EffectiveConfig = {
  * @throws {CliError} when required fields (credentials, valid cwd) are
  *         missing or invalid.
  */
-function resolveConfig(args: ParsedArgs, configPath: string): EffectiveConfig {
-  const file = readConfigFile(configPath);
-
+function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): EffectiveConfig {
   // ----- credentials: env > file -----
   const envId = process.env[ENV_APP_ID];
   const envSecret = process.env[ENV_APP_SECRET];
@@ -550,7 +598,7 @@ function printVersion(): void {
 }
 
 function printHelp(): void {
-  const presetIds = Object.keys(BUILT_IN_AGENTS).join(" | ");
+  const presetIds = Array.from(buildRegistry().keys()).join(" | ");
   const lines = [
     `${APP_NAME} v${VERSION} — bridge Lark to any ACP-compatible AI agent`,
     ``,
@@ -600,12 +648,23 @@ function printHelp(): void {
     `      "hideTools": false,`,
     `      "hideCancelButton": false,`,
     `      "permissionMode": "${DEFAULT_PERMISSION_MODE}"`,
+    `    },`,
+    `    "agents": {`,
+    `      "my-claude": {`,
+    `        "label": "Claude (custom)",`,
+    `        "command": "npx",`,
+    `        "args": ["-y", "@zed-industries/claude-code-acp"],`,
+    `        "env": { "ANTHROPIC_API_KEY": "..." }`,
+    `      },`,
+    `      "claude": { "env": { "ANTHROPIC_BASE_URL": "https://..." } }`,
     `    }`,
     `  }`,
     ``,
     `  All fields are optional. CLI flags override file values; env vars`,
     `  ${ENV_APP_ID} / ${ENV_APP_SECRET} override the credentials block;`,
     `  ${ENV_PERMISSION_MODE} overrides runtime.permissionMode.`,
+    `  Entries under "agents" with a built-in id patch that preset; new ids`,
+    `  add user presets and must define both \`label\` and \`command\`.`,
     ``,
     `Examples:`,
     `  ${APP_NAME} proxy --agent claude`,
@@ -618,30 +677,77 @@ function printHelp(): void {
   process.stdout.write(lines.join("\n"));
 }
 
-function printAgents(): void {
-  const lines = [`Built-in ACP agent presets:`, ``];
-  const idColWidth = Math.max(...Object.keys(BUILT_IN_AGENTS).map((id) => id.length));
-  for (const [id, preset] of Object.entries(BUILT_IN_AGENTS)) {
+const SOURCE_TAG: Record<"built-in" | "user" | "overridden", string> = {
+  "built-in": "[built-in]",
+  user: "[user]",
+  overridden: "[overridden]",
+};
+
+function printAgents(registry: Registry): void {
+  const lines = [`ACP agent presets:`, ``];
+  const idColWidth = Math.max(...Array.from(registry.keys(), (id) => id.length));
+  for (const [id, entry] of registry) {
+    const { preset, source } = entry;
     const fullCmd = [preset.command, ...preset.args].join(" ");
-    lines.push(`  ${id.padEnd(idColWidth)}  ${preset.label}`);
+    lines.push(`  ${id.padEnd(idColWidth)}  ${preset.label} ${SOURCE_TAG[source]}`);
     if (preset.description) lines.push(`  ${" ".repeat(idColWidth)}  ${preset.description}`);
     lines.push(`  ${" ".repeat(idColWidth)}  $ ${fullCmd}`);
     lines.push("");
   }
   lines.push(`Use any of these with \`${APP_NAME} proxy --agent <id>\`.`);
+  lines.push(`Add or override entries via the \`agents\` field of ${CONFIG_FILE}.`);
   lines.push("");
   process.stdout.write(lines.join("\n"));
 }
 
 // ---------- main ---------------------------------------------------------
 
-async function runProxy(args: ParsedArgs): Promise<void> {
-  if (!args.agentCommand) {
+type ResolvedAgentInvocation = {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+  readonly displayLabel: string;
+};
+
+function resolveAgentInvocation(
+  args: ParsedArgs,
+  registry: Registry,
+): ResolvedAgentInvocation {
+  if (args.agentPreset !== undefined) {
+    const entry = registry.get(args.agentPreset);
+    if (!entry) {
+      throw new CliError(
+        `unknown agent preset: ${args.agentPreset} (run \`lark-acp agents\` to list presets)`,
+      );
+    }
+    const combinedArgs = [...entry.preset.args, ...args.agentExtraArgs];
+    const display = `${args.agentPreset} (${entry.preset.command} ${combinedArgs.join(" ")})`;
+    return {
+      command: entry.preset.command,
+      args: combinedArgs,
+      ...(entry.preset.env ? { env: { ...entry.preset.env } } : {}),
+      displayLabel: display.trimEnd(),
+    };
+  }
+  if (args.agentRawCommand === undefined) {
     throw new CliError("internal: runProxy called without an agent command");
   }
+  const command = args.agentRawCommand;
+  const cmdArgs = [...args.agentExtraArgs];
+  return {
+    command,
+    args: cmdArgs,
+    displayLabel: `${command} ${cmdArgs.join(" ")}`.trimEnd(),
+  };
+}
 
+async function runProxy(args: ParsedArgs): Promise<void> {
   const configPath = resolveConfigPath(args.configPath);
-  const cfg = resolveConfig(args, configPath);
+  const file = readConfigFile(configPath);
+  const registry = buildRegistry(file.agents);
+  const invocation = resolveAgentInvocation(args, registry);
+
+  const cfg = resolveConfig(args, configPath, file);
   fs.mkdirSync(cfg.dataDir, { recursive: true });
 
   const rootLogger = createPinoLogger();
@@ -651,10 +757,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     `config:      ${configPath}${fs.existsSync(configPath) ? "" : " (not found, using defaults)"}`,
   );
   cliLogger.info(`credentials: ${cfg.credentialsSource}`);
-  const agentLabel = args.agentPreset
-    ? `${args.agentPreset} (${args.agentCommand} ${args.agentArgs.join(" ")})`
-    : `${args.agentCommand} ${args.agentArgs.join(" ")}`;
-  cliLogger.info(`agent:       ${agentLabel}`.trimEnd());
+  cliLogger.info(`agent:       ${invocation.displayLabel}`);
   cliLogger.info(`cwd:         ${cfg.cwd}`);
   cliLogger.info(`data:        ${cfg.dataDir}`);
   cliLogger.info(`permission:  ${cfg.permissionMode}`);
@@ -664,8 +767,9 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   const bridge = new LarkBridge({
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },
     agent: {
-      command: args.agentCommand,
-      args: [...args.agentArgs],
+      command: invocation.command,
+      args: [...invocation.args],
+      ...(invocation.env ? { env: { ...invocation.env } } : {}),
       cwd: cfg.cwd,
       showThoughts: cfg.showThoughts,
       showTools: cfg.showTools,
@@ -719,9 +823,12 @@ async function main(): Promise<void> {
     case "version":
       printVersion();
       return;
-    case "agents":
-      printAgents();
+    case "agents": {
+      const configPath = resolveConfigPath(args.configPath);
+      const file = readConfigFile(configPath);
+      printAgents(buildRegistry(file.agents));
       return;
+    }
     case "proxy":
       await runProxy(args);
       return;

@@ -33,10 +33,49 @@ const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> 
 
 const CANCEL_BUTTON_TEXT = "中断当前任务";
 
+// Card JSON 2.0 — required for the `collapsible_panel` element used by
+// thought entries. v1.0 cards silently degrade unknown components to
+// plaintext, which is why thoughts previously rendered uncollapsed.
+// https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-json-v2-structure
+const CARD_SCHEMA_V2 = "2.0";
+const CARD_CONFIG_V2 = { width_mode: "fill", update_multi: true } as const;
+
+function buildV2Card(
+  headerContent: string,
+  headerTemplate: string,
+  elements: readonly object[],
+): object {
+  return {
+    schema: CARD_SCHEMA_V2,
+    config: CARD_CONFIG_V2,
+    header: {
+      title: { tag: "plain_text" as const, content: headerContent },
+      template: headerTemplate,
+    },
+    body: { elements },
+  };
+}
+
 function buttonTypeForKind(kind: string): "primary" | "danger" | "default" {
   if (kind === "allow_always") return "primary";
   if (kind === "reject_once" || kind === "reject_always") return "danger";
   return "default";
+}
+
+/** v2 buttons live directly in `elements`; the v1 `tag: "action"` wrapper
+ *  was removed in schema 2.0. Custom payload goes into a `callback`
+ *  behavior — top-level `value` on the button is deprecated. */
+function buildCallbackButton(
+  text: string,
+  type: "primary" | "danger" | "default",
+  value: object,
+): object {
+  return {
+    tag: "button",
+    text: { tag: "plain_text", content: text },
+    type,
+    behaviors: [{ type: "callback", value }],
+  };
 }
 
 function buildPermissionCard(
@@ -50,93 +89,93 @@ function buildPermissionCard(
   const elements: object[] = [{ tag: "markdown", content: `**${toolKind}**: ${toolTitle}` }];
 
   for (const opt of params.options) {
-    elements.push({
-      tag: "action",
-      layout: "flow",
-      actions: [
-        {
-          tag: "button",
-          text: { tag: "plain_text", content: opt.name },
-          type: buttonTypeForKind(opt.kind),
-          value: {
-            r: requestId,
-            o: opt.optionId,
-            n: opt.name,
-            k: toolKind,
-            t: toolTitle,
-            c: chatId,
-          },
-        },
-      ],
-    });
+    elements.push(
+      buildCallbackButton(opt.name, buttonTypeForKind(opt.kind), {
+        r: requestId,
+        o: opt.optionId,
+        n: opt.name,
+        k: toolKind,
+        t: toolTitle,
+        c: chatId,
+      }),
+    );
   }
 
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text" as const, content: "Agent 需要确认" },
-      template: HEADER_TEMPLATE_PERMISSION,
-    },
-    elements,
-  };
+  return buildV2Card("Agent 需要确认", HEADER_TEMPLATE_PERMISSION, elements);
 }
 
 function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: string): object {
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text" as const, content: "已确认" },
-      template: HEADER_TEMPLATE_RESOLVED,
+  return buildV2Card("已确认", HEADER_TEMPLATE_RESOLVED, [
+    {
+      tag: "markdown",
+      content: `**${toolKind}**: ${toolTitle}\n\n已选择: **${selectedName}**`,
     },
-    elements: [
-      {
-        tag: "markdown",
-        content: `**${toolKind}**: ${toolTitle}\n\n已选择: **${selectedName}**`,
-      },
-    ],
-  };
+  ]);
 }
 
 function buildNoticeCard(notice: NoticeCardSpec): object {
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text" as const, content: notice.title },
-      template: notice.template,
-    },
-    elements: [{ tag: "markdown", content: notice.body }],
-  };
+  return buildV2Card(notice.title, notice.template, [
+    { tag: "markdown", content: notice.body },
+  ]);
 }
 
 function buildExpiredCard(reason: string): object {
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text" as const, content: "已失效" },
-      template: HEADER_TEMPLATE_EXPIRED,
-    },
-    elements: [{ tag: "markdown", content: reason }],
-  };
+  return buildV2Card("已失效", HEADER_TEMPLATE_EXPIRED, [
+    { tag: "markdown", content: reason },
+  ]);
 }
 
-/** Render one timeline entry to a markdown snippet. Each snippet becomes
- *  its own card element; consecutive entries are separated by `hr`. */
-function entryToMarkdown(entry: TimelineEntry): string {
+function assertNever(x: never): never {
+  throw new Error(`unexpected timeline entry: ${String(x)}`);
+}
+
+/** Render one non-thought timeline entry to a markdown snippet. Thought
+ *  entries take a separate path (a collapsible panel) since Lark's
+ *  markdown element does not render blockquote styling. */
+function nonThoughtEntryToMarkdown(entry: Exclude<TimelineEntry, { kind: "thought" }>): string {
   switch (entry.kind) {
     case "text":
       return entry.text;
-    case "thought":
-      // Use blockquote so thoughts visually group differently from output.
-      return entry.text
-        .split("\n")
-        .map((l) => `> ${l}`)
-        .join("\n");
     case "tool": {
       const mark = STATUS_MARKS[entry.status];
       const head = `${mark} **${entry.toolKind}**: ${entry.title}`;
       return entry.detail ? `${head}\n\n${entry.detail}` : head;
     }
+    default:
+      return assertNever(entry);
   }
+}
+
+function buildThoughtPanel(text: string): object {
+  // Aligned with the canonical v2 sample (plain_text title, icon_position
+  // "right"). Lark's v2 renderer falls back to plaintext when any field on
+  // collapsible_panel is unrecognized — so deviate from the sample only
+  // when necessary.
+  return {
+    tag: "collapsible_panel",
+    expanded: false,
+    header: {
+      title: { tag: "plain_text", content: "💭 思考" },
+      vertical_align: "center",
+      icon: {
+        tag: "standard_icon",
+        token: "down-small-ccm_outlined",
+        color: "",
+        size: "16px 16px",
+      },
+      icon_position: "right",
+      icon_expanded_angle: -180,
+    },
+    border: { color: "grey", corner_radius: "5px" },
+    vertical_spacing: "8px",
+    padding: "8px 8px 8px 8px",
+    elements: [{ tag: "markdown", content: text }],
+  };
+}
+
+function entryToCardElement(entry: TimelineEntry): object {
+  if (entry.kind === "thought") return buildThoughtPanel(entry.text);
+  return { tag: "markdown", content: nonThoughtEntryToMarkdown(entry) };
 }
 
 function buildUnifiedCard(state: UnifiedCardState): object {
@@ -146,36 +185,22 @@ function buildUnifiedCard(state: UnifiedCardState): object {
     elements.push({ tag: "markdown", content: "_准备中..._" });
   } else {
     state.entries.forEach((entry, i) => {
-      if (i > 0) elements.push({ tag: "hr" });
-      elements.push({ tag: "markdown", content: entryToMarkdown(entry) });
+      // Don't draw a divider directly above a collapsible panel — the
+      // panel already has its own border and the extra hr looks noisy.
+      if (i > 0 && entry.kind !== "thought") elements.push({ tag: "hr" });
+      elements.push(entryToCardElement(entry));
     });
   }
 
   if (state.cancellable) {
     elements.push({ tag: "hr" });
-    elements.push({
-      tag: "action",
-      layout: "flow",
-      actions: [
-        {
-          tag: "button",
-          text: { tag: "plain_text", content: CANCEL_BUTTON_TEXT },
-          type: "danger",
-          value: { cancel: true, c: state.chatId },
-        },
-      ],
-    });
+    elements.push(
+      buildCallbackButton(CANCEL_BUTTON_TEXT, "danger", { cancel: true, c: state.chatId }),
+    );
   }
 
   const header = STATUS_HEADER[state.status];
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text" as const, content: header.content },
-      template: header.template,
-    },
-    elements,
-  };
+  return buildV2Card(header.content, header.template, elements);
 }
 
 export interface LarkCardPresenterOptions {

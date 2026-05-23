@@ -46,6 +46,13 @@ function assertNever(x: never): never {
   throw new Error(`unexpected: ${String(x)}`);
 }
 
+function formatBootstrapError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause;
+  if (cause instanceof Error && cause.message) return `${err.message}\n→ ${cause.message}`;
+  return err.message;
+}
+
 interface CardActionPayload {
   /** Permission request id (set on permission cards). */
   r?: string;
@@ -336,7 +343,19 @@ export class LarkBridge {
 
     const runtime = this.acquireRuntime(chatId);
     const pending: PendingMessage = { prompt, messageId, chatId };
-    await runtime.enqueue(pending);
+    try {
+      await runtime.enqueue(pending);
+    } catch (err) {
+      // bootstrap (spawn / initialize / newSession / resume) failed — the
+      // ChatRuntime never registered itself as active, so drop it and let
+      // the next message try again from scratch.
+      this.chats.delete(chatId);
+      this.logger.error({ err, chatId }, "agent bootstrap failed");
+      const summary = `⚠️ Agent 启动失败: ${formatBootstrapError(err)}`;
+      await this.presenter
+        .replyText(messageId, summary)
+        .catch((sendErr) => this.logger.warn({ err: sendErr }, "bootstrap error reply failed"));
+    }
   }
 
   private acquireRuntime(chatId: string): ChatRuntime {

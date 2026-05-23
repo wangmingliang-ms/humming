@@ -40,6 +40,3 @@ export { FileSessionStore } from "./session-store/file-session-store.js";
 
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";
-
-export type { AgentPreset, ResolvedAgent } from "./config.js";
-export { BUILT_IN_AGENTS, resolveAgent, parseAgentCommand } from "./config.js";

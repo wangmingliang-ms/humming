@@ -15,6 +15,8 @@ export type {
   LarkBridgeLarkOptions,
   LarkBridgeAgentOptions,
   LarkBridgeSessionOptions,
+  AgentResolver,
+  ResolvedAgentInvocation,
 } from "./bridge/bridge.js";
 
 export type { PermissionMode } from "./acp/lark-acp-client.js";
@@ -37,6 +39,9 @@ export type { LarkCardPresenterOptions } from "./presenter/lark-presenter.js";
 
 export type { SessionStore, SessionRecord } from "./session-store/session-store.js";
 export { FileSessionStore } from "./session-store/file-session-store.js";
+
+export type { BindingStore, ChatBinding } from "./binding-store/binding-store.js";
+export { FileBindingStore, BindingStoreIoError } from "./binding-store/file-binding-store.js";
 
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";

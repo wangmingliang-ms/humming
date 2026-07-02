@@ -129,7 +129,26 @@ interface LocationPayload {
  * after stripping the bot's own self-mention. Anything else falls through
  * to {@link InterpretedMessage} `kind: "prompt"`.
  */
-export type LarkCommand = { readonly kind: "cancel" } | { readonly kind: "new" };
+/**
+ * High-level commands a user can issue via plain-text messages.
+ *
+ * `cancel` / `new` are exact-match, no-argument commands. The binding
+ * commands (`bind` / `unbind` / `where`) let a single bot serve many repos:
+ * they route this chat to a specific working directory + agent. `bind`
+ * carries its parsed arguments; `bind-usage` is emitted when `/bind` is sent
+ * without a path so the bridge can reply with usage help.
+ *
+ * The interpreter stays pure — it only turns text into this structure.
+ * Filesystem validation, `~` expansion and agent-preset resolution are the
+ * bridge's job (they are effects).
+ */
+export type LarkCommand =
+  | { readonly kind: "cancel" }
+  | { readonly kind: "new" }
+  | { readonly kind: "bind"; readonly cwd: string; readonly agent: string | null }
+  | { readonly kind: "bind-usage" }
+  | { readonly kind: "unbind" }
+  | { readonly kind: "where" };
 
 /**
  * Outcome of interpreting a Lark inbound message.
@@ -154,6 +173,9 @@ export interface InterpretOptions {
 
 const CANCEL_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/cancel", "/stop", "取消", "停止"]);
 const NEW_SESSION_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/new", "/restart"]);
+const UNBIND_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/unbind", "/unpin"]);
+const WHERE_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/where", "/pwd", "/binding"]);
+const BIND_COMMAND_TOKEN = "/bind";
 
 /**
  * Interpret a Lark inbound message event.
@@ -217,7 +239,48 @@ function blocksToPrompt(blocks: acp.ContentBlock[]): InterpretedMessage {
 function detectCommand(text: string): LarkCommand | null {
   if (CANCEL_COMMAND_TOKENS.has(text)) return { kind: "cancel" };
   if (NEW_SESSION_COMMAND_TOKENS.has(text)) return { kind: "new" };
-  return null;
+  if (UNBIND_COMMAND_TOKENS.has(text)) return { kind: "unbind" };
+  if (WHERE_COMMAND_TOKENS.has(text)) return { kind: "where" };
+  return detectBindCommand(text);
+}
+
+/**
+ * Parse a `/bind [path] [agent]` message. Unlike the other commands, `/bind`
+ * takes positional arguments, so it matches on the leading token rather than
+ * the whole message.
+ *
+ * - `/bind` (no path)            → `bind-usage` (bridge replies with help)
+ * - `/bind <path>`               → `bind` with `agent: null` (bridge picks default)
+ * - `/bind <path> <agent...>`    → `bind` with the rest joined as the agent
+ *
+ * The agent tail is kept as a single string so raw commands with their own
+ * flags survive (e.g. `/bind ~/proj node ./my-acp.js --port 9000`). Path
+ * expansion / validation happens in the bridge, not here.
+ */
+function detectBindCommand(text: string): LarkCommand | null {
+  const rest = stripLeadingToken(text, BIND_COMMAND_TOKEN);
+  if (rest === null) return null;
+  if (rest.length === 0) return { kind: "bind-usage" };
+
+  const firstSpace = rest.search(/\s/);
+  if (firstSpace < 0) return { kind: "bind", cwd: rest, agent: null };
+
+  const cwd = rest.slice(0, firstSpace);
+  const agent = rest.slice(firstSpace + 1).trim();
+  return { kind: "bind", cwd, agent: agent.length > 0 ? agent : null };
+}
+
+/**
+ * If `text` is exactly `token` or starts with `token` followed by
+ * whitespace, return the trimmed remainder (possibly empty). Otherwise
+ * `null`. Guards against `/bindfoo` matching `/bind`.
+ */
+function stripLeadingToken(text: string, token: string): string | null {
+  if (text === token) return "";
+  if (!text.startsWith(token)) return null;
+  const next = text.charAt(token.length);
+  if (next.trim().length !== 0) return null; // e.g. "/bindx" — not our command
+  return text.slice(token.length).trim();
 }
 
 // ---- Private parsers ----

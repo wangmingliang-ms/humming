@@ -27,9 +27,20 @@ import path from "node:path";
 import os from "node:os";
 import process from "node:process";
 import { createRequire } from "node:module";
-import { LarkBridge, FileSessionStore, createPinoLogger, PERMISSION_MODES } from "../src/index.js";
-import type { LarkLogger, PermissionMode } from "../src/index.js";
-import { buildRegistry, type Registry, type UserPresetPatch } from "./agents.js";
+import {
+  LarkBridge,
+  FileSessionStore,
+  FileBindingStore,
+  createPinoLogger,
+  PERMISSION_MODES,
+} from "../src/index.js";
+import type {
+  LarkLogger,
+  PermissionMode,
+  AgentResolver,
+  ResolvedAgentInvocation,
+} from "../src/index.js";
+import { buildRegistry, resolveAgent, type Registry, type UserPresetPatch } from "./agents.js";
 
 // Resolved from dist/bin/lark-acp.js, so the package.json sits two levels up.
 const { version: VERSION } = createRequire(import.meta.url)("../../package.json") as {
@@ -264,10 +275,7 @@ function parseAgentArgs(id: string, value: unknown): readonly string[] | undefin
   });
 }
 
-function parseAgentEnv(
-  id: string,
-  value: unknown,
-): Readonly<Record<string, string>> | undefined {
+function parseAgentEnv(id: string, value: unknown): Readonly<Record<string, string>> | undefined {
   const obj = asObjectOpt(`agents.${id}.env`, value);
   if (!obj) return undefined;
   const out: Record<string, string> = {};
@@ -502,7 +510,8 @@ type EffectiveConfig = {
   readonly appId: string;
   readonly appSecret: string;
   readonly credentialsSource: string;
-  readonly cwd: string;
+  /** Default working dir for unbound chats; `null` = pure `/bind` mode. */
+  readonly defaultCwd: string | null;
   readonly dataDir: string;
   readonly idleTimeoutMs: number;
   readonly maxChats: number;
@@ -540,11 +549,17 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   const secretSource = envSecret ? `env:${ENV_APP_SECRET}` : `file:${configPath}`;
   const credentialsSource = idSource === secretSource ? idSource : `${idSource}+${secretSource}`;
 
-  // ----- cwd: flag > file > process.cwd() -----
-  const rawCwd = args.cwd ?? file.runtime.cwd ?? process.cwd();
-  const cwd = path.resolve(rawCwd);
-  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
-    throw new CliError(`cwd "${cwd}" is not a directory`);
+  // ----- default cwd: flag > file (optional — unset = pure /bind mode) -----
+  // Unlike before, cwd is NOT required: a chat gets its cwd from /bind. A
+  // configured default cwd only applies to chats with no explicit binding.
+  const rawCwd = args.cwd ?? file.runtime.cwd ?? null;
+  let defaultCwd: string | null = null;
+  if (rawCwd !== null) {
+    const resolved = path.resolve(rawCwd);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      throw new CliError(`cwd "${resolved}" is not a directory`);
+    }
+    defaultCwd = resolved;
   }
 
   // ----- dataDir: flag > env > file > XDG default -----
@@ -579,7 +594,7 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     appId,
     appSecret,
     credentialsSource,
-    cwd,
+    defaultCwd,
     dataDir,
     idleTimeoutMs: idleTimeoutMinutes * 60_000,
     maxChats,
@@ -614,7 +629,9 @@ function printHelp(): void {
     `  ${APP_NAME} version`,
     ``,
     `Global options (must appear BEFORE the proxy subcommand):`,
-    `  --cwd <dir>            Working directory for the agent subprocess`,
+    `  --cwd <dir>            DEFAULT working directory for chats with no`,
+    `                         explicit /bind. Optional — when omitted, each`,
+    `                         chat must bind its own repo via /bind first.`,
     `  --config <path>        Override the config file path`,
     `                         (default: $XDG_CONFIG_HOME/${APP_NAME}/${CONFIG_FILE},`,
     `                          fallback ~/.config/${APP_NAME}/${CONFIG_FILE})`,
@@ -677,6 +694,15 @@ function printHelp(): void {
     `  ${APP_NAME} --permission-mode alwaysAllow proxy --agent claude`,
     `  ${APP_NAME} proxy -- node ./my-acp-server.js`,
     ``,
+    `In-chat commands (one Lark bot → many repos):`,
+    `  /bind <path> [agent]   Bind THIS chat to a repo dir + agent (agent`,
+    `                         defaults to the one passed via --agent).`,
+    `                         e.g. /bind ~/workspace/copilot-intellij claude`,
+    `  /where                 Show this chat's current binding.`,
+    `  /unbind                Remove this chat's binding.`,
+    `  /new                   Start a fresh agent session for this chat.`,
+    `  /cancel                Cancel the in-flight agent turn.`,
+    ``,
   ];
   process.stdout.write(lines.join("\n"));
 }
@@ -706,17 +732,34 @@ function printAgents(registry: Registry): void {
 
 // ---------- main ---------------------------------------------------------
 
-type ResolvedAgentInvocation = {
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly env?: Readonly<Record<string, string>>;
-  readonly displayLabel: string;
-};
+/**
+ * Build the {@link AgentResolver} the bridge uses to turn a `/bind` agent
+ * selection (preset id or raw command) into a concrete invocation.
+ */
+function makeAgentResolver(registry: Registry): AgentResolver {
+  return (selection: string): ResolvedAgentInvocation => {
+    // resolveAgent throws on an empty/blank selection — that surfaces to the
+    // user as a "bind failed" card, which is the right feedback.
+    const resolved = resolveAgent(selection, registry);
+    const label = resolved.id ?? `${resolved.command} ${resolved.args.join(" ")}`.trim();
+    return {
+      command: resolved.command,
+      args: resolved.args,
+      ...(resolved.env ? { env: { ...resolved.env } } : {}),
+      label,
+    };
+  };
+}
 
-function resolveAgentInvocation(
-  args: ParsedArgs,
-  registry: Registry,
-): ResolvedAgentInvocation {
+/**
+ * Resolve the CLI-provided `--agent` / raw command into the default agent
+ * invocation. This is the agent used for chats with no explicit `/bind`,
+ * and the fallback when `/bind <path>` names no agent.
+ *
+ * @throws {CliError} when `--agent` names an unknown preset, or neither an
+ *         agent preset nor a raw command was provided.
+ */
+function resolveDefaultAgent(args: ParsedArgs, registry: Registry): ResolvedAgentInvocation {
   if (args.agentPreset !== undefined) {
     const entry = registry.get(args.agentPreset);
     if (!entry) {
@@ -725,12 +768,11 @@ function resolveAgentInvocation(
       );
     }
     const combinedArgs = [...entry.preset.args, ...args.agentExtraArgs];
-    const display = `${args.agentPreset} (${entry.preset.command} ${combinedArgs.join(" ")})`;
     return {
       command: entry.preset.command,
       args: combinedArgs,
       ...(entry.preset.env ? { env: { ...entry.preset.env } } : {}),
-      displayLabel: display.trimEnd(),
+      label: args.agentPreset,
     };
   }
   if (args.agentRawCommand === undefined) {
@@ -741,7 +783,7 @@ function resolveAgentInvocation(
   return {
     command,
     args: cmdArgs,
-    displayLabel: `${command} ${cmdArgs.join(" ")}`.trimEnd(),
+    label: `${command} ${cmdArgs.join(" ")}`.trimEnd(),
   };
 }
 
@@ -749,7 +791,8 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   const configPath = resolveConfigPath(args.configPath);
   const file = readConfigFile(configPath);
   const registry = buildRegistry(file.agents);
-  const invocation = resolveAgentInvocation(args, registry);
+  const resolver = makeAgentResolver(registry);
+  const defaultAgent = resolveDefaultAgent(args, registry);
 
   const cfg = resolveConfig(args, configPath, file);
   fs.mkdirSync(cfg.dataDir, { recursive: true });
@@ -761,20 +804,22 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     `config:      ${configPath}${fs.existsSync(configPath) ? "" : " (not found, using defaults)"}`,
   );
   cliLogger.info(`credentials: ${cfg.credentialsSource}`);
-  cliLogger.info(`agent:       ${invocation.displayLabel}`);
-  cliLogger.info(`cwd:         ${cfg.cwd}`);
+  cliLogger.info(
+    `agent:       ${defaultAgent.label} (${defaultAgent.command} ${defaultAgent.args.join(" ")})`.trimEnd(),
+  );
+  cliLogger.info(`default cwd: ${cfg.defaultCwd ?? "(none — chats must /bind)"}`);
   cliLogger.info(`data:        ${cfg.dataDir}`);
   cliLogger.info(`permission:  ${cfg.permissionMode}`);
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
+  const bindingStore = new FileBindingStore(cfg.dataDir);
 
   const bridge = new LarkBridge({
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },
     agent: {
-      command: invocation.command,
-      args: [...invocation.args],
-      ...(invocation.env ? { env: { ...invocation.env } } : {}),
-      cwd: cfg.cwd,
+      resolver,
+      defaultAgent,
+      defaultCwd: cfg.defaultCwd,
       showThoughts: cfg.showThoughts,
       showTools: cfg.showTools,
       showCancelButton: cfg.showCancelButton,
@@ -785,6 +830,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       maxConcurrentChats: cfg.maxChats,
     },
     sessionStore,
+    bindingStore,
     logger: rootLogger,
   });
 

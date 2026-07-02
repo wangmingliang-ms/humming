@@ -182,6 +182,18 @@ export interface LarkBridgeOptions {
   agent: LarkBridgeAgentOptions;
   session?: LarkBridgeSessionOptions;
 
+  /**
+   * In group chats, only handle messages that @-mention the bot. Default
+   * `false` — the bridge responds to every group message.
+   *
+   * When `true`, non-@ group messages are ignored (the classic bot etiquette).
+   * Note: responding to *all* group messages additionally requires the
+   * `im:message.group_msg` scope on the Feishu app; with only
+   * `im:message.group_at_msg:readonly`, Feishu delivers @-messages only and
+   * this flag has no effect on what actually arrives.
+   */
+  groupRequireMention?: boolean;
+
   sessionStore: SessionStore;
   /** Persistent per-chat repo + agent binding (one bot → many repos). */
   bindingStore: BindingStore;
@@ -242,6 +254,7 @@ export class LarkBridge {
   private readonly display: DisplayOptions;
   private readonly idleTimeoutMs: number;
   private readonly maxConcurrentChats: number;
+  private readonly groupRequireMention: boolean;
   private readonly lark: LarkBridgeLarkOptions;
 
   private readonly chats = new Map<string, ChatRuntime>();
@@ -277,6 +290,7 @@ export class LarkBridge {
 
     this.idleTimeoutMs = opts.session?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.maxConcurrentChats = opts.session?.maxConcurrentChats ?? DEFAULT_MAX_CONCURRENT_CHATS;
+    this.groupRequireMention = opts.groupRequireMention ?? false;
   }
 
   /**
@@ -353,16 +367,19 @@ export class LarkBridge {
       try {
         botOpenId = await this.http.getBotOpenId();
       } catch (err) {
-        // Without our own open_id we can't tell who is mentioned — drop the
-        // event rather than risk treating every group message as addressed
-        // to us. The next message will retry.
-        this.logger.warn({ err, chatId }, "getBotOpenId failed — skipping group message");
-        return;
+        // We use our own open_id to strip the bot's self-mention from the
+        // prompt text, and (when enabled) to decide whether we were @-ed.
+        // Without it, fall back to treating the message as addressed to us
+        // rather than dropping it — losing a self-mention marker is harmless,
+        // silently ignoring the user is not.
+        this.logger.warn({ err, chatId }, "getBotOpenId failed — proceeding without mention check");
       }
-      const mentioned = message.mentions?.some((m) => m.id?.open_id === botOpenId);
-      if (!mentioned) {
-        this.logger.debug({ chatId }, "skipping group message — bot not mentioned");
-        return;
+      if (this.groupRequireMention) {
+        const mentioned = message.mentions?.some((m) => m.id?.open_id === botOpenId);
+        if (!mentioned) {
+          this.logger.debug({ chatId }, "skipping group message — bot not mentioned");
+          return;
+        }
       }
     }
 

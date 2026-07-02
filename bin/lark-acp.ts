@@ -103,6 +103,7 @@ type FileRuntime = {
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
   readonly permissionMode?: PermissionMode;
+  readonly groupRequireMention?: boolean;
 };
 
 type FileConfig = {
@@ -220,6 +221,7 @@ function readConfigFile(filePath: string): FileConfig {
     ...optBoolField("runtime.hideThoughts", runtimeObj["hideThoughts"]),
     ...optBoolField("runtime.hideTools", runtimeObj["hideTools"]),
     ...optBoolField("runtime.hideCancelButton", runtimeObj["hideCancelButton"]),
+    ...optBoolField("runtime.groupRequireMention", runtimeObj["groupRequireMention"]),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
   };
 
@@ -330,6 +332,7 @@ type ParsedArgs = {
   readonly hideTools?: boolean;
   readonly hideCancelButton?: boolean;
   readonly permissionMode?: PermissionMode;
+  readonly groupRequireMention?: boolean;
 };
 
 const HELP_FLAGS = new Set(["-h", "--help"]);
@@ -355,6 +358,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let hideTools: boolean | undefined;
   let hideCancelButton: boolean | undefined;
   let permissionMode: PermissionMode | undefined;
+  let groupRequireMention: boolean | undefined;
   let agentPreset: string | undefined;
 
   const takeValue = (flag: string): string => {
@@ -416,6 +420,12 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--hide-cancel-button":
         hideCancelButton = true;
+        break;
+      case "--require-mention":
+        groupRequireMention = true;
+        break;
+      case "--no-require-mention":
+        groupRequireMention = false;
         break;
       case "--permission-mode": {
         const raw = takeValue("--permission-mode");
@@ -500,6 +510,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(hideTools !== undefined ? { hideTools } : {}),
       ...(hideCancelButton !== undefined ? { hideCancelButton } : {}),
       ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(groupRequireMention !== undefined ? { groupRequireMention } : {}),
     };
   }
 }
@@ -519,6 +530,7 @@ type EffectiveConfig = {
   readonly showTools: boolean;
   readonly showCancelButton: boolean;
   readonly permissionMode: PermissionMode;
+  readonly groupRequireMention: boolean;
 };
 
 /**
@@ -577,6 +589,8 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   const hideThoughts = args.hideThoughts ?? file.runtime.hideThoughts ?? false;
   const hideTools = args.hideTools ?? file.runtime.hideTools ?? false;
   const hideCancelButton = args.hideCancelButton ?? file.runtime.hideCancelButton ?? false;
+  const groupRequireMention =
+    args.groupRequireMention ?? file.runtime.groupRequireMention ?? false;
 
   const envPermissionMode = process.env[ENV_PERMISSION_MODE];
   if (envPermissionMode !== undefined && !isPermissionMode(envPermissionMode)) {
@@ -602,6 +616,7 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
     showTools: !hideTools,
     showCancelButton: !hideCancelButton,
     permissionMode,
+    groupRequireMention,
   };
 }
 
@@ -810,6 +825,9 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   cliLogger.info(`default cwd: ${cfg.defaultCwd ?? "(none — chats must /bind)"}`);
   cliLogger.info(`data:        ${cfg.dataDir}`);
   cliLogger.info(`permission:  ${cfg.permissionMode}`);
+  cliLogger.info(
+    `group msgs:  ${cfg.groupRequireMention ? "@-mention required" : "respond to all"}`,
+  );
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
   const bindingStore = new FileBindingStore(cfg.dataDir);
@@ -829,6 +847,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       idleTimeoutMs: cfg.idleTimeoutMs,
       maxConcurrentChats: cfg.maxChats,
     },
+    groupRequireMention: cfg.groupRequireMention,
     sessionStore,
     bindingStore,
     logger: rootLogger,

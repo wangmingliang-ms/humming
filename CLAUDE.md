@@ -6,6 +6,40 @@
 
 ACP（Agent Communication Protocol）参考文档 https://agentcommunicationprotocol.dev/core-concepts/architecture
 
+# 本地开发与运行
+
+## 构建与测试
+
+```bash
+npm install
+npm run build      # tsc → dist/（bin 入口会 chmod +x）
+npm test           # vitest run（单元 src/**、bin/**；集成 tests/**）
+```
+
+提交前三件套（CI 同款）：`tsc --noEmit`、`eslint`、`prettier --check`。
+
+## 运行 / 管理 bridge
+
+CLI 入口是 `bin/lark-acp.ts`（构建到 `dist/bin/lark-acp.js`）。日常用内置子命令管理，
+状态文件都在 `~/.lark-acp/`（`bridge.pid`、`bridge.log`、`settings.json`、`sessions.json`）：
+
+```bash
+lark-acp start --agent claude    # 后台启动
+lark-acp status                  # 是否在跑 + PID + 运行时长
+lark-acp logs -f                 # 实时日志
+lark-acp restart --agent claude  # 改代码后重启
+lark-acp stop                    # 停止
+lark-acp proxy --agent claude    # 前台运行（占终端，Ctrl-C 停）
+```
+
+- **开发工作流**：仓库根 `npm link` 一次，让全局 `lark-acp` 软链到本地 `dist/`；此后
+  改代码只需 `npm run build && lark-acp restart --agent claude` 即可生效。
+- **进程管理实现**在 `bin/process-control.ts`（跨平台：`process.kill(pid,0)` 探活、
+  detached spawn、PID 文件）；`start`/`restart` 通过替换 argv 里的子命令 token 复用
+  `proxy`，把所有选项原样转发。崩溃自愈 / 开机自启不在此层，交给 systemd / 计划任务。
+- **改动 CLI 行为后**务必手动 E2E（`start`→`status`→`restart`→`stop`），并确认
+  `logs` 里出现 `WebSocket connected`；单元测试只覆盖纯函数（`bin/process-control.test.ts`）。
+
 # TypeScript 工程准则（TypeScript 5.x / Strict Mode）
 
 适用于本仓库所有 TypeScript 代码。AI 助手与人类贡献者都应遵守。

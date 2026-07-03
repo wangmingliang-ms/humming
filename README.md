@@ -1,9 +1,9 @@
 # lark-acp
 
-[![npm version](https://img.shields.io/npm/v/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
-[![npm downloads](https://img.shields.io/npm/dm/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
-[![node version](https://img.shields.io/node/v/@4t145/lark-acp.svg)](https://www.npmjs.com/package/@4t145/lark-acp)
-[![license](https://img.shields.io/npm/l/@4t145/lark-acp.svg)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/lark-acp.svg)](https://www.npmjs.com/package/lark-acp)
+[![npm downloads](https://img.shields.io/npm/dm/lark-acp.svg)](https://www.npmjs.com/package/lark-acp)
+[![node version](https://img.shields.io/node/v/lark-acp.svg)](https://www.npmjs.com/package/lark-acp)
+[![license](https://img.shields.io/npm/l/lark-acp.svg)](./LICENSE)
 
 > 💖 觉得本项目有帮助、或者只是看着有点意思？动动发财的小手在右上角点个 ⭐ Star 吧——这是对作者最直接的鼓励。
 
@@ -25,10 +25,10 @@
 
 ```bash
 # 方式一：npx，免安装直接跑（每次拉取最新发布版）
-npx -y @4t145/lark-acp --help
+npx -y lark-acp --help
 
 # 方式二：全局安装，得到 `lark-acp` 命令
-npm i -g @4t145/lark-acp
+npm i -g lark-acp
 lark-acp --help
 
 # 方式三：在仓库内本地构建（开发 / 想用未发布的改动）
@@ -39,7 +39,7 @@ node dist/bin/lark-acp.js --help
 
 > **本地开发建议 `npm link`**：在仓库根执行一次 `npm link`，就把全局 `lark-acp`
 > 软链到本仓库的 `dist/`。之后改了代码只需 `npm run build`（无需重新 link）即可
-> 生效，配合下文的 `lark-acp restart` 快速迭代。撤销：`npm rm -g @4t145/lark-acp`。
+> 生效，配合下文的 `lark-acp restart` 快速迭代。撤销：`npm rm -g lark-acp`。
 
 ### 命令格式
 

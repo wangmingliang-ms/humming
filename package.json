@@ -1,5 +1,5 @@
 {
-  "name": "@4t145/lark-acp",
+  "name": "lark-acp",
   "version": "0.2.0",
   "description": "Bridge Feishu/Lark to any ACP-compatible AI agent",
   "type": "module",

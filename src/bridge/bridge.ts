@@ -641,12 +641,14 @@ export class LarkBridge {
       ? `[lark-acp: 本会话尚未绑定到具体仓库，当前运行在接待区。若用户要求绑定/切换到某个仓库，` +
         `请编辑 settings.json（路径见环境变量 LARK_ACP_SETTINGS）的 bindings["${chatId}"] = ` +
         `{ cwd, agent }（agent 可为 claude/codex/copilot/gemini/opencode，用户指定则从其指定）。` +
-        `保存后 lark-acp 会自动重新路由，无需重启。本会话 chatId: ${chatId}]`
+        `若用户明确给出了另一个 chatId（形如 oc_...），则改写该 chatId 的条目，而非本会话；` +
+        `这可用于从本会话远程绑定其它会话。保存后 lark-acp 会自动重新路由，无需重启。本会话 chatId: ${chatId}]`
       : `[lark-acp: 若用户要求「改绑/换绑/重新绑定」到另一个仓库或更换 agent，请编辑 ` +
         `settings.json（路径见环境变量 LARK_ACP_SETTINGS，通常是 ~/.lark-acp/settings.json）的 ` +
         `bindings["${chatId}"] = { cwd, agent }（agent 可为 claude/codex/copilot/gemini/opencode）。` +
-        `保存后 lark-acp 会自动重新路由到新仓库，无需重启。仅在用户明确要求改绑时才这样做；` +
-        `否则忽略本提示，正常处理用户消息。本会话 chatId: ${chatId}]`;
+        `若用户明确给出了另一个 chatId（形如 oc_...），则改写该 chatId 的条目，而非本会话——` +
+        `据此可从本会话远程绑定/改绑其它会话。保存后 lark-acp 会自动重新路由到新仓库，无需重启。` +
+        `仅在用户明确要求绑定/改绑时才这样做；否则忽略本提示，正常处理用户消息。本会话 chatId: ${chatId}]`;
     prompt.unshift({ type: "text", text: bindHint });
 
     prompt.unshift({ type: "text", text: context });

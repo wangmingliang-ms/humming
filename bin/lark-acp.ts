@@ -30,7 +30,7 @@ import { createRequire } from "node:module";
 import {
   LarkBridge,
   FileSessionStore,
-  FileBindingStore,
+  SettingsBindingStore,
   createPinoLogger,
   PERMISSION_MODES,
 } from "../src/index.js";
@@ -49,11 +49,14 @@ const { version: VERSION } = createRequire(import.meta.url)("../../package.json"
 
 const APP_NAME = "lark-acp";
 const CONFIG_FILE = "config.json";
+const SETTINGS_FILE = "settings.json";
+const HOME_DIR_NAME = ".lark-acp";
 
 const ENV_APP_ID = "LARK_ACP_APP_ID";
 const ENV_APP_SECRET = "LARK_ACP_APP_SECRET";
 const ENV_CONFIG = "LARK_ACP_CONFIG";
 const ENV_DATA_DIR = "LARK_ACP_DATA_DIR";
+const ENV_HOME = "LARK_ACP_HOME";
 const ENV_PERMISSION_MODE = "LARK_ACP_PERMISSION_MODE";
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
@@ -62,30 +65,110 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 
 // ---------- paths ---------------------------------------------------------
 
-/** $XDG_CONFIG_HOME/lark-acp, falling back to ~/.config/lark-acp. */
-function defaultConfigDir(): string {
+/**
+ * The unified lark-acp home directory. Precedence:
+ *   1. --home <dir>       (CLI, resolved by caller and passed in)
+ *   2. $LARK_ACP_HOME
+ *   3. ~/.lark-acp
+ *
+ * Everything lark-acp owns — settings.json, sessions.json, logs, inbox —
+ * lives under here.
+ */
+function resolveHomeDir(override: string | undefined): string {
+  if (override && override.length > 0) return path.resolve(override);
+  const fromEnv = process.env[ENV_HOME];
+  if (fromEnv && fromEnv.length > 0) return path.resolve(fromEnv);
+  return path.join(os.homedir(), HOME_DIR_NAME);
+}
+
+/** Legacy $XDG_CONFIG_HOME/lark-acp, falling back to ~/.config/lark-acp. */
+function legacyConfigDir(): string {
   const xdg = process.env["XDG_CONFIG_HOME"];
   if (xdg && xdg.length > 0) return path.join(xdg, APP_NAME);
   return path.join(os.homedir(), ".config", APP_NAME);
 }
 
-/** $XDG_DATA_HOME/lark-acp, falling back to ~/.local/share/lark-acp. */
-function defaultDataDir(): string {
+/** Legacy $XDG_DATA_HOME/lark-acp, falling back to ~/.local/share/lark-acp. */
+function legacyDataDir(): string {
   const xdg = process.env["XDG_DATA_HOME"];
   if (xdg && xdg.length > 0) return path.join(xdg, APP_NAME);
   return path.join(os.homedir(), ".local", "share", APP_NAME);
 }
 
-function resolveConfigPath(override: string | undefined): string {
+/**
+ * Resolve the settings file path. Precedence:
+ *   1. --config <path> (override)
+ *   2. $LARK_ACP_CONFIG
+ *   3. <home>/settings.json
+ */
+function resolveSettingsPath(override: string | undefined, homeDir: string): string {
   if (override) return path.resolve(override);
   const fromEnv = process.env[ENV_CONFIG];
   if (fromEnv && fromEnv.length > 0) return path.resolve(fromEnv);
-  return path.join(defaultConfigDir(), CONFIG_FILE);
+  return path.join(homeDir, SETTINGS_FILE);
 }
 
-function envDataDirOverride(): string | undefined {
-  const fromEnv = process.env[ENV_DATA_DIR];
-  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
+/**
+ * One-time migration of pre-`~/.lark-acp` installs. When the new
+ * `<home>/settings.json` is absent but the legacy `~/.config/lark-acp/
+ * config.json` exists, compose a fresh settings.json (config fields + any
+ * legacy bindings) and copy the legacy sessions file across. Non-destructive:
+ * legacy files are left in place. Idempotent: skipped once settings.json exists.
+ *
+ * @throws {CliError} when legacy files exist but cannot be read/parsed.
+ */
+function migrateLegacyIfNeeded(homeDir: string, settingsPath: string, logger: LarkLogger): void {
+  if (fs.existsSync(settingsPath)) return;
+
+  const legacyConfig = path.join(legacyConfigDir(), CONFIG_FILE);
+  const legacyBindings = path.join(legacyDataDir(), "bindings.json");
+  const legacySessions = path.join(legacyDataDir(), "sessions.json");
+  if (!fs.existsSync(legacyConfig)) return; // nothing to migrate
+
+  let configObj: Record<string, unknown>;
+  try {
+    configObj = JSON.parse(fs.readFileSync(legacyConfig, "utf-8")) as Record<string, unknown>;
+  } catch (err) {
+    throw new CliError(`failed to migrate legacy config ${legacyConfig}: ${formatError(err)}`);
+  }
+
+  // Fold legacy bindings.json into a `bindings` block in settings.json,
+  // normalising each entry to the compact { cwd, agent } shape the new
+  // SettingsBindingStore reads (old FileBindingStore stored a fat record).
+  let bindings: Record<string, { cwd: string; agent?: string }> = {};
+  if (fs.existsSync(legacyBindings)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(legacyBindings, "utf-8")) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [chatId, raw] of Object.entries(parsed as Record<string, unknown>)) {
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+          const rec = raw as Record<string, unknown>;
+          const cwd = rec["cwd"];
+          if (typeof cwd !== "string") continue;
+          // Old shape stored the agent under `agentLabel`; new shape uses `agent`.
+          const agent = rec["agent"] ?? rec["agentLabel"];
+          bindings[chatId] = { cwd, ...(typeof agent === "string" ? { agent } : {}) };
+        }
+      }
+    } catch {
+      // Corrupt legacy bindings — start empty rather than abort migration.
+      logger.warn("legacy bindings.json unreadable — migrating with empty bindings");
+    }
+  }
+
+  const merged = { ...configObj, bindings };
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2), {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+
+  const newSessions = path.join(homeDir, "sessions.json");
+  if (fs.existsSync(legacySessions) && !fs.existsSync(newSessions)) {
+    fs.copyFileSync(legacySessions, newSessions);
+  }
+
+  logger.info(`migrated legacy config into ${settingsPath} (old files left in place)`);
 }
 
 // ---------- config file schema -------------------------------------------
@@ -111,9 +194,17 @@ type FileConfig = {
   readonly dataDir?: string;
   readonly runtime: FileRuntime;
   readonly agents: Readonly<Record<string, UserPresetPatch>>;
+  /** chatId -> { cwd, agent } bindings, persisted in settings.json. */
+  readonly bindings: Readonly<Record<string, StoredBinding>>;
 };
 
-const EMPTY_FILE_CONFIG: FileConfig = { credentials: {}, runtime: {}, agents: {} };
+/** One chat's persisted binding as stored in settings.json's `bindings` block. */
+type StoredBinding = {
+  readonly cwd: string;
+  readonly agent?: string;
+};
+
+const EMPTY_FILE_CONFIG: FileConfig = { credentials: {}, runtime: {}, agents: {}, bindings: {} };
 
 class CliError extends Error {}
 
@@ -227,13 +318,33 @@ function readConfigFile(filePath: string): FileConfig {
 
   const dataDir = asStringOpt("dataDir", root["dataDir"]);
   const agents = parseAgentsBlock(root["agents"]);
+  const bindings = parseBindingsBlock(root["bindings"]);
 
   return {
     credentials,
     ...(dataDir !== undefined ? { dataDir } : {}),
     runtime,
     agents,
+    bindings,
   };
+}
+
+/** Parse the `bindings` block: chatId -> { cwd, agent? }. Invalid entries throw. */
+function parseBindingsBlock(value: unknown): Readonly<Record<string, StoredBinding>> {
+  const obj = asObjectOpt("bindings", value);
+  if (!obj) return {};
+  const out: Record<string, StoredBinding> = {};
+  for (const [chatId, raw] of Object.entries(obj)) {
+    const entry = asObjectOpt(`bindings.${chatId}`, raw);
+    if (!entry) continue;
+    const cwd = asStringOpt(`bindings.${chatId}.cwd`, entry["cwd"]);
+    if (cwd === undefined) {
+      throw new CliError(`config: bindings.${chatId}.cwd is required`);
+    }
+    const agent = asStringOpt(`bindings.${chatId}.agent`, entry["agent"]);
+    out[chatId] = { cwd, ...(agent !== undefined ? { agent } : {}) };
+  }
+  return out;
 }
 
 function parseAgentsBlock(value: unknown): Readonly<Record<string, UserPresetPatch>> {
@@ -326,6 +437,7 @@ type ParsedArgs = {
   readonly cwd?: string;
   readonly configPath?: string;
   readonly dataDir?: string;
+  readonly home?: string;
   readonly idleTimeoutMinutes?: number;
   readonly maxChats?: number;
   readonly hideThoughts?: boolean;
@@ -352,6 +464,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   let cwd: string | undefined;
   let configPath: string | undefined;
   let dataDir: string | undefined;
+  let home: string | undefined;
   let idleTimeoutMinutes: number | undefined;
   let maxChats: number | undefined;
   let hideThoughts: boolean | undefined;
@@ -402,6 +515,9 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--config":
         configPath = takeValue("--config");
+        break;
+      case "--home":
+        home = takeValue("--home");
         break;
       case "--data-dir":
         dataDir = takeValue("--data-dir");
@@ -504,6 +620,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(cwd !== undefined ? { cwd } : {}),
       ...(configPath !== undefined ? { configPath } : {}),
       ...(dataDir !== undefined ? { dataDir } : {}),
+      ...(home !== undefined ? { home } : {}),
       ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
       ...(maxChats !== undefined ? { maxChats } : {}),
       ...(hideThoughts !== undefined ? { hideThoughts } : {}),
@@ -540,7 +657,12 @@ type EffectiveConfig = {
  * @throws {CliError} when required fields (credentials, valid cwd) are
  *         missing or invalid.
  */
-function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): EffectiveConfig {
+function resolveConfig(
+  args: ParsedArgs,
+  configPath: string,
+  homeDir: string,
+  file: FileConfig,
+): EffectiveConfig {
   // ----- credentials: env > file -----
   const envId = process.env[ENV_APP_ID];
   const envSecret = process.env[ENV_APP_SECRET];
@@ -575,7 +697,15 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   }
 
   // ----- dataDir: flag > env > file > XDG default -----
-  const rawDataDir = args.dataDir ?? envDataDirOverride() ?? file.dataDir ?? defaultDataDir();
+  // ----- dataDir: the home dir IS the data dir now. `--data-dir` and the
+  //       legacy $LARK_ACP_DATA_DIR are honoured as home-dir overrides for
+  //       backward compatibility; otherwise everything lives under homeDir. -----
+  const legacyDataOverride = process.env[ENV_DATA_DIR];
+  const rawDataDir =
+    args.dataDir ??
+    (legacyDataOverride && legacyDataOverride.length > 0 ? legacyDataOverride : undefined) ??
+    file.dataDir ??
+    homeDir;
   const dataDir = path.resolve(rawDataDir);
 
   // ----- runtime knobs: flag > file > built-in default -----
@@ -589,8 +719,7 @@ function resolveConfig(args: ParsedArgs, configPath: string, file: FileConfig): 
   const hideThoughts = args.hideThoughts ?? file.runtime.hideThoughts ?? false;
   const hideTools = args.hideTools ?? file.runtime.hideTools ?? false;
   const hideCancelButton = args.hideCancelButton ?? file.runtime.hideCancelButton ?? false;
-  const groupRequireMention =
-    args.groupRequireMention ?? file.runtime.groupRequireMention ?? false;
+  const groupRequireMention = args.groupRequireMention ?? file.runtime.groupRequireMention ?? false;
 
   const envPermissionMode = process.env[ENV_PERMISSION_MODE];
   if (envPermissionMode !== undefined && !isPermissionMode(envPermissionMode)) {
@@ -647,12 +776,13 @@ function printHelp(): void {
     `  --cwd <dir>            DEFAULT working directory for chats with no`,
     `                         explicit /bind. Optional — when omitted, each`,
     `                         chat must bind its own repo via /bind first.`,
-    `  --config <path>        Override the config file path`,
-    `                         (default: $XDG_CONFIG_HOME/${APP_NAME}/${CONFIG_FILE},`,
-    `                          fallback ~/.config/${APP_NAME}/${CONFIG_FILE})`,
-    `  --data-dir <dir>       Override the on-disk state directory`,
-    `                         (default: $XDG_DATA_HOME/${APP_NAME},`,
-    `                          fallback ~/.local/share/${APP_NAME})`,
+    `  --home <dir>           lark-acp home directory holding settings.json,`,
+    `                         sessions, logs. (default: $LARK_ACP_HOME, else`,
+    `                         ~/.lark-acp). Created on startup if missing.`,
+    `  --config <path>        Override the settings file path`,
+    `                         (default: <home>/${SETTINGS_FILE})`,
+    `  --data-dir <dir>       Deprecated alias — overrides the home/state dir`,
+    `                         (kept for backward compatibility with old installs)`,
     `  --idle-timeout <min>   Evict idle chats after N minutes (0 = never; default ${DEFAULT_IDLE_TIMEOUT_MINUTES})`,
     `  --max-chats <n>        Maximum concurrent chats (default ${DEFAULT_MAX_CHATS})`,
     `  --hide-thoughts        Skip agent_thought_chunk events in the unified card`,
@@ -672,7 +802,7 @@ function printHelp(): void {
     `                         preset's args.`,
     `  agents                 List built-in agent presets and exit.`,
     ``,
-    `Configuration file (${CONFIG_FILE}):`,
+    `Settings file (${SETTINGS_FILE}, under the home dir):`,
     `  {`,
     `    "credentials": { "appId": "cli_...", "appSecret": "..." },`,
     `    "dataDir": "./var/lark-acp",`,
@@ -803,21 +933,28 @@ function resolveDefaultAgent(args: ParsedArgs, registry: Registry): ResolvedAgen
 }
 
 async function runProxy(args: ParsedArgs): Promise<void> {
-  const configPath = resolveConfigPath(args.configPath);
+  const homeDir = resolveHomeDir(args.home);
+  fs.mkdirSync(homeDir, { recursive: true });
+
+  const rootLogger = createPinoLogger();
+  const cliLogger: LarkLogger = rootLogger.child({ name: "cli" });
+
+  const configPath = resolveSettingsPath(args.configPath, homeDir);
+  // Migrate a pre-~/.lark-acp install into settings.json before reading it.
+  migrateLegacyIfNeeded(homeDir, configPath, cliLogger);
+
   const file = readConfigFile(configPath);
   const registry = buildRegistry(file.agents);
   const resolver = makeAgentResolver(registry);
   const defaultAgent = resolveDefaultAgent(args, registry);
 
-  const cfg = resolveConfig(args, configPath, file);
+  const cfg = resolveConfig(args, configPath, homeDir, file);
   fs.mkdirSync(cfg.dataDir, { recursive: true });
-
-  const rootLogger = createPinoLogger();
-  const cliLogger: LarkLogger = rootLogger.child({ name: "cli" });
 
   cliLogger.info(
     `config:      ${configPath}${fs.existsSync(configPath) ? "" : " (not found, using defaults)"}`,
   );
+  cliLogger.info(`home:        ${homeDir}`);
   cliLogger.info(`credentials: ${cfg.credentialsSource}`);
   cliLogger.info(
     `agent:       ${defaultAgent.label} (${defaultAgent.command} ${defaultAgent.args.join(" ")})`.trimEnd(),
@@ -830,7 +967,18 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   );
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
-  const bindingStore = new FileBindingStore(cfg.dataDir);
+  // Bindings live in settings.json's `bindings` block (one file for all
+  // state). Resolve each binding's agent selection via the registry, falling
+  // back to the CLI default agent when a binding names none.
+  const bindingStore = new SettingsBindingStore(configPath, (agentSelection) => {
+    const inv = agentSelection ? resolver(agentSelection) : defaultAgent;
+    return {
+      agentLabel: inv.label,
+      agentCommand: inv.command,
+      agentArgs: inv.args,
+      ...(inv.env ? { agentEnv: inv.env } : {}),
+    };
+  });
 
   const bridge = new LarkBridge({
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },
@@ -893,7 +1041,8 @@ async function main(): Promise<void> {
       printVersion();
       return;
     case "agents": {
-      const configPath = resolveConfigPath(args.configPath);
+      const homeDir = resolveHomeDir(args.home);
+      const configPath = resolveSettingsPath(args.configPath, homeDir);
       const file = readConfigFile(configPath);
       printAgents(buildRegistry(file.agents));
       return;

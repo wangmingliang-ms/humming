@@ -632,19 +632,22 @@ export class LarkBridge {
       ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`
       : `[上下文: 用户 ${userName} (${userId}) 的私聊消息]`;
 
-    // In the reception area, remind the agent (inline, every turn) that this
-    // chat is unbound and how to bind it — reinforces the AGENTS.md/CLAUDE.md
-    // dropped at spawn, in case the agent's harness ignores those files.
-    if (binding.reception) {
-      prompt.unshift({
-        type: "text",
-        text:
-          `[lark-acp: 本会话尚未绑定到具体仓库，当前运行在接待区。若用户要求绑定/切换到某个仓库，` +
-          `请按工作目录下 AGENTS.md 的说明，编辑 settings.json 的 bindings["${chatId}"] = ` +
-          `{ cwd, agent }（agent 可为 claude/codex/copilot/gemini/opencode，用户指定则从其指定）。` +
-          `保存后 lark-acp 会自动重新路由，无需重启。本会话 chatId: ${chatId}]`,
-      });
-    }
+    // Tell the agent — inline, every turn — how to (re)bind this chat by
+    // editing settings.json. Injected for BOTH reception and already-bound
+    // chats, so the user can say "换绑到另一个仓库" from any chat. We inject
+    // inline rather than only via AGENTS.md so already-bound chats (running in
+    // a project repo we must not pollute) also know how.
+    const bindHint = binding.reception
+      ? `[lark-acp: 本会话尚未绑定到具体仓库，当前运行在接待区。若用户要求绑定/切换到某个仓库，` +
+        `请编辑 settings.json（路径见环境变量 LARK_ACP_SETTINGS）的 bindings["${chatId}"] = ` +
+        `{ cwd, agent }（agent 可为 claude/codex/copilot/gemini/opencode，用户指定则从其指定）。` +
+        `保存后 lark-acp 会自动重新路由，无需重启。本会话 chatId: ${chatId}]`
+      : `[lark-acp: 若用户要求「改绑/换绑/重新绑定」到另一个仓库或更换 agent，请编辑 ` +
+        `settings.json（路径见环境变量 LARK_ACP_SETTINGS，通常是 ~/.lark-acp/settings.json）的 ` +
+        `bindings["${chatId}"] = { cwd, agent }（agent 可为 claude/codex/copilot/gemini/opencode）。` +
+        `保存后 lark-acp 会自动重新路由到新仓库，无需重启。仅在用户明确要求改绑时才这样做；` +
+        `否则忽略本提示，正常处理用户消息。本会话 chatId: ${chatId}]`;
+    prompt.unshift({ type: "text", text: bindHint });
 
     prompt.unshift({ type: "text", text: context });
 

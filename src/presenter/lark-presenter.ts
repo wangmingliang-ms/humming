@@ -133,8 +133,36 @@ function resolvedPermissionHeader(selectedKind: string | undefined): {
   readonly template: string;
   readonly summary: string;
 } {
+  if (selectedKind === "reject_once") {
+    return {
+      title: "已拒绝（本次）",
+      template: HEADER_TEMPLATE_REJECTED,
+      summary: "❌ 已拒绝（本次）",
+    };
+  }
+  if (selectedKind === "reject_always") {
+    return {
+      title: "已拒绝（永久）",
+      template: HEADER_TEMPLATE_REJECTED,
+      summary: "❌ 已拒绝（永久）",
+    };
+  }
   if (selectedKind?.startsWith("reject_")) {
     return { title: "已拒绝", template: HEADER_TEMPLATE_REJECTED, summary: "❌ 已拒绝" };
+  }
+  if (selectedKind === "allow_once") {
+    return {
+      title: "已批准（本次）",
+      template: HEADER_TEMPLATE_APPROVED,
+      summary: "✅ 已批准（本次）",
+    };
+  }
+  if (selectedKind === "allow_always") {
+    return {
+      title: "已批准（永久）",
+      template: HEADER_TEMPLATE_APPROVED,
+      summary: "✅ 已批准（永久）",
+    };
   }
   return { title: "已批准", template: HEADER_TEMPLATE_APPROVED, summary: "✅ 已批准" };
 }

@@ -100,26 +100,46 @@ describe("LarkCardPresenter card summary", () => {
     const presenter = makePresenter(cards);
 
     await presenter.updatePermissionCard(
-      "card_approve",
+      "card_approve_once",
       "edit",
       "config.json",
-      "允许",
+      "允许本次",
       "allow_once",
     );
     await presenter.updatePermissionCard(
-      "card_reject",
+      "card_approve_always",
       "edit",
       "config.json",
-      "拒绝",
+      "总是允许",
+      "allow_always",
+    );
+    await presenter.updatePermissionCard(
+      "card_reject_once",
+      "edit",
+      "config.json",
+      "拒绝本次",
       "reject_once",
     );
+    await presenter.updatePermissionCard(
+      "card_reject_always",
+      "edit",
+      "config.json",
+      "总是拒绝",
+      "reject_always",
+    );
 
-    expect(cards[0]?.header?.title?.content).toBe("已批准");
+    expect(cards[0]?.header?.title?.content).toBe("已批准（本次）");
     expect(cards[0]?.header?.template).toBe("green");
-    expect(cards[0]?.config?.summary?.content).toBe("✅ 已批准");
-    expect(cards[1]?.header?.title?.content).toBe("已拒绝");
-    expect(cards[1]?.header?.template).toBe("red");
-    expect(cards[1]?.config?.summary?.content).toBe("❌ 已拒绝");
+    expect(cards[0]?.config?.summary?.content).toBe("✅ 已批准（本次）");
+    expect(cards[1]?.header?.title?.content).toBe("已批准（永久）");
+    expect(cards[1]?.header?.template).toBe("green");
+    expect(cards[1]?.config?.summary?.content).toBe("✅ 已批准（永久）");
+    expect(cards[2]?.header?.title?.content).toBe("已拒绝（本次）");
+    expect(cards[2]?.header?.template).toBe("red");
+    expect(cards[2]?.config?.summary?.content).toBe("❌ 已拒绝（本次）");
+    expect(cards[3]?.header?.title?.content).toBe("已拒绝（永久）");
+    expect(cards[3]?.header?.template).toBe("red");
+    expect(cards[3]?.config?.summary?.content).toBe("❌ 已拒绝（永久）");
   });
 
   it("sends topic cards as in-thread replies", async () => {

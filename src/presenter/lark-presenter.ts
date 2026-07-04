@@ -6,16 +6,8 @@ import type {
   LarkPresenter,
   NoticeCardSpec,
   TimelineEntry,
-  ToolStatus,
   UnifiedCardState,
 } from "./presenter.js";
-
-const STATUS_MARKS: Record<ToolStatus, string> = {
-  pending: "⏸",
-  in_progress: "⏳",
-  completed: "✅",
-  failed: "❌",
-};
 
 const HEADER_TEMPLATE_PERMISSION = "blue";
 const HEADER_TEMPLATE_RESOLVED = "green";
@@ -138,10 +130,8 @@ function nonThoughtEntryToMarkdown(entry: Exclude<TimelineEntry, { kind: "though
   switch (entry.kind) {
     case "text":
       return entry.text;
-    case "tool": {
-      const mark = STATUS_MARKS[entry.status];
-      return `${mark} **${entry.toolKind}**: ${entry.title}`;
-    }
+    case "tool":
+      return `**${entry.toolKind}**: ${entry.title}`;
     default:
       return assertNever(entry);
   }

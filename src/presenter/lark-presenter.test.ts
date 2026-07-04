@@ -110,7 +110,8 @@ describe("LarkCardPresenter Hermes-style rendering", () => {
     expect(text).toContain("Hello **world**");
     expect(text).toContain("💭 思考");
     expect(text).toContain("Need to inspect files");
-    expect(text).toContain("✅ **read**: Read file");
+    expect(text).toContain("**read**: Read file");
+    expect(text).not.toContain("✅ **read**: Read file");
     expect(text).not.toContain("中断当前任务");
   });
 

@@ -12,10 +12,10 @@ import type {
 } from "./presenter.js";
 
 const STATUS_MARKS: Record<ToolStatus, string> = {
-  pending: "⏸",
-  in_progress: "⏳",
-  completed: "✅",
-  failed: "❌",
+  pending: ":OneSecond:",
+  in_progress: ":OnIt:",
+  completed: ":OK:",
+  failed: ":ERROR:",
 };
 
 const HEADER_TEMPLATE_PERMISSION = "blue";
@@ -23,13 +23,13 @@ const HEADER_TEMPLATE_RESOLVED = "green";
 const HEADER_TEMPLATE_EXPIRED = "grey";
 
 const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> = {
-  thinking: { content: "💭 思考中...", template: "wathet" },
-  calling_tool: { content: "🛠 调用工具...", template: "blue" },
-  responding: { content: "✍️ 回复中...", template: "blue" },
-  sealed: { content: "🔄 进行当中", template: "blue" },
-  complete: { content: "✅ 已完成", template: "green" },
-  cancelled: { content: "⛔ 已取消", template: "grey" },
-  failed: { content: "⚠️ 出错", template: "red" },
+  thinking: { content: ":Thinking: 思考中...", template: "wathet" },
+  calling_tool: { content: ":OnIt: 调用工具...", template: "blue" },
+  responding: { content: ":Writing: 回复中...", template: "blue" },
+  sealed: { content: ":OnIt: 进行当中", template: "blue" },
+  complete: { content: ":OK: 已完成", template: "green" },
+  cancelled: { content: ":CrossMark: 已取消", template: "grey" },
+  failed: { content: ":ERROR: 出错", template: "red" },
 };
 
 const CANCEL_BUTTON_TEXT = "中断当前任务";
@@ -44,16 +44,16 @@ const CARD_CONFIG_V2 = { width_mode: "fill", update_multi: true } as const;
 function summaryForStatus(status: AgentStatus): string {
   switch (status) {
     case "complete":
-      return "✅ 已完成";
+      return ":OK: 已完成";
     case "cancelled":
-      return "⛔ 已取消";
+      return ":CrossMark: 已取消";
     case "failed":
-      return "⚠️ 出错";
+      return ":ERROR: 出错";
     case "thinking":
     case "calling_tool":
     case "responding":
     case "sealed":
-      return "🔄 处理中…";
+      return ":OnIt: 处理中…";
     default:
       return assertNeverStatus(status);
   }
@@ -130,7 +130,12 @@ function buildPermissionCard(
     );
   }
 
-  return buildV2Card("⏳ 待确认", HEADER_TEMPLATE_PERMISSION, elements, "⏳ 等待确认");
+  return buildV2Card(
+    ":OneSecond: 待确认",
+    HEADER_TEMPLATE_PERMISSION,
+    elements,
+    ":OneSecond: 等待确认",
+  );
 }
 
 function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: string): object {
@@ -143,7 +148,7 @@ function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: st
         content: `**${toolKind}**: ${toolTitle}\n\n已选择: **${selectedName}**`,
       },
     ],
-    "✅ 已完成",
+    ":OK: 已完成",
   );
 }
 
@@ -161,7 +166,7 @@ function buildExpiredCard(reason: string): object {
     "已失效",
     HEADER_TEMPLATE_EXPIRED,
     [{ tag: "markdown", content: reason }],
-    "⛔ 已取消",
+    ":CrossMark: 已取消",
   );
 }
 
@@ -195,7 +200,7 @@ function buildThoughtPanel(text: string): object {
     tag: "collapsible_panel",
     expanded: false,
     header: {
-      title: { tag: "plain_text", content: "💭 思考" },
+      title: { tag: "plain_text", content: ":Thinking: 思考" },
       vertical_align: "center",
       icon: {
         tag: "standard_icon",

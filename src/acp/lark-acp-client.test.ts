@@ -94,7 +94,7 @@ async function waitForFlush(): Promise<void> {
 }
 
 describe("LarkAcpClient chronological permission rendering", () => {
-  it("seals the current unified card before sending the permission card", async () => {
+  it("renders a pending tool as its own card before sending the permission card", async () => {
     const ops: RenderOp[] = [];
     const client = makeClient(ops);
 
@@ -114,13 +114,21 @@ describe("LarkAcpClient chronological permission rendering", () => {
     await waitForFlush();
 
     expect(ops[0]?.kind).toBe("sendUnified");
-    expect(ops[1]?.kind).toBe("permission");
-    const sealed = ops[0];
-    if (sealed?.kind !== "sendUnified") throw new Error("expected sealed unified card");
-    expect(sealed.state.status).toBe("sealed");
-    expect(sealed.state.cancellable).toBe(false);
-    expect(sealed.state.entries).toEqual([]);
+    const toolCard = ops[0];
+    if (toolCard?.kind !== "sendUnified") throw new Error("expected standalone tool card");
+    expect(toolCard.state.status).toBe("calling_tool");
+    expect(toolCard.state.cancellable).toBe(false);
+    expect(toolCard.state.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "tool_edit",
+        title: "Modifying config",
+        toolKind: "edit",
+        status: "pending",
+      },
+    ]);
 
+    expect(ops[1]?.kind).toBe("permission");
     const permission = ops[1];
     if (permission?.kind !== "permission") throw new Error("expected permission card");
     client.handleCardAction(permission.requestId, "allow");
@@ -129,7 +137,7 @@ describe("LarkAcpClient chronological permission rendering", () => {
     });
   });
 
-  it("renders the approved tool result in a new C2 card with title/kind restored", async () => {
+  it("renders the approved tool result in its standalone card with title/kind restored", async () => {
     const ops: RenderOp[] = [];
     const client = makeClient(ops);
 
@@ -157,6 +165,91 @@ describe("LarkAcpClient chronological permission rendering", () => {
         title: "Modifying config",
         toolKind: "edit",
         status: "completed",
+      },
+    ]);
+  });
+
+  it("patches tool output into the same standalone tool card", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_edit",
+        title: "Edit file",
+        kind: "edit",
+        status: "pending",
+      },
+    });
+    await client.sessionUpdate(completedToolUpdate());
+
+    const sends = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    const patches = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(sends).toHaveLength(1);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.cardId).toBe("card_1");
+    expect(patches[0]?.state.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "tool_edit",
+        title: "Edit file",
+        toolKind: "edit",
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("renders each tool call in a separate card", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_read",
+        title: "Read file",
+        kind: "read",
+        status: "pending",
+      },
+    });
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_edit",
+        title: "Edit file",
+        kind: "edit",
+        status: "pending",
+      },
+    });
+
+    const sends = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    expect(sends).toHaveLength(2);
+    expect(sends[0]?.state.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "tool_read",
+        title: "Read file",
+        toolKind: "read",
+        status: "pending",
+      },
+    ]);
+    expect(sends[1]?.state.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "tool_edit",
+        title: "Edit file",
+        toolKind: "edit",
+        status: "pending",
       },
     ]);
   });

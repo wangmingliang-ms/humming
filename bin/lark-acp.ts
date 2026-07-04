@@ -41,7 +41,13 @@ import type {
   AgentResolver,
   ResolvedAgentInvocation,
 } from "../src/index.js";
-import { buildRegistry, resolveAgent, type Registry, type UserPresetPatch } from "./agents.js";
+import {
+  buildRegistry,
+  resolveAgent,
+  type Registry,
+  type ResolvedAgent,
+  type UserPresetPatch,
+} from "./agents.js";
 import {
   startBridge,
   stopBridge,
@@ -52,10 +58,26 @@ import {
   DEFAULT_LOG_LINES,
 } from "./process-control.js";
 
-// Resolved from dist/bin/lark-acp.js, so the package.json sits two levels up.
-const { version: VERSION } = createRequire(import.meta.url)("../../package.json") as {
-  version: string;
-};
+/**
+ * Package version for `--version` / help text. Resolved lazily and tolerantly:
+ * the built CLI lives at `dist/bin/lark-acp.js` (package.json two levels up),
+ * but when this module is imported from source (e.g. a vitest unit test) that
+ * relative path differs. Never throw at import time over a cosmetic string —
+ * fall back to `"?"` if resolution fails.
+ */
+function resolveVersion(): string {
+  for (const rel of ["../../package.json", "../package.json"]) {
+    try {
+      const pkg = createRequire(import.meta.url)(rel) as { version?: string };
+      if (typeof pkg.version === "string") return pkg.version;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return "?";
+}
+
+const VERSION = resolveVersion();
 
 const APP_NAME = "lark-acp";
 const CONFIG_FILE = "config.json";
@@ -72,6 +94,12 @@ const ENV_PERMISSION_MODE = "LARK_ACP_PERMISSION_MODE";
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
 const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
+/**
+ * Agent used when neither `--agent` nor settings.json `runtime.agent` names one.
+ * Makes a bare `lark-acp start` / `lark-acp proxy` work out-of-the-box on a
+ * fresh machine (claude authenticates via the local `claude` CLI, no API key).
+ */
+const DEFAULT_AGENT = "claude";
 
 // ---------- paths ---------------------------------------------------------
 
@@ -190,6 +218,8 @@ type FileCredentials = {
 
 type FileRuntime = {
   readonly cwd?: string;
+  /** Default agent (preset id or raw command) for chats with no `--agent`/`/bind`. */
+  readonly agent?: string;
   readonly idleTimeoutMinutes?: number;
   readonly maxChats?: number;
   readonly hideThoughts?: boolean;
@@ -310,6 +340,7 @@ function readConfigFile(filePath: string): FileConfig {
 
   const runtime: FileRuntime = {
     ...optStringField("runtime.cwd", runtimeObj["cwd"]),
+    ...optStringField("runtime.agent", runtimeObj["agent"]),
     ...optNumberField(
       "runtime.idleTimeoutMinutes",
       asNonNegIntOpt("runtime.idleTimeoutMinutes", runtimeObj["idleTimeoutMinutes"]),
@@ -634,13 +665,11 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     agentExtraArgs = trailing;
   } else {
+    // No --agent and no `-- <cmd>`: leave the agent unset here. runProxy
+    // resolves it from settings.json `runtime.agent`, then the built-in
+    // default — so a bare `proxy` / `start` works with zero config on a fresh
+    // machine. `trailing[0]` is undefined when nothing follows `--`.
     agentRawCommand = trailing[0];
-    if (!agentRawCommand) {
-      throw new CliError(
-        "proxy requires either --agent <preset> or a command after `--`. " +
-          "Example: lark-acp proxy --agent claude",
-      );
-    }
     agentExtraArgs = trailing.slice(1);
   }
 
@@ -904,6 +933,9 @@ function printHelp(): void {
     `Subcommands:`,
     `  proxy                  Spawn an ACP agent subprocess and bridge it to Lark.`,
     `    --agent <preset>     Use a built-in preset: ${presetIds}`,
+    `                         Optional — defaults to settings.json runtime.agent,`,
+    `                         else the built-in \`${DEFAULT_AGENT}\`. So a bare`,
+    `                         \`${APP_NAME} proxy\` / \`${APP_NAME} start\` just works.`,
     `    -- <cmd> [args...]   Or pass a raw command. Tokens after \`--\` are forwarded`,
     `                         verbatim, so the agent's own flags are never re-parsed.`,
     `                         Combined with --agent, extra tokens are appended to the`,
@@ -926,6 +958,7 @@ function printHelp(): void {
     `    "dataDir": "./var/lark-acp",`,
     `    "runtime": {`,
     `      "cwd": "/work/project",`,
+    `      "agent": "claude",`,
     `      "idleTimeoutMinutes": ${DEFAULT_IDLE_TIMEOUT_MINUTES},`,
     `      "maxChats": ${DEFAULT_MAX_CHATS},`,
     `      "hideThoughts": false,`,
@@ -1020,14 +1053,26 @@ function makeAgentResolver(registry: Registry): AgentResolver {
 }
 
 /**
- * Resolve the CLI-provided `--agent` / raw command into the default agent
- * invocation. This is the agent used for chats with no explicit `/bind`,
- * and the fallback when `/bind <path>` names no agent.
+ * Resolve the default agent invocation — the agent used for chats with no
+ * explicit `/bind`, and the fallback when `/bind <path>` names no agent.
  *
- * @throws {CliError} when `--agent` names an unknown preset, or neither an
- *         agent preset nor a raw command was provided.
+ * Precedence:
+ *   1. CLI `--agent <preset>` (with any extra args after it)
+ *   2. CLI raw command (`proxy -- <cmd> [args]`)
+ *   3. settings.json `runtime.agent` (a preset id or a raw command string)
+ *   4. built-in {@link DEFAULT_AGENT} (`claude`)
+ *
+ * Steps 3–4 let a bare `lark-acp start` / `lark-acp proxy` work out-of-the-box
+ * — no `--agent` required — which is what a fresh-machine install expects.
+ *
+ * @throws {CliError} when `--agent` names an unknown preset, or when the
+ *         settings.json `runtime.agent` string cannot be resolved.
  */
-function resolveDefaultAgent(args: ParsedArgs, registry: Registry): ResolvedAgentInvocation {
+function resolveDefaultAgent(
+  args: ParsedArgs,
+  registry: Registry,
+  fallbackAgent: string | undefined,
+): ResolvedAgentInvocation {
   if (args.agentPreset !== undefined) {
     const entry = registry.get(args.agentPreset);
     if (!entry) {
@@ -1043,15 +1088,34 @@ function resolveDefaultAgent(args: ParsedArgs, registry: Registry): ResolvedAgen
       label: args.agentPreset,
     };
   }
-  if (args.agentRawCommand === undefined) {
-    throw new CliError("internal: runProxy called without an agent command");
+  if (args.agentRawCommand !== undefined) {
+    const command = args.agentRawCommand;
+    const cmdArgs = [...args.agentExtraArgs];
+    return {
+      command,
+      args: cmdArgs,
+      label: `${command} ${cmdArgs.join(" ")}`.trimEnd(),
+    };
   }
-  const command = args.agentRawCommand;
-  const cmdArgs = [...args.agentExtraArgs];
+  // No agent on the CLI — fall back to settings.json `runtime.agent`, then to
+  // the built-in default. Resolve the selection string (preset id or raw
+  // command) the same way `/bind` does.
+  const selection = fallbackAgent ?? DEFAULT_AGENT;
+  let resolved: ResolvedAgent;
+  try {
+    resolved = resolveAgent(selection, registry);
+  } catch (err) {
+    throw new CliError(
+      `settings.json runtime.agent "${selection}" is invalid: ${formatError(err)}`,
+      { cause: err },
+    );
+  }
+  const label = resolved.id ?? `${resolved.command} ${resolved.args.join(" ")}`.trim();
   return {
-    command,
-    args: cmdArgs,
-    label: `${command} ${cmdArgs.join(" ")}`.trimEnd(),
+    command: resolved.command,
+    args: resolved.args,
+    ...(resolved.env ? { env: { ...resolved.env } } : {}),
+    label,
   };
 }
 
@@ -1069,7 +1133,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   const file = readConfigFile(configPath);
   const registry = buildRegistry(file.agents);
   const resolver = makeAgentResolver(registry);
-  const defaultAgent = resolveDefaultAgent(args, registry);
+  const defaultAgent = resolveDefaultAgent(args, registry, file.runtime.agent);
 
   const cfg = resolveConfig(args, configPath, homeDir, file);
   fs.mkdirSync(cfg.dataDir, { recursive: true });
@@ -1249,15 +1313,39 @@ function assertNever(x: never): never {
   throw new Error(`unexpected command: ${String(x)}`);
 }
 
-main().catch((err) => {
-  if (err instanceof CliError) {
-    process.stderr.write(`error: ${err.message}\n`);
-    process.exit(2);
+/**
+ * True when this module is the process entry point (run as `lark-acp …`),
+ * false when it's imported (e.g. by a vitest unit test). Lets the file export
+ * its pure helpers for testing without auto-running {@link main}. Symlinks are
+ * resolved on both sides so a global-bin install (which runs through a symlink)
+ * still matches.
+ */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(entry);
+  } catch {
+    return false;
   }
-  if (err instanceof ProcessControlError) {
-    process.stderr.write(`error: ${err.message}\n`);
+}
+
+if (isMainModule()) {
+  main().catch((err) => {
+    if (err instanceof CliError) {
+      process.stderr.write(`error: ${err.message}\n`);
+      process.exit(2);
+    }
+    if (err instanceof ProcessControlError) {
+      process.stderr.write(`error: ${err.message}\n`);
+      process.exit(1);
+    }
+    process.stderr.write(`fatal: ${formatError(err)}\n`);
     process.exit(1);
-  }
-  process.stderr.write(`fatal: ${formatError(err)}\n`);
-  process.exit(1);
-});
+  });
+}
+
+// Exported for unit tests (bin/lark-acp.test.ts). Not part of any public API —
+// the package's only entry points are the `bin` scripts and `src/index.ts`.
+export { parseArgs, resolveDefaultAgent, readConfigFile, DEFAULT_AGENT };
+export type { ParsedArgs };

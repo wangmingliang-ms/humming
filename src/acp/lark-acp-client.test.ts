@@ -205,6 +205,74 @@ describe("LarkAcpClient chronological permission rendering", () => {
     ]);
   });
 
+  it("treats status-less tool updates with output as completed", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_search",
+        title: "Search files",
+        kind: "search",
+        status: "pending",
+      },
+    });
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool_search",
+        rawOutput: "found matches",
+      },
+    });
+
+    const patches = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(patches.at(-1)?.state.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "tool_search",
+        title: "Search files",
+        toolKind: "search",
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("finalizes unfinished tool cards when the prompt completes", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_read",
+        title: "Read file",
+        kind: "read",
+        status: "pending",
+      },
+    });
+    await client.finalize("complete");
+
+    const patches = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(patches.at(-1)?.cardId).toBe("card_1");
+    expect(patches.at(-1)?.state.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "tool_read",
+        title: "Read file",
+        toolKind: "read",
+        status: "completed",
+      },
+    ]);
+  });
+
   it("renders each tool call in a separate card", async () => {
     const ops: RenderOp[] = [];
     const client = makeClient(ops);

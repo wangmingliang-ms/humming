@@ -57,6 +57,13 @@ function toolUpdateDetail(content: acp.ToolCallUpdate["content"] | undefined): s
   return chunks.length > 0 ? chunks.join("\n\n") : undefined;
 }
 
+function hasToolUpdateResult(update: acp.ToolCallUpdate): boolean {
+  return (
+    Object.prototype.hasOwnProperty.call(update, "rawOutput") ||
+    (Array.isArray(update.content) && update.content.length > 0)
+  );
+}
+
 interface SealedToolMeta {
   readonly title: string;
   readonly kind: string;
@@ -343,17 +350,11 @@ export class LarkAcpClient implements acp.Client {
         if (!this.showTools) return;
         const toolCallId = u.toolCallId;
         if (!toolCallId) return;
-        if (u.status !== "completed" && u.status !== "failed") return;
 
         const detail = toolUpdateDetail(u.content);
+        const status = this.resolveToolUpdateStatus(toolCallId, u);
         if (this.status !== "responding") this.status = "calling_tool";
-        await this.upsertTool(
-          toolCallId,
-          u.title ?? "unknown",
-          u.kind ?? "tool",
-          u.status as ToolStatus,
-          detail,
-        );
+        await this.upsertTool(toolCallId, u.title ?? "unknown", u.kind ?? "tool", status, detail);
         return;
       }
     }
@@ -386,6 +387,7 @@ export class LarkAcpClient implements acp.Client {
     const shouldSkipEmptyFinalCard =
       !hasRenderableState && (this.permissionBoundaryThisPrompt || this.toolCards.size > 0);
     if (!shouldSkipEmptyFinalCard) await this.renderCard({ cancellable: false });
+    await this.finalizeOutstandingToolCards(status);
     this.timeline = [];
     this.toolCards.clear();
     this.sealedToolMeta.clear();
@@ -405,6 +407,21 @@ export class LarkAcpClient implements acp.Client {
       return;
     }
     this.timeline.push({ kind, text });
+  }
+
+  private resolveToolUpdateStatus(toolCallId: string, update: acp.ToolCallUpdate): ToolStatus {
+    if (update.status !== undefined && update.status !== null) return update.status as ToolStatus;
+    if (hasToolUpdateResult(update)) return "completed";
+    return this.toolCards.get(toolCallId)?.entry.status ?? "in_progress";
+  }
+
+  private async finalizeOutstandingToolCards(promptStatus: AgentStatus): Promise<void> {
+    const terminalStatus: ToolStatus = promptStatus === "complete" ? "completed" : "failed";
+    for (const [toolCallId, tool] of this.toolCards) {
+      if (tool.entry.status === "completed" || tool.entry.status === "failed") continue;
+      tool.entry.status = terminalStatus;
+      await this.renderToolCard(toolCallId);
+    }
   }
 
   private async upsertTool(

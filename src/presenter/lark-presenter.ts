@@ -273,14 +273,6 @@ export class LarkCardPresenter implements LarkPresenter {
     }
   }
 
-  async addReaction(messageId: string, emoji?: string): Promise<string | null> {
-    return this.http.addReaction(messageId, emoji);
-  }
-
-  async removeReaction(messageId: string, reactionId: string): Promise<void> {
-    await this.http.removeReaction(messageId, reactionId);
-  }
-
   async sendInterruptCard(
     messageId: string,
     params: acp.RequestPermissionRequest,

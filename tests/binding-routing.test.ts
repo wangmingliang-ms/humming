@@ -35,10 +35,6 @@ class RecordingPresenter implements LarkPresenter {
   async replyText(_messageId: string, text: string): Promise<void> {
     this.texts.push(text);
   }
-  async addReaction(): Promise<string | null> {
-    return null;
-  }
-  async removeReaction(): Promise<void> {}
   async sendInterruptCard(): Promise<string | null> {
     return null;
   }

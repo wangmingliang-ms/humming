@@ -1,7 +1,7 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type { AgentStatus, LarkPresenter } from "../presenter/presenter.js";
-import { LarkAcpClient, type PermissionMode, type SessionStatus } from "../acp/lark-acp-client.js";
+import { LarkAcpClient, type PermissionMode } from "../acp/lark-acp-client.js";
 import {
   spawnAgent,
   spawnAndResumeAgent,
@@ -49,24 +49,7 @@ interface ChatRuntimeState {
   lastActivity: number;
   /** Last messageId we processed — used to attach exit notices to a thread. */
   lastMessageId: string | null;
-  /** Current status reaction per user message. */
-  statusReactions: Map<string, StatusReaction>;
-  /** Serialises status reaction updates per user message so fast transitions cannot reorder. */
-  statusReactionUpdates: Map<string, Promise<void>>;
 }
-
-interface StatusReaction {
-  emoji: string;
-  reactionId: string;
-}
-
-const SESSION_STATUS_REACTION: Record<SessionStatus, string> = {
-  processing: "OnIt",
-  waiting: "OneSecond",
-  complete: "CheckMark",
-  failed: "ERROR",
-  cancelled: "CrossMark",
-};
 
 /**
  * Per-chat ACP runtime: owns one agent subprocess, one `LarkAcpClient`,
@@ -189,10 +172,6 @@ export class ChatRuntime {
       showCancelButton: this.opts.showCancelButton,
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
       permissionMode: this.opts.permissionMode,
-      callbacks: {
-        onTyping: () => this.setStatusReaction(firstMessage.messageId, "processing"),
-        onStatus: (status) => this.setStatusReaction(firstMessage.messageId, status),
-      },
     });
 
     const spawnOpts: SpawnAgentOptions = {
@@ -227,8 +206,6 @@ export class ChatRuntime {
       processing: false,
       lastActivity: Date.now(),
       lastMessageId: firstMessage.messageId,
-      statusReactions: new Map(),
-      statusReactionUpdates: new Map(),
     };
   }
 
@@ -268,11 +245,6 @@ export class ChatRuntime {
         const pending = state.queue.shift()!;
         state.lastMessageId = pending.messageId;
 
-        state.client.updateCallbacks({
-          onTyping: () => this.setStatusReaction(pending.messageId, "processing"),
-          onStatus: (status) => this.setStatusReaction(pending.messageId, status),
-        });
-
         state.client.setContext(pending.messageId, pending.chatId, this.opts.threadId);
 
         this.promptInFlight = true;
@@ -291,7 +263,6 @@ export class ChatRuntime {
   }
 
   private async runPrompt(state: ChatRuntimeState, pending: PendingMessage): Promise<void> {
-    await this.setStatusReaction(pending.messageId, "processing");
     this.logger.info("sending prompt to agent");
 
     const result = await this.promptOrDisconnect(state, pending);
@@ -387,47 +358,6 @@ export class ChatRuntime {
       });
     } catch (err) {
       this.logger.warn({ err }, "session store save failed");
-    }
-  }
-
-  private async setStatusReaction(messageId: string, status: SessionStatus): Promise<void> {
-    const state = this.state;
-    if (!state) return;
-
-    const previous = state.statusReactionUpdates.get(messageId) ?? Promise.resolve();
-    const next = previous
-      .catch(() => {})
-      .then(() => this.applyStatusReaction(state, messageId, status));
-    state.statusReactionUpdates.set(messageId, next);
-    await next;
-    if (state.statusReactionUpdates.get(messageId) === next) {
-      state.statusReactionUpdates.delete(messageId);
-    }
-  }
-
-  private async applyStatusReaction(
-    state: ChatRuntimeState,
-    messageId: string,
-    status: SessionStatus,
-  ): Promise<void> {
-    const emoji = SESSION_STATUS_REACTION[status];
-    const current = state.statusReactions.get(messageId);
-    if (current?.emoji === emoji) return;
-
-    const reactionId = await this.opts.presenter.addReaction(messageId, emoji).catch((err) => {
-      this.logger.debug({ err, messageId, emoji, status }, "add status reaction failed");
-      return null;
-    });
-    if (!reactionId) return;
-
-    state.statusReactions.set(messageId, { emoji, reactionId });
-    if (current) {
-      await this.opts.presenter.removeReaction(messageId, current.reactionId).catch((err) => {
-        this.logger.debug(
-          { err, messageId, emoji: current.emoji },
-          "remove old status reaction failed",
-        );
-      });
     }
   }
 }

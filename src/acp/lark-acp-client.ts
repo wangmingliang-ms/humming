@@ -10,7 +10,6 @@ import type {
   UnifiedCardState,
 } from "../presenter/presenter.js";
 
-const TYPING_INTERVAL_MS = 5_000;
 const CARD_FLUSH_DEBOUNCE_MS = 100;
 
 const PERMISSION_TIMEOUT_REASON = "用户未在规定时间内响应，已自动取消";
@@ -33,15 +32,6 @@ interface SealedSegment {
   readonly cardId: string;
   readonly entries: readonly TimelineEntry[];
 }
-
-export interface LarkAcpClientCallbacks {
-  /** Called whenever the agent emits activity — used to refresh "typing" indicator. */
-  onTyping: () => Promise<void>;
-  /** Called when the prompt's user-visible session status changes. */
-  onStatus: (status: SessionStatus) => Promise<void>;
-}
-
-export type SessionStatus = "processing" | "waiting" | "complete" | "failed" | "cancelled";
 
 /**
  * Strategy for handling agent-side permission requests.
@@ -73,7 +63,6 @@ export interface LarkAcpClientOptions {
    * When `false`, the only way to cancel is via a chat command.
    */
   showCancelButton: boolean;
-  callbacks: LarkAcpClientCallbacks;
   /** Resolve a pending permission as `cancelled` after this many ms (0 = never). */
   permissionTimeoutMs: number;
   /** Permission gate strategy — see {@link PermissionMode}. */
@@ -96,11 +85,8 @@ export class LarkAcpClient implements acp.Client {
   private readonly showCancelButton: boolean;
   private readonly permissionTimeoutMs: number;
   private readonly permissionMode: PermissionMode;
-  private callbacks: LarkAcpClientCallbacks;
-
   private timeline: TimelineEntry[] = [];
   private status: AgentStatus = "thinking";
-  private lastTypingAt = 0;
   private currentMessageId = "";
   private currentChatId = "";
   private currentThreadId: string | null = null;
@@ -128,11 +114,6 @@ export class LarkAcpClient implements acp.Client {
     this.showCancelButton = opts.showCancelButton;
     this.permissionTimeoutMs = opts.permissionTimeoutMs;
     this.permissionMode = opts.permissionMode;
-    this.callbacks = opts.callbacks;
-  }
-
-  updateCallbacks(cbs: LarkAcpClientCallbacks): void {
-    this.callbacks = cbs;
   }
 
   /** Bind the current Lark message context so cards reply to the right message. */
@@ -160,7 +141,6 @@ export class LarkAcpClient implements acp.Client {
     }
 
     const requestId = crypto.randomUUID();
-    await this.updateSessionStatus("waiting");
     await this.sealCard(params);
     this.permissionBoundaryThisPrompt = true;
 
@@ -269,7 +249,6 @@ export class LarkAcpClient implements acp.Client {
     if (!pp) return false;
     this.disposePending(requestId);
     pp.resolve({ outcome: { outcome: "selected", optionId } });
-    this.updateSessionStatus("processing");
     return true;
   }
 
@@ -284,7 +263,6 @@ export class LarkAcpClient implements acp.Client {
     if (!pp) return;
     this.disposePending(requestId);
     pp.resolve({ outcome: { outcome: "cancelled" } });
-    this.updateSessionStatus("cancelled");
 
     const cardId = pp.cardMessageId;
     if (cardId) {
@@ -312,7 +290,6 @@ export class LarkAcpClient implements acp.Client {
           this.status = "responding";
           this.scheduleFlush();
         }
-        await this.maybeSendTyping();
         return;
 
       case "agent_thought_chunk":
@@ -321,7 +298,6 @@ export class LarkAcpClient implements acp.Client {
           if (this.status !== "responding") this.status = "thinking";
           this.scheduleFlush();
         }
-        await this.maybeSendTyping();
         return;
 
       case "tool_call": {
@@ -339,7 +315,6 @@ export class LarkAcpClient implements acp.Client {
         );
         this.status = "calling_tool";
         this.scheduleFlush();
-        await this.maybeSendTyping();
         return;
       }
 
@@ -409,8 +384,6 @@ export class LarkAcpClient implements acp.Client {
     this.cardId = null;
     this.cardCreating = null;
     this.permissionBoundaryThisPrompt = false;
-    this.lastTypingAt = 0;
-    await this.updateSessionStatus(statusToSessionStatus(status));
     this.status = "thinking";
   }
 
@@ -508,39 +481,4 @@ export class LarkAcpClient implements acp.Client {
       this.flushing = false;
     }
   }
-
-  private async maybeSendTyping(): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastTypingAt < TYPING_INTERVAL_MS) return;
-    this.lastTypingAt = now;
-    await this.callbacks.onTyping().catch((err) => this.logger.debug({ err }, "onTyping rejected"));
-  }
-
-  private async updateSessionStatus(status: SessionStatus): Promise<void> {
-    await this.callbacks
-      .onStatus(status)
-      .catch((err) => this.logger.debug({ err, status }, "status reaction update rejected"));
-  }
-}
-
-function statusToSessionStatus(status: AgentStatus): SessionStatus {
-  switch (status) {
-    case "complete":
-      return "complete";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    case "thinking":
-    case "calling_tool":
-    case "responding":
-    case "sealed":
-      return "processing";
-    default:
-      return assertNeverAgentStatus(status);
-  }
-}
-
-function assertNeverAgentStatus(x: never): never {
-  throw new Error(`unexpected agent status: ${String(x)}`);
 }

@@ -22,10 +22,6 @@ import {
 class RecordingPresenter implements LarkPresenter {
   readonly notices: NoticeCardSpec[] = [];
   async replyText(): Promise<void> {}
-  async addReaction(): Promise<string | null> {
-    return null;
-  }
-  async removeReaction(): Promise<void> {}
   async sendInterruptCard(): Promise<string | null> {
     return null;
   }

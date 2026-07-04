@@ -1,8 +1,6 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { LarkLogger } from "../logger/logger.js";
 
-const REACTION_THINKING = "THINKING";
-
 // `bot/v3/info` is the only Lark Open API the official SDK doesn't surface
 // as a typed method (it has no `client.bot` namespace), so we hit it raw.
 // All other endpoints below go through the SDK's typed clients.
@@ -178,30 +176,6 @@ export class LarkHttpClient {
       path: { message_id: messageId },
       data: { content: JSON.stringify(card) },
     });
-  }
-
-  /** Add an emoji reaction. Returns the reaction id (needed to remove it). */
-  async addReaction(messageId: string, emoji: string = REACTION_THINKING): Promise<string | null> {
-    try {
-      const res = await this.client.im.messageReaction.create({
-        path: { message_id: messageId },
-        data: { reaction_type: { emoji_type: emoji } },
-      });
-      return res.data?.reaction_id ?? null;
-    } catch (err) {
-      this.logger.warn({ err, messageId }, "addReaction failed");
-      return null;
-    }
-  }
-
-  async removeReaction(messageId: string, reactionId: string): Promise<void> {
-    try {
-      await this.client.im.messageReaction.delete({
-        path: { message_id: messageId, reaction_id: reactionId },
-      });
-    } catch (err) {
-      this.logger.debug({ err, messageId, reactionId }, "removeReaction best-effort failed");
-    }
   }
 
   /**

@@ -70,12 +70,6 @@ export interface LarkPresenter {
    */
   replyText(messageId: string, text: string): Promise<void>;
 
-  /** Add a "typing" indicator. Returns an opaque id (or null on failure). */
-  addReaction(messageId: string, emoji?: string): Promise<string | null>;
-
-  /** Remove a previously-added reaction. Best-effort. */
-  removeReaction(messageId: string, reactionId: string): Promise<void>;
-
   /**
    * Render an ACP permission request as an interactive card.
    *

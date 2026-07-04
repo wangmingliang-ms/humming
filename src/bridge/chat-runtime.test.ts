@@ -90,13 +90,18 @@ describe("ChatRuntime idle-eviction getters (regression: evicted mid-spawn)", ()
 /** Records every card state the runtime renders, so we can assert the final
  *  one drops the cancel button. All methods are inert except the ones the
  *  cancel-on-disconnect path touches. */
-function recordingPresenter(states: UnifiedCardState[]): LarkPresenter {
+function recordingPresenter(
+  states: UnifiedCardState[],
+  notices: Array<{ title: string; body: string; template: string }> = [],
+): LarkPresenter {
   return {
     replyText: async () => {},
     sendInterruptCard: async () => null,
     updatePermissionCard: async () => {},
     expirePermissionCard: async () => {},
-    replyNoticeCard: async () => {},
+    replyNoticeCard: async (_id, notice) => {
+      notices.push({ title: notice.title, body: notice.body, template: notice.template });
+    },
     sendUnifiedCard: async (_id, state) => {
       states.push(structuredClone(state));
       return "card_msg_1";
@@ -124,6 +129,8 @@ interface FakeAgentHandle {
   agent: AgentProcess;
   /** Resolve the in-flight prompt with a stop reason (normal turn end). */
   resolvePrompt: (stopReason: acp.StopReason) => void;
+  /** Simulate the OS child-process exit event. */
+  exitProcess: (code: number | null, signal?: NodeJS.Signals | null) => void;
   /** Simulate the agent process's stdout/stream closing (process died). */
   closeConnection: () => void;
 }
@@ -147,6 +154,17 @@ function makeFakeAgent(): FakeAgentHandle {
     resolvePrompt = resolve;
   });
 
+  let exitHandler: ((code: number | null, signal: NodeJS.Signals | null) => void) | null = null;
+  const proc = {
+    killed: false,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    on: (event: string, handler: (code: number | null, signal: NodeJS.Signals | null) => void) => {
+      if (event === "exit") exitHandler = handler;
+      return proc;
+    },
+  };
+
   const connection = {
     // Stays pending until `resolvePrompt` is called — the crux of the bug is
     // that the SDK never rejects this when the stream closes.
@@ -161,16 +179,22 @@ function makeFakeAgent(): FakeAgentHandle {
   } as unknown as AgentProcess["connection"];
 
   const agent: AgentProcess = {
-    process: { killed: false, exitCode: null, on: () => {} } as unknown as AgentProcess["process"],
+    process: proc as unknown as AgentProcess["process"],
     connection,
     sessionId: "sess_fake",
     capabilities: {},
-    getRecentStderr: () => [],
+    getRecentStderr: () => ["fatal: boom"],
   };
 
   return {
     agent,
     resolvePrompt: (stopReason) => resolvePrompt({ stopReason }),
+    exitProcess: (code, signal = null) => {
+      proc.exitCode = code;
+      proc.signalCode = signal;
+      proc.killed = code === null && signal !== null;
+      exitHandler?.(code, signal);
+    },
     closeConnection: () => {
       abort.abort();
       resolveClosed();
@@ -190,12 +214,13 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
   it("renders a non-cancellable final card after the connection closes", async () => {
     const states: UnifiedCardState[] = [];
+    const notices: Array<{ title: string; body: string; template: string }> = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
 
     const runtime = new ChatRuntime({
       ...opts(),
-      presenter: recordingPresenter(states),
+      presenter: recordingPresenter(states, notices),
       sessionStore: stubSessionStore(),
     });
 
@@ -214,7 +239,74 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       () => {
         const last = states.at(-1);
         expect(last, "expected at least one rendered card").toBeDefined();
+        expect(last?.status, "final card should read as failed").toBe("failed");
         expect(last?.cancellable, "final card must drop the cancel button").toBe(false);
+        expect(notices.at(-1)).toMatchObject({ title: "⚠️ Agent 异常退出", template: "red" });
+      },
+      { timeout: 1_000, interval: 20 },
+    );
+  });
+
+  it("marks the card cancelled when a requested cancellation closes the agent connection", async () => {
+    const states: UnifiedCardState[] = [];
+    const notices: Array<{ title: string; body: string; template: string }> = [];
+    const fake = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(fake.agent);
+
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter(states, notices),
+      sessionStore: stubSessionStore(),
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "long task" }],
+      messageId: "om_1",
+      chatId: "oc_test",
+    });
+    await runtime.cancel();
+    fake.closeConnection();
+
+    await vi.waitFor(
+      () => {
+        expect(states.at(-1)?.status).toBe("cancelled");
+        expect(states.at(-1)?.cancellable).toBe(false);
+        expect(notices.at(-1)).toMatchObject({ title: "⛔ Agent 已中断", template: "grey" });
+      },
+      { timeout: 1_000, interval: 20 },
+    );
+  });
+
+  it("shows a notice when an idle agent exits unexpectedly", async () => {
+    const states: UnifiedCardState[] = [];
+    const notices: Array<{ title: string; body: string; template: string }> = [];
+    const fake = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(fake.agent);
+
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter(states, notices),
+      sessionStore: stubSessionStore(),
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "hello" }],
+      messageId: "om_idle",
+      chatId: "oc_test",
+    });
+    fake.resolvePrompt("end_turn");
+    await vi.waitFor(() => expect(runtime.processing).toBe(false), {
+      timeout: 1_000,
+      interval: 20,
+    });
+
+    fake.exitProcess(42, null);
+
+    await vi.waitFor(
+      () => {
+        expect(notices.at(-1)).toMatchObject({ title: "⚠️ Agent 异常退出", template: "red" });
+        expect(notices.at(-1)?.body).toContain("code=42");
+        expect(notices.at(-1)?.body).toContain("fatal: boom");
       },
       { timeout: 1_000, interval: 20 },
     );

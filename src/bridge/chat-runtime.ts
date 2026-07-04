@@ -64,6 +64,8 @@ export class ChatRuntime {
   private readonly logger: LarkLogger;
   private state: ChatRuntimeState | null = null;
   private aborted = false;
+  /** True after the user pressed Stop or sent /cancel for the in-flight prompt. */
+  private cancelRequested = false;
   /** Set while a prompt is in-flight — exit handler defers to handlePromptError then. */
   private promptInFlight = false;
   /**
@@ -110,6 +112,10 @@ export class ChatRuntime {
    */
   async enqueue(message: PendingMessage): Promise<void> {
     if (!this.state) {
+      // A previous agent crash / idle exit tears down `state`; the next user
+      // message should spawn a fresh agent, not inherit the old aborted flag.
+      this.aborted = false;
+      this.cancelRequested = false;
       this.booting = true;
       try {
         this.state = await this.bootstrap(message);
@@ -137,6 +143,7 @@ export class ChatRuntime {
   async cancel(): Promise<void> {
     if (!this.state) return;
     this.logger.info("cancelling current task");
+    this.cancelRequested = true;
     this.state.client.cancelPendingPermission();
     try {
       await this.state.agent.connection.cancel({ sessionId: this.state.agent.sessionId });
@@ -214,7 +221,7 @@ export class ChatRuntime {
     // error path / shutdown already covers user-facing notification.
     if (this.promptInFlight || this.aborted || !this.state) return;
 
-    const exitedNormally = code === 0 || code === null;
+    const exitedNormally = code === 0 && signal === null;
     if (exitedNormally) {
       this.logger.info({ code, signal }, "agent exited while idle");
     } else {
@@ -228,11 +235,13 @@ export class ChatRuntime {
 
     if (!messageId || exitedNormally) return;
 
-    const stderrSuffix =
-      tail.length > 0 ? `\n\nstderr (最后 ${tail.length} 行):\n${tail.join("\n")}` : "";
-    const summary = `⚠️ Agent 进程意外退出 (code=${code ?? "null"}, signal=${signal ?? "null"})${stderrSuffix}`;
+    const body = formatExitBody(`Agent 进程意外退出 (${formatExitCode(code, signal)})`, tail);
     this.opts.presenter
-      .replyText(messageId, summary)
+      .replyNoticeCard(messageId, {
+        title: "⚠️ Agent 异常退出",
+        body,
+        template: "red",
+      })
       .catch((err) => this.logger.warn({ err }, "exit notice reply failed"));
   }
 
@@ -255,6 +264,7 @@ export class ChatRuntime {
           if (!this.state) return; // shut down by error handler
         } finally {
           this.promptInFlight = false;
+          this.cancelRequested = false;
         }
       }
     } finally {
@@ -310,36 +320,57 @@ export class ChatRuntime {
     const isAuthError = isAuthenticationError(err);
     const disconnected = err instanceof AgentDisconnectedError;
     const procDead = state.agent.process.killed || state.agent.process.exitCode !== null;
+    const cancelRequested = this.cancelRequested;
+    const exitCode = state.agent.process.exitCode;
+    const signal = state.agent.process.signalCode;
     const stderrTail = procDead ? state.agent.getRecentStderr() : [];
-    const stderrSuffix =
-      stderrTail.length > 0
-        ? `\n\nstderr (最后 ${stderrTail.length} 行):\n${stderrTail.join("\n")}`
-        : "";
+    const terminalStatus: AgentStatus = cancelRequested && !isAuthError ? "cancelled" : "failed";
 
-    // Always finalize the unified card as failed so the in-progress state
-    // doesn't get stuck. Best-effort — if presenter rejects we still surface
-    // the error via replyText below.
+    // Always finalize the unified card so the in-progress state doesn't get
+    // stuck. Best-effort — if presenter rejects we still surface the error via
+    // a notice card below.
     await state.client
-      .finalize("failed")
+      .finalize(terminalStatus)
       .catch((finalErr) => this.logger.debug({ err: finalErr }, "finalize after error rejected"));
 
     // A closed connection means the agent is gone even if the OS hasn't
     // surfaced an exit code yet — tear it down so the next message respawns.
     if (isAuthError || procDead || disconnected) {
       this.shutdown();
-      const summary = isAuthError
-        ? `⚠️ Agent authentication failed: ${errMsg}${stderrSuffix}`
-        : `⚠️ Agent crashed: ${errMsg}${stderrSuffix}`;
-      this.logger.error({ err, isAuthError, disconnected }, "agent died");
+      const title = isAuthError
+        ? "⚠️ Agent 认证失败"
+        : cancelRequested
+          ? "⛔ Agent 已中断"
+          : "⚠️ Agent 异常退出";
+      const body = isAuthError
+        ? formatExitBody(`Agent authentication failed: ${errMsg}`, stderrTail)
+        : cancelRequested
+          ? formatExitBody(
+              `已请求中断，agent 连接已关闭。${formatExitCode(exitCode, signal)}`,
+              stderrTail,
+            )
+          : formatExitBody(
+              `Agent crashed: ${errMsg}. ${formatExitCode(exitCode, signal)}`,
+              stderrTail,
+            );
+      this.logger.error({ err, isAuthError, disconnected, cancelRequested }, "agent died");
       await this.opts.presenter
-        .replyText(pending.messageId, summary)
+        .replyNoticeCard(pending.messageId, {
+          title,
+          body,
+          template: cancelRequested && !isAuthError ? "grey" : "red",
+        })
         .catch((sendErr) => this.logger.warn({ err: sendErr }, "error reply failed"));
       return;
     }
 
     this.logger.warn({ err }, "agent error");
     await this.opts.presenter
-      .replyText(pending.messageId, `⚠️ Agent error: ${errMsg}`)
+      .replyNoticeCard(pending.messageId, {
+        title: "⚠️ Agent 错误",
+        body: `Agent error: ${errMsg}`,
+        template: "red",
+      })
       .catch((sendErr) => this.logger.warn({ err: sendErr }, "error reply failed"));
   }
 
@@ -360,6 +391,18 @@ export class ChatRuntime {
       this.logger.warn({ err }, "session store save failed");
     }
   }
+}
+
+function formatExitCode(code: number | null, signal: NodeJS.Signals | null | undefined): string {
+  return `code=${code ?? "null"}, signal=${signal ?? "null"}`;
+}
+
+function formatExitBody(reason: string, stderrTail: readonly string[]): string {
+  const stderrSuffix =
+    stderrTail.length > 0
+      ? `\n\nstderr (最后 ${stderrTail.length} 行):\n${stderrTail.join("\n")}`
+      : "";
+  return `${reason}${stderrSuffix}`;
 }
 
 function stopReasonToStatus(reason: acp.StopReason): AgentStatus {

@@ -18,7 +18,7 @@ const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> 
   thinking: { content: "💭 思考中...", template: "wathet" },
   calling_tool: { content: "🛠 调用工具...", template: "blue" },
   responding: { content: "✍️ 回复中...", template: "blue" },
-  sealed: { content: "🔄 进行当中", template: "blue" },
+  sealed: { content: "✅ 已完成", template: "green" },
   complete: { content: "✅ 已完成", template: "green" },
   cancelled: { content: "⛔ 已取消", template: "grey" },
   failed: { content: "⚠️ 出错", template: "red" },
@@ -44,8 +44,9 @@ function summaryForStatus(status: AgentStatus): string {
     case "thinking":
     case "calling_tool":
     case "responding":
-    case "sealed":
       return "🔄 处理中…";
+    case "sealed":
+      return "✅ 已完成";
     default:
       return assertNeverStatus(status);
   }

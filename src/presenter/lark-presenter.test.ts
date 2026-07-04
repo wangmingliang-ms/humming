@@ -90,8 +90,8 @@ describe("LarkCardPresenter card summary", () => {
       threadId: null,
     });
 
-    expect(cards[0]?.header?.title?.content).toBe("🔄 进行当中");
-    expect(cards[0]?.config?.summary?.content).toBe("🔄 处理中…");
+    expect(cards[0]?.header?.title?.content).toBe("✅ 已完成");
+    expect(cards[0]?.config?.summary?.content).toBe("✅ 已完成");
   });
 
   it("sends topic cards as in-thread replies", async () => {

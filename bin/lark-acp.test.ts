@@ -20,12 +20,23 @@ import {
   parseArgs,
   resolveDefaultAgent,
   readConfigFile,
+  migrateLegacyIfNeeded,
   DEFAULT_AGENT,
   type ParsedArgs,
 } from "./lark-acp.js";
 import { buildRegistry } from "./agents.js";
 
 const registry = buildRegistry();
+
+const silentLogger = {
+  debug(): void {},
+  info(): void {},
+  warn(): void {},
+  error(): void {},
+  child(): typeof silentLogger {
+    return silentLogger;
+  },
+};
 
 describe("parseArgs — bare subcommands need no --agent", () => {
   it("accepts a bare `proxy` (agent resolved later, not at parse time)", () => {
@@ -138,3 +149,44 @@ describe("readConfigFile — runtime.agent round-trip", () => {
     expect(() => readConfigFile(p)).toThrowError(/runtime\.agent must be a string/);
   });
 });
+
+describe("legacy migration isolation", () => {
+  let dir: string;
+  const oldXdgConfig = process.env["XDG_CONFIG_HOME"];
+  const oldXdgData = process.env["XDG_DATA_HOME"];
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-migrate-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    restoreEnv("XDG_CONFIG_HOME", oldXdgConfig);
+    restoreEnv("XDG_DATA_HOME", oldXdgData);
+  });
+
+  it("does not import legacy XDG config into an explicit --home", () => {
+    const xdgConfig = path.join(dir, "xdg-config");
+    const legacyDir = path.join(xdgConfig, "lark-acp");
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, "config.json"),
+      JSON.stringify({ credentials: { appId: "cli_legacy", appSecret: "secret" } }),
+    );
+    process.env["XDG_CONFIG_HOME"] = xdgConfig;
+    process.env["XDG_DATA_HOME"] = path.join(dir, "xdg-data");
+
+    const explicitHome = path.join(dir, "explicit-home");
+    const settings = path.join(explicitHome, "settings.json");
+    migrateLegacyIfNeeded(explicitHome, settings, silentLogger);
+
+    expect(fs.existsSync(settings)).toBe(false);
+  });
+});
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = value;
+}

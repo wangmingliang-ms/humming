@@ -77,9 +77,9 @@ curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/unin
 ### 命令格式
 
 ```
-lark-acp [global-options] proxy --agent <preset> [-- <extra-args>...]
+lark-acp [global-options] proxy [--agent <preset>] [-- <extra-args>...]
 lark-acp [global-options] proxy -- <agent-cmd> [agent-args...]
-lark-acp [global-options] start --agent <preset>   # 后台运行 proxy
+lark-acp [global-options] start [--agent <preset>]   # 后台运行 proxy
 lark-acp [global-options] stop | restart | status
 lark-acp logs [-f] [-n <lines>]
 lark-acp agents
@@ -136,7 +136,9 @@ lark-acp proxy -- node ./my-acp-server.js --port 9000
 ### 后台运行与进程管理
 
 `proxy` 是前台进程。若不想开着终端，用 `start` 把它放到后台，并用一组跨平台
-（Windows / Linux 通用）的子命令管理它的生命周期——无需 systemd、无需 shell 脚本：
+（Windows / Linux 通用）的子命令管理它的生命周期。Linux / WSL 上会优先使用
+**systemd user service** 托管（关闭 terminal 不会停）；没有 systemd 时回退到普通 detached
+子进程：
 
 ```bash
 lark-acp start --agent claude    # 后台启动（选项与 proxy 完全一致）
@@ -167,6 +169,10 @@ lark-acp stop                    # 停止后台 bridge
 - **状态文件都在 home 目录下**（`~/.lark-acp/`，可用 `--home` / `$LARK_ACP_HOME` 覆盖）：
   `bridge.pid`、`bridge.log`。`start` / `restart` 会把你传的全局 / proxy 选项、以及
   `-- <agent-cmd>` 透传部分**原样**转发给后台进程。
+- **Linux / WSL 上是真后台托管**：如果 `systemctl --user` 可用，`start` 会用
+  `systemd-run --user` 启动一个 transient service（unit 名会显示在 `status` 里），bridge
+  不再挂在当前 terminal 下面；关闭终端不会停。没有 systemd 的平台才回退到普通 detached
+  子进程。
 - **`start` 后的存活检查是安全网、不是健康检查**：它只捕获启动阶段就同步崩溃的情况
   （如 settings.json 无法解析）。凭据错误、agent 命令错误、网络问题不会让 bridge 立刻
   退出（分别会被 SDK 重试、在首条消息时才懒启动、被重试），请用 `logs` / `status`
@@ -178,7 +184,7 @@ lark-acp stop                    # 停止后台 bridge
 
 ### 配置文件
 
-CLI 读取一份配置文件（默认 `~/.config/lark-acp/config.json`），里面包含凭据和运行时默认值。优先级：CLI flag > 环境变量 > 配置文件 > 内置默认。
+CLI 读取一份配置文件（默认 `~/.lark-acp/settings.json`；旧的 `~/.config/lark-acp/config.json` 只会在默认 home 首次启动时迁移一次），里面包含凭据和运行时默认值。优先级：CLI flag > 环境变量 > 配置文件 > 内置默认。
 
 完整字段（都可选）：
 

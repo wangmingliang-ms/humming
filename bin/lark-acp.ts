@@ -112,11 +112,15 @@ const DEFAULT_AGENT = "claude";
  * Everything lark-acp owns — settings.json, sessions.json, logs, inbox —
  * lives under here.
  */
+function defaultHomeDir(): string {
+  return path.join(os.homedir(), HOME_DIR_NAME);
+}
+
 function resolveHomeDir(override: string | undefined): string {
   if (override && override.length > 0) return path.resolve(override);
   const fromEnv = process.env[ENV_HOME];
   if (fromEnv && fromEnv.length > 0) return path.resolve(fromEnv);
-  return path.join(os.homedir(), HOME_DIR_NAME);
+  return defaultHomeDir();
 }
 
 /** Legacy $XDG_CONFIG_HOME/lark-acp, falling back to ~/.config/lark-acp. */
@@ -147,8 +151,12 @@ function resolveSettingsPath(override: string | undefined, homeDir: string): str
 }
 
 /**
- * One-time migration of pre-`~/.lark-acp` installs. When the new
- * `<home>/settings.json` is absent but the legacy `~/.config/lark-acp/
+ * One-time migration of pre-`~/.lark-acp` installs. Only the real default home
+ * (`~/.lark-acp`) is eligible for legacy migration; an explicit `--home` /
+ * `$LARK_ACP_HOME` is treated as an isolated home and must not silently import
+ * credentials/bindings from the user's legacy XDG paths.
+ *
+ * When `<home>/settings.json` is absent but the legacy `~/.config/lark-acp/
  * config.json` exists, compose a fresh settings.json (config fields + any
  * legacy bindings) and copy the legacy sessions file across. Non-destructive:
  * legacy files are left in place. Idempotent: skipped once settings.json exists.
@@ -157,6 +165,7 @@ function resolveSettingsPath(override: string | undefined, homeDir: string): str
  */
 function migrateLegacyIfNeeded(homeDir: string, settingsPath: string, logger: LarkLogger): void {
   if (fs.existsSync(settingsPath)) return;
+  if (path.resolve(homeDir) !== path.resolve(defaultHomeDir())) return;
 
   const legacyConfig = path.join(legacyConfigDir(), CONFIG_FILE);
   const legacyBindings = path.join(legacyDataDir(), "bindings.json");
@@ -896,9 +905,9 @@ function printHelp(): void {
     `${APP_NAME} v${VERSION} — bridge Lark to any ACP-compatible AI agent`,
     ``,
     `Usage:`,
-    `  ${APP_NAME} [global-options] proxy --agent <preset> [-- <extra-args>...]`,
+    `  ${APP_NAME} [global-options] proxy [--agent <preset>] [-- <extra-args>...]`,
     `  ${APP_NAME} [global-options] proxy -- <agent-cmd> [agent-args]...`,
-    `  ${APP_NAME} [global-options] start --agent <preset>   (run proxy in background)`,
+    `  ${APP_NAME} [global-options] start [--agent <preset>]   (run proxy in background)`,
     `  ${APP_NAME} [global-options] stop | restart | status`,
     `  ${APP_NAME} logs [-f] [-n <lines>]`,
     `  ${APP_NAME} agents`,
@@ -943,9 +952,10 @@ function printHelp(): void {
     `  agents                 List built-in agent presets and exit.`,
     ``,
     `Process management (run the bridge in the background; cross-platform):`,
-    `  start                  Launch \`proxy\` (same options) as a background`,
-    `                         process. Records a PID under the home dir and`,
-    `                         redirects output to <home>/bridge.log.`,
+    `  start                  Launch \`proxy\` (same options) in the background.`,
+    `                         On Linux/WSL uses systemd user service when`,
+    `                         available, so closing the terminal does not stop it.`,
+    `                         Records PID under home and logs to <home>/bridge.log.`,
     `  stop                   Stop the background bridge (SIGTERM, then SIGKILL).`,
     `  restart                Stop, then start again with the same options.`,
     `  status                 Show whether the bridge is running (PID + uptime).`,
@@ -1227,6 +1237,7 @@ async function runStart(args: ParsedArgs): Promise<void> {
     homeDir: resolveHomeDir(args.home),
     selfPath: fileURLToPath(import.meta.url),
     spawnArgv,
+    workingDirectory: process.cwd(),
   });
 }
 
@@ -1239,6 +1250,7 @@ async function runRestart(args: ParsedArgs): Promise<void> {
     homeDir,
     selfPath: fileURLToPath(import.meta.url),
     spawnArgv,
+    workingDirectory: process.cwd(),
   });
 }
 
@@ -1347,5 +1359,12 @@ if (isMainModule()) {
 
 // Exported for unit tests (bin/lark-acp.test.ts). Not part of any public API —
 // the package's only entry points are the `bin` scripts and `src/index.ts`.
-export { parseArgs, resolveDefaultAgent, readConfigFile, DEFAULT_AGENT };
+export {
+  parseArgs,
+  resolveDefaultAgent,
+  readConfigFile,
+  migrateLegacyIfNeeded,
+  resolveHomeDir,
+  DEFAULT_AGENT,
+};
 export type { ParsedArgs };

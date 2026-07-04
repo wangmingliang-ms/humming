@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   bridgeLogPath,
   bridgePidPath,
+  bridgeUnitName,
   isAlive,
   readPid,
   rewriteSubcommand,
@@ -25,6 +26,12 @@ describe("path helpers", () => {
   it("compose PID and log paths under the home dir", () => {
     expect(bridgePidPath(dir)).toBe(path.join(dir, "bridge.pid"));
     expect(bridgeLogPath(dir)).toBe(path.join(dir, "bridge.log"));
+  });
+
+  it("derives a stable per-home systemd unit name", () => {
+    expect(bridgeUnitName(dir)).toMatch(/^lark-acp-bridge-[a-f0-9]{10}\.service$/);
+    expect(bridgeUnitName(dir)).toBe(bridgeUnitName(dir));
+    expect(bridgeUnitName(path.join(dir, "other"))).not.toBe(bridgeUnitName(dir));
   });
 });
 

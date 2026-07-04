@@ -15,16 +15,19 @@
  * Task Scheduler — would call `start`).
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 /** Used only in user-facing hint text; kept local to avoid coupling to the CLI. */
 const APP_NAME = "lark-acp";
 
 const PID_FILE = "bridge.pid";
 const LOG_FILE = "bridge.log";
+const SYSTEMD_UNIT_PREFIX = "lark-acp-bridge";
+const SYSTEMD_UNIT_SUFFIX = ".service";
 
 /** Default number of trailing log lines shown by `logs` (without `-n`). */
 export const DEFAULT_LOG_LINES = 40;
@@ -63,6 +66,12 @@ export function bridgePidPath(homeDir: string): string {
 /** Absolute path of the bridge log file under a home dir. */
 export function bridgeLogPath(homeDir: string): string {
   return path.join(homeDir, LOG_FILE);
+}
+
+/** Stable per-home user-systemd unit name for the managed bridge daemon. */
+export function bridgeUnitName(homeDir: string): string {
+  const digest = crypto.createHash("sha1").update(path.resolve(homeDir)).digest("hex").slice(0, 10);
+  return `${SYSTEMD_UNIT_PREFIX}-${digest}${SYSTEMD_UNIT_SUFFIX}`;
 }
 
 // ---------- pure, testable cores ------------------------------------------
@@ -137,6 +146,8 @@ export interface StartOptions {
   readonly selfPath: string;
   /** Argv to run in the background — a `proxy …` invocation (see {@link rewriteSubcommand}). */
   readonly spawnArgv: readonly string[];
+  /** Directory from which `start` was invoked; relative CLI paths keep working after daemonization. */
+  readonly workingDirectory?: string;
 }
 
 /**
@@ -158,7 +169,6 @@ export interface StartOptions {
  */
 export async function startBridge(opts: StartOptions): Promise<void> {
   const pidPath = bridgePidPath(opts.homeDir);
-  const logPath = bridgeLogPath(opts.homeDir);
 
   const existing = readPid(pidPath);
   if (existing !== null && isAlive(existing)) {
@@ -168,6 +178,90 @@ export async function startBridge(opts: StartOptions): Promise<void> {
   }
   if (existing !== null) removeQuietly(pidPath); // stale file — process is gone
 
+  const unitName = bridgeUnitName(opts.homeDir);
+  if (isUserSystemdAvailable()) {
+    const unitPid = systemdMainPid(unitName);
+    if (unitPid !== null && isAlive(unitPid)) {
+      fs.mkdirSync(opts.homeDir, { recursive: true });
+      fs.writeFileSync(pidPath, `${unitPid}\n`, "utf-8");
+      throw new ProcessControlError(
+        `bridge already running (PID ${unitPid}, systemd unit ${unitName}). Use \`${APP_NAME} restart\` or \`${APP_NAME} stop\` first.`,
+      );
+    }
+    await startBridgeWithSystemd({ ...opts, unitName });
+    return;
+  }
+
+  await startBridgeDetached(opts);
+}
+
+async function startBridgeWithSystemd(
+  opts: StartOptions & { readonly unitName: string },
+): Promise<void> {
+  const pidPath = bridgePidPath(opts.homeDir);
+  const logPath = bridgeLogPath(opts.homeDir);
+  fs.mkdirSync(opts.homeDir, { recursive: true });
+
+  // Clear a failed/collected unit with the same name before starting a new one.
+  runSystemctl(["reset-failed", opts.unitName], false);
+
+  const args = [
+    "--user",
+    "--unit",
+    opts.unitName,
+    "--collect",
+    "--property",
+    "Type=simple",
+    "--property",
+    "Restart=no",
+    "--property",
+    "KillSignal=SIGTERM",
+    "--property",
+    "StandardInput=null",
+    "--property",
+    `StandardOutput=append:${logPath}`,
+    "--property",
+    `StandardError=append:${logPath}`,
+    "--working-directory",
+    opts.workingDirectory ?? process.cwd(),
+    ...systemdEnvArgs(),
+    process.execPath,
+    opts.selfPath,
+    ...opts.spawnArgv,
+  ];
+
+  const started = spawnSync("systemd-run", args, { encoding: "utf-8" });
+  if (started.error !== undefined || started.status !== 0) {
+    throw new ProcessControlError(
+      `failed to start bridge with systemd-run: ${formatProcessFailure(started.error, started.stderr)}`,
+      { cause: started.error },
+    );
+  }
+
+  await delay(POST_SPAWN_CHECK_MS);
+  const pid = systemdMainPid(opts.unitName);
+  if (pid === null || !isAlive(pid)) {
+    removeQuietly(pidPath);
+    const tail = readLastLines(logPath, FAILURE_TAIL_LINES);
+    const status = runSystemctl(["status", opts.unitName, "--no-pager"], false);
+    const statusText =
+      status.stdout.length > 0 || status.stderr.length > 0
+        ? `\n--- systemd status ---\n${status.stdout}${status.stderr}`
+        : "";
+    const detail = tail.length > 0 ? `\n--- log tail ---\n${tail}` : "";
+    throw new ProcessControlError(
+      `bridge exited immediately after start; see ${logPath}${detail}${statusText}`,
+    );
+  }
+
+  fs.writeFileSync(pidPath, `${pid}\n`, "utf-8");
+  process.stdout.write(`bridge started (PID ${pid}, systemd unit ${opts.unitName})\n`);
+  process.stdout.write(`  logs: ${logPath}\n`);
+}
+
+async function startBridgeDetached(opts: StartOptions): Promise<void> {
+  const pidPath = bridgePidPath(opts.homeDir);
+  const logPath = bridgeLogPath(opts.homeDir);
   fs.mkdirSync(opts.homeDir, { recursive: true });
 
   // Open the log in append mode and hand the fd to the child as stdout+stderr;
@@ -177,6 +271,7 @@ export async function startBridge(opts: StartOptions): Promise<void> {
   let child: ChildProcess;
   try {
     child = spawn(process.execPath, [opts.selfPath, ...opts.spawnArgv], {
+      cwd: opts.workingDirectory ?? process.cwd(),
       detached: true,
       stdio: ["ignore", logFd, logFd],
       windowsHide: true,
@@ -219,6 +314,17 @@ export interface StopOptions {
  */
 export async function stopBridge(opts: StopOptions): Promise<boolean> {
   const pidPath = bridgePidPath(opts.homeDir);
+  const unitName = bridgeUnitName(opts.homeDir);
+  const unitPid = isUserSystemdAvailable() ? systemdMainPid(unitName) : null;
+  if (unitPid !== null && isAlive(unitPid)) {
+    process.stdout.write(`stopping bridge (PID ${unitPid}, systemd unit ${unitName})...\n`);
+    runSystemctl(["stop", unitName], true);
+    await waitForExit(unitPid, GRACEFUL_STOP_TIMEOUT_MS);
+    removeQuietly(pidPath);
+    process.stdout.write("bridge stopped\n");
+    return true;
+  }
+
   const pid = readPid(pidPath);
   if (pid === null || !isAlive(pid)) {
     removeQuietly(pidPath);
@@ -251,6 +357,18 @@ export interface StatusOptions {
  */
 export function statusBridge(opts: StatusOptions): void {
   const pidPath = bridgePidPath(opts.homeDir);
+  const unitName = bridgeUnitName(opts.homeDir);
+  const unitPid = isUserSystemdAvailable() ? systemdMainPid(unitName) : null;
+  if (unitPid !== null && isAlive(unitPid)) {
+    fs.mkdirSync(opts.homeDir, { recursive: true });
+    if (readPid(pidPath) !== unitPid) fs.writeFileSync(pidPath, `${unitPid}\n`, "utf-8");
+    const uptime = formatUptime(pidFileAgeMs(pidPath));
+    const suffix = uptime.length > 0 ? `, up ${uptime}` : "";
+    process.stdout.write(`bridge: running (PID ${unitPid}${suffix}, systemd unit ${unitName})\n`);
+    process.stdout.write(`  logs: ${bridgeLogPath(opts.homeDir)}\n`);
+    return;
+  }
+
   const pid = readPid(pidPath);
   if (pid === null || !isAlive(pid)) {
     if (pid !== null) removeQuietly(pidPath);
@@ -297,6 +415,83 @@ export async function tailLog(opts: LogsOptions): Promise<void> {
 }
 
 // ---------- internals -----------------------------------------------------
+
+function isUserSystemdAvailable(): boolean {
+  if (process.platform !== "linux") return false;
+  if (!commandSucceeds("systemd-run", ["--version"])) return false;
+  const state = spawnSync("systemctl", ["--user", "is-system-running"], { encoding: "utf-8" });
+  const text = `${state.stdout}${state.stderr}`.trim();
+  return text === "running" || text === "degraded";
+}
+
+function commandSucceeds(command: string, args: readonly string[]): boolean {
+  const result = spawnSync(command, [...args], { encoding: "utf-8" });
+  return result.error === undefined && result.status === 0;
+}
+
+function runSystemctl(
+  args: readonly string[],
+  throwOnFailure: boolean,
+): { stdout: string; stderr: string } {
+  const result = spawnSync("systemctl", ["--user", ...args], { encoding: "utf-8" });
+  if (throwOnFailure && (result.error !== undefined || result.status !== 0)) {
+    throw new ProcessControlError(
+      `systemctl --user ${args.join(" ")} failed: ${formatProcessFailure(result.error, result.stderr)}`,
+      { cause: result.error },
+    );
+  }
+  return { stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+function systemdMainPid(unitName: string): number | null {
+  const result = runSystemctl(["show", unitName, "-p", "MainPID", "--value"], false);
+  const raw = result.stdout.trim();
+  const pid = Number(raw);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return pid;
+}
+
+function systemdEnvArgs(): string[] {
+  const prefixes = [
+    "ANTHROPIC_",
+    "CLAUDE_",
+    "CODEX_",
+    "COPILOT_",
+    "GEMINI_",
+    "GITHUB_",
+    "GOOGLE_",
+    "LARK_ACP_",
+    "NODE_",
+    "NPM_",
+  ];
+  const exact = new Set([
+    "HOME",
+    "LANG",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "USER",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+  ]);
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (!exact.has(key) && !prefixes.some((prefix) => key.startsWith(prefix))) continue;
+    out.push("--setenv", `${key}=${value}`);
+  }
+  return out;
+}
+
+function formatProcessFailure(err: Error | undefined, stderr: string | null | undefined): string {
+  if (err !== undefined) return err.message;
+  const trimmed = (stderr ?? "").trim();
+  return trimmed.length > 0 ? trimmed : "unknown error";
+}
 
 /** Extract a string `errno` code (`"ENOENT"`, `"ESRCH"`, …) from an unknown throw. */
 function errnoCode(err: unknown): string | null {

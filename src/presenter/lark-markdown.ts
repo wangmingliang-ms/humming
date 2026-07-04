@@ -7,11 +7,11 @@
  * with full inline support (bold, italic, codespan, links, lists,
  * blockquotes, fenced code, ...).
  *
- * Strategy: walk the `marked` token tree to **rebuild a normalized
- * markdown string**, then hand the whole thing to a single `md` block.
- * This keeps us in control of edge cases (notably code fences without
- * a language, which Lark fails to render as code) without having to
- * regex over the raw source.
+ * Strategy: walk the `marked` token tree to **rebuild normalized markdown**.
+ * Prose blocks are coalesced into md rows, while fenced code blocks are kept
+ * in their own rows. Hermes Agent does the same isolation because Feishu can
+ * swallow content that follows a fenced block when everything lives inside one
+ * large md element.
  *
  * Lark post payload shape per:
  * https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/im-v1/message-content-description/create_json
@@ -41,13 +41,13 @@ export interface PostPayload {
 }
 
 /**
- * Parse `text` as markdown and return a Lark post payload containing a
- * single `md` block whose content is the normalized markdown string.
+ * Parse `text` as markdown and return a Lark post payload. Fenced code blocks
+ * are isolated into separate rows so Feishu clients do not hide trailing prose.
  */
 export function markdownToPost(text: string): PostPayload {
   const tokens = marked.lexer(text);
-  const md = renderBlocks(tokens).trim();
-  return { content: [[{ tag: "md", text: md }]] };
+  const rows = renderPostRows(tokens);
+  return { content: rows.length > 0 ? rows : [[{ tag: "md", text: "" }]] };
 }
 
 /**
@@ -76,47 +76,67 @@ export function splitMarkdown(text: string, limit = MAX_MARKDOWN_CHUNK): string[
 
 // ---- Block-level renderer ---------------------------------------------------
 
-function renderBlocks(tokens: Token[]): string {
-  const blocks: string[] = [];
-  for (const t of tokens) {
-    const rendered = renderBlock(t);
-    if (rendered !== undefined) blocks.push(rendered);
-  }
-  return blocks.join("\n\n");
+interface RenderedBlock {
+  text: string;
+  isolate: boolean;
 }
 
-function renderBlock(token: Token): string | undefined {
+function renderPostRows(tokens: Token[]): PostParagraph[] {
+  const rows: PostParagraph[] = [];
+  let prose: string[] = [];
+
+  const flushProse = (): void => {
+    const text = prose.join("\n\n").trim();
+    if (text) rows.push([{ tag: "md", text }]);
+    prose = [];
+  };
+
+  for (const token of tokens) {
+    const rendered = renderBlock(token);
+    if (rendered === undefined) continue;
+    if (rendered.isolate) {
+      flushProse();
+      rows.push([{ tag: "md", text: rendered.text }]);
+    } else {
+      prose.push(rendered.text);
+    }
+  }
+
+  flushProse();
+  return rows;
+}
+
+function renderBlock(token: Token): RenderedBlock | undefined {
   switch (token.type) {
     case "heading": {
       const heading = token as Tokens.Heading;
       const hashes = "#".repeat(Math.max(1, Math.min(6, heading.depth)));
-      return `${hashes} ${renderInlineTokens(heading.tokens ?? [])}`;
+      return proseBlock(`${hashes} ${renderInlineTokens(heading.tokens ?? [])}`);
     }
     case "paragraph": {
       const para = token as Tokens.Paragraph;
       const inline = renderInlineTokens(para.tokens ?? []);
-      return inline ? inline : undefined;
+      return inline ? proseBlock(inline) : undefined;
     }
     case "code": {
       const code = token as Tokens.Code;
       const lang = (code.lang ?? "").trim() || DEFAULT_CODE_LANG;
-      return `\`\`\`${lang}\n${code.text}\n\`\`\``;
+      return isolatedBlock(`\`\`\`${lang}\n${code.text}\n\`\`\``);
     }
     case "hr":
-      return "---";
+      return proseBlock("---");
     case "blockquote":
     case "list": {
       // Lark's md tag renders both natively. Keep marked's raw form;
       // strip trailing whitespace so consecutive blocks don't double-space.
       const raw = (token as { raw: string }).raw.replace(/\s+$/, "");
-      return raw ? raw : undefined;
+      return raw ? proseBlock(raw) : undefined;
     }
     case "table": {
-      // md tag does render markdown tables, but column alignment varies
-      // wildly with cell width. A fixed-width code block is the most
-      // reliable rendering across clients.
+      // Feishu post-type md has poor table support. Render tables as isolated
+      // fixed-width code blocks so content stays visible and aligned.
       if (isTable(token)) {
-        return `\`\`\`${DEFAULT_CODE_LANG}\n${tableToText(token)}\n\`\`\``;
+        return isolatedBlock(`\`\`\`${DEFAULT_CODE_LANG}\n${tableToText(token)}\n\`\`\``);
       }
       return undefined;
     }
@@ -124,13 +144,21 @@ function renderBlock(token: Token): string | undefined {
       return undefined;
     case "html": {
       const html = (token as Tokens.HTML).text.trim();
-      return html ? html : undefined;
+      return html ? proseBlock(html) : undefined;
     }
     default: {
       const raw = (token as { raw?: string }).raw?.trim();
-      return raw ? raw : undefined;
+      return raw ? proseBlock(raw) : undefined;
     }
   }
+}
+
+function proseBlock(text: string): RenderedBlock {
+  return { text, isolate: false };
+}
+
+function isolatedBlock(text: string): RenderedBlock {
+  return { text, isolate: true };
 }
 
 function isTable(token: Token): token is Tokens.Table {

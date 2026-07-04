@@ -26,6 +26,7 @@ const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> 
   thinking: { content: "💭 思考中...", template: "wathet" },
   calling_tool: { content: "🛠 调用工具...", template: "blue" },
   responding: { content: "✍️ 回复中...", template: "blue" },
+  sealed: { content: "⏸ 待确认", template: "grey" },
   complete: { content: "✅ 已完成", template: "green" },
   cancelled: { content: "⛔ 已取消", template: "grey" },
   failed: { content: "⚠️ 出错", template: "red" },
@@ -40,14 +41,38 @@ const CANCEL_BUTTON_TEXT = "中断当前任务";
 const CARD_SCHEMA_V2 = "2.0";
 const CARD_CONFIG_V2 = { width_mode: "fill", update_multi: true } as const;
 
+function summaryForStatus(status: AgentStatus): string {
+  switch (status) {
+    case "sealed":
+      return "⏳ 等待确认";
+    case "complete":
+      return "✅ 已完成";
+    case "cancelled":
+      return "⛔ 已取消";
+    case "failed":
+      return "⚠️ 出错";
+    case "thinking":
+    case "calling_tool":
+    case "responding":
+      return "🔄 处理中…";
+    default:
+      return assertNeverStatus(status);
+  }
+}
+
+function assertNeverStatus(x: never): never {
+  throw new Error(`unexpected agent status: ${String(x)}`);
+}
+
 function buildV2Card(
   headerContent: string,
   headerTemplate: string,
   elements: readonly object[],
+  summaryContent: string,
 ): object {
   return {
     schema: CARD_SCHEMA_V2,
-    config: CARD_CONFIG_V2,
+    config: { ...CARD_CONFIG_V2, summary: { content: summaryContent } },
     header: {
       title: { tag: "plain_text" as const, content: headerContent },
       template: headerTemplate,
@@ -106,28 +131,39 @@ function buildPermissionCard(
     );
   }
 
-  return buildV2Card("Agent 需要确认", HEADER_TEMPLATE_PERMISSION, elements);
+  return buildV2Card("Agent 需要确认", HEADER_TEMPLATE_PERMISSION, elements, "⏳ 等待确认");
 }
 
 function buildResolvedCard(toolKind: string, toolTitle: string, selectedName: string): object {
-  return buildV2Card("已确认", HEADER_TEMPLATE_RESOLVED, [
-    {
-      tag: "markdown",
-      content: `**${toolKind}**: ${toolTitle}\n\n已选择: **${selectedName}**`,
-    },
-  ]);
+  return buildV2Card(
+    "已确认",
+    HEADER_TEMPLATE_RESOLVED,
+    [
+      {
+        tag: "markdown",
+        content: `**${toolKind}**: ${toolTitle}\n\n已选择: **${selectedName}**`,
+      },
+    ],
+    "✅ 已完成",
+  );
 }
 
 function buildNoticeCard(notice: NoticeCardSpec): object {
-  return buildV2Card(notice.title, notice.template, [
-    { tag: "markdown", content: notice.body },
-  ]);
+  return buildV2Card(
+    notice.title,
+    notice.template,
+    [{ tag: "markdown", content: notice.body }],
+    notice.title,
+  );
 }
 
 function buildExpiredCard(reason: string): object {
-  return buildV2Card("已失效", HEADER_TEMPLATE_EXPIRED, [
-    { tag: "markdown", content: reason },
-  ]);
+  return buildV2Card(
+    "已失效",
+    HEADER_TEMPLATE_EXPIRED,
+    [{ tag: "markdown", content: reason }],
+    "⛔ 已取消",
+  );
 }
 
 function assertNever(x: never): never {
@@ -210,7 +246,7 @@ function buildUnifiedCard(state: UnifiedCardState): object {
   }
 
   const header = STATUS_HEADER[state.status];
-  return buildV2Card(header.content, header.template, elements);
+  return buildV2Card(header.content, header.template, elements, summaryForStatus(state.status));
 }
 
 export interface LarkCardPresenterOptions {
@@ -253,10 +289,7 @@ export class LarkCardPresenter implements LarkPresenter {
     chatId: string,
     threadId: string | null,
   ): Promise<string | null> {
-    return this.http.replyCard(
-      messageId,
-      buildPermissionCard(params, requestId, chatId, threadId),
-    );
+    return this.http.replyCard(messageId, buildPermissionCard(params, requestId, chatId, threadId));
   }
 
   async updatePermissionCard(

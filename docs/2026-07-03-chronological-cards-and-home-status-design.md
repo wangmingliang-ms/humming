@@ -1,7 +1,7 @@
 # 时序化卡片切段 + 主页状态标识 — 设计
 
 日期：2026-07-03
-状态：已确认，待实现
+状态：已实现（2026-07-04，见 `feat(render): seal cards before permission prompts`）
 
 ## 1. 背景与问题
 

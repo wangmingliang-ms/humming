@@ -2,12 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 
 /** Status chip rendered in the unified card header. */
 export type AgentStatus =
-  | "thinking"
-  | "calling_tool"
-  | "responding"
-  | "complete"
-  | "cancelled"
-  | "failed";
+  "thinking" | "calling_tool" | "responding" | "sealed" | "complete" | "cancelled" | "failed";
 
 /** Tool execution status — mirrors ACP's `tool_call` lifecycle. */
 export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";

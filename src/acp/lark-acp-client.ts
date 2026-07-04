@@ -24,6 +24,11 @@ interface PendingPermission {
   cardMessageId: string | null;
 }
 
+interface SealedToolMeta {
+  readonly title: string;
+  readonly kind: string;
+}
+
 export interface LarkAcpClientCallbacks {
   /** Called whenever the agent emits activity — used to refresh "typing" indicator. */
   onTyping: () => Promise<void>;
@@ -95,11 +100,14 @@ export class LarkAcpClient implements acp.Client {
 
   /** Tool-call id → index into `timeline` for fast updates. */
   private readonly toolIndex = new Map<string, number>();
+  /** Tool metadata captured while sealing a permission boundary; used to restore sparse updates in C2. */
+  private readonly sealedToolMeta = new Map<string, SealedToolMeta>();
 
   private cardId: string | null = null;
   private cardCreating: Promise<string | null> | null = null;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushing = false;
+  private permissionBoundaryThisPrompt = false;
 
   constructor(opts: LarkAcpClientOptions) {
     this.presenter = opts.presenter;
@@ -141,6 +149,8 @@ export class LarkAcpClient implements acp.Client {
     }
 
     const requestId = crypto.randomUUID();
+    await this.sealCard(params);
+    this.permissionBoundaryThisPrompt = true;
 
     return new Promise<acp.RequestPermissionResponse>((resolve) => {
       const pending: PendingPermission = {
@@ -176,6 +186,40 @@ export class LarkAcpClient implements acp.Client {
           resolve({ outcome: { outcome: "cancelled" } });
         });
     });
+  }
+
+  private async sealCard(params: acp.RequestPermissionRequest): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    while (this.flushing) await new Promise<void>((r) => setTimeout(r, 10));
+
+    const toolCallId = params.toolCall?.toolCallId;
+    if (toolCallId) {
+      this.sealedToolMeta.set(toolCallId, {
+        title: params.toolCall?.title ?? "unknown",
+        kind: params.toolCall?.kind ?? "tool",
+      });
+    }
+
+    const hadRenderableState =
+      this.timeline.length > 0 || this.cardId !== null || this.cardCreating !== null;
+    if (!hadRenderableState) return;
+
+    this.timeline = toolCallId
+      ? this.timeline.filter((entry) => entry.kind !== "tool" || entry.toolCallId !== toolCallId)
+      : this.timeline;
+    this.toolIndex.clear();
+    this.status = "sealed";
+
+    await this.renderCard({ cancellable: false });
+
+    this.timeline = [];
+    this.toolIndex.clear();
+    this.cardId = null;
+    this.cardCreating = null;
+    this.status = "thinking";
   }
 
   private autoResolvePermission(
@@ -296,6 +340,7 @@ export class LarkAcpClient implements acp.Client {
           }
         }
         this.upsertTool(toolCallId, u.title ?? "unknown", u.kind ?? "tool", u.status as ToolStatus);
+        if (this.status !== "responding") this.status = "calling_tool";
         this.scheduleFlush();
         return;
       }
@@ -324,11 +369,16 @@ export class LarkAcpClient implements acp.Client {
     }
     // Wait for any in-flight flush so we don't race the final patch.
     while (this.flushing) await new Promise<void>((r) => setTimeout(r, 10));
-    await this.renderCard({ cancellable: false });
+    const hasRenderableState =
+      this.timeline.length > 0 || this.cardId !== null || this.cardCreating !== null;
+    const shouldSkipEmptyPostSealCard = this.permissionBoundaryThisPrompt && !hasRenderableState;
+    if (!shouldSkipEmptyPostSealCard) await this.renderCard({ cancellable: false });
     this.timeline = [];
     this.toolIndex.clear();
+    this.sealedToolMeta.clear();
     this.cardId = null;
     this.cardCreating = null;
+    this.permissionBoundaryThisPrompt = false;
     this.lastTypingAt = 0;
     this.status = "thinking";
   }
@@ -363,8 +413,19 @@ export class LarkAcpClient implements acp.Client {
       }
       return;
     }
+    const meta = this.sealedToolMeta.get(toolCallId);
+    if (meta !== undefined) this.sealedToolMeta.delete(toolCallId);
+    const resolvedTitle = title !== "unknown" ? title : (meta?.title ?? title);
+    const resolvedKind = toolKind !== "tool" ? toolKind : (meta?.kind ?? toolKind);
     this.toolIndex.set(toolCallId, this.timeline.length);
-    this.timeline.push({ kind: "tool", toolCallId, title, toolKind, status, detail });
+    this.timeline.push({
+      kind: "tool",
+      toolCallId,
+      title: resolvedTitle,
+      toolKind: resolvedKind,
+      status,
+      ...(detail !== undefined ? { detail } : {}),
+    });
   }
 
   // ----- Card flush -------------------------------------------------------

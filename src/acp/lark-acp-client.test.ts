@@ -113,6 +113,7 @@ describe("LarkAcpClient card-v2 conversation rendering", () => {
         title: "Edit file",
         kind: "edit",
         status: "pending",
+        locations: [{ path: "/tmp/config.json" }],
       },
     });
     await client.sessionUpdate(completedToolUpdate());
@@ -142,7 +143,7 @@ describe("LarkAcpClient card-v2 conversation rendering", () => {
       {
         kind: "tool",
         toolCallId: "tool_edit",
-        title: "Edit file",
+        title: "config.json",
         toolKind: "edit",
         status: "completed",
       },
@@ -195,7 +196,7 @@ describe("LarkAcpClient card-v2 conversation rendering", () => {
         {
           kind: "tool",
           toolCallId: "tool_edit",
-          title: "Modifying config",
+          title: "config.json",
           toolKind: "edit",
           status: "pending",
         },
@@ -205,7 +206,7 @@ describe("LarkAcpClient card-v2 conversation rendering", () => {
       {
         kind: "tool",
         toolCallId: "tool_edit",
-        title: "Modifying config",
+        title: "config.json",
         toolKind: "edit",
         status: "completed",
       },
@@ -236,5 +237,67 @@ describe("LarkAcpClient card-v2 conversation rendering", () => {
     await client.finalize("complete");
 
     expect(ops.filter((op) => op.kind === "sendUnified")).toHaveLength(1);
+  });
+
+  it("renders execute tool commands as code blocks", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_exec",
+        title: "npm run build && npm test && npm run fmt:check",
+        kind: "execute",
+        status: "pending",
+        rawInput: { command: "npm", args: ["run", "build && npm test"] },
+      },
+    });
+    await waitForFlush();
+
+    const send = ops.find(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    expect(send?.state.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "tool_exec",
+        title: "npm run build && npm test && npm run fmt:check",
+        toolKind: "execute",
+        status: "pending",
+        detail: "```bash\nnpm run 'build && npm test'\n```",
+      },
+    ]);
+  });
+
+  it("redacts secrets in execute command code blocks", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_exec",
+        title: "Run deploy",
+        kind: "execute",
+        status: "pending",
+        rawInput:
+          "API_TOKEN=abc123 curl -H 'Authorization: Bearer secret-token' https://example.com",
+      },
+    });
+    await waitForFlush();
+
+    const send = ops.find(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    const tool = send?.state.entries[0];
+    expect(tool).toMatchObject({
+      kind: "tool",
+      title: "Run deploy",
+      detail:
+        "```bash\nAPI_TOKEN=[REDACTED] curl -H 'Authorization: Bearer [REDACTED]' https://example.com\n```",
+    });
   });
 });

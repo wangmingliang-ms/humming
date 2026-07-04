@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
+import path from "node:path";
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type {
@@ -49,9 +50,111 @@ function toolUpdateDetail(content: acp.ToolCallUpdate["content"] | undefined): s
 interface SealedToolMeta {
   readonly title: string;
   readonly kind: string;
+  readonly detail?: string;
 }
 
 type ToolEntry = Extract<TimelineEntry, { kind: "tool" }>;
+
+interface ToolDisplay {
+  readonly title: string;
+  readonly detail?: string;
+}
+
+function formatToolDisplay(
+  kind: string,
+  title: string,
+  rawInput: unknown,
+  locations: readonly acp.ToolCallLocation[] | null | undefined,
+): ToolDisplay {
+  if (kind === "execute") {
+    const command = commandFromRawInput(rawInput);
+    if (command) {
+      const displayTitle =
+        title === "unknown" || title === command || title.length > 80 ? "Command" : title;
+      return { title: displayTitle, detail: fencedCode(redactCommand(command), "bash") };
+    }
+    return { title };
+  }
+
+  if (isFileToolKind(kind)) {
+    const filePath = firstPath(locations, rawInput);
+    if (filePath) return { title: path.basename(filePath) || filePath };
+  }
+
+  return { title };
+}
+
+function isFileToolKind(kind: string): boolean {
+  return kind === "read" || kind === "edit" || kind === "delete" || kind === "move";
+}
+
+function firstPath(
+  locations: readonly acp.ToolCallLocation[] | null | undefined,
+  rawInput: unknown,
+): string | undefined {
+  const locationPath = locations?.find(
+    (loc) => typeof loc.path === "string" && loc.path.length > 0,
+  )?.path;
+  if (locationPath) return locationPath;
+  return stringField(rawInput, [
+    "path",
+    "file",
+    "filePath",
+    "filepath",
+    "filename",
+    "target",
+    "source",
+  ]);
+}
+
+function commandFromRawInput(rawInput: unknown): string | undefined {
+  if (typeof rawInput === "string") return rawInput.trim() || undefined;
+  if (!isRecord(rawInput)) return undefined;
+
+  const direct = stringField(rawInput, ["command", "cmd", "commandLine", "shellCommand", "script"]);
+  const args = arrayOfStrings(rawInput["args"]) ?? arrayOfStrings(rawInput["argv"]);
+  if (direct && args && args.length > 0) return [direct, ...args.map(shellQuote)].join(" ");
+  if (direct) return direct.trim() || undefined;
+  return undefined;
+}
+
+function stringField(raw: unknown, keys: readonly string[]): string | undefined {
+  if (!isRecord(raw)) return undefined;
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function arrayOfStrings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return undefined;
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function shellQuote(arg: string): string {
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(arg)) return arg;
+  return `'${arg.replaceAll("'", `'"'"'`)}'`;
+}
+
+function fencedCode(text: string, language: string): string {
+  const safe = text.replaceAll("```", "`\u200b``");
+  return `\`\`\`${language}\n${safe}\n\`\`\``;
+}
+
+function redactCommand(command: string): string {
+  return command
+    .replace(
+      /(\b[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD)[A-Z0-9_]*\s*=\s*)([^\s'";]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/(\b(?:key|token|secret|password|pass|pwd)\s*[=:]\s*)([^\s'";]+)/gi, "$1[REDACTED]")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]");
+}
 
 /**
  * Strategy for handling agent-side permission requests.
@@ -162,17 +265,25 @@ export class LarkAcpClient implements acp.Client {
     const toolCallId = params.toolCall?.toolCallId;
     if (toolCallId) {
       const toolStatus = (params.toolCall?.status ?? "pending") as ToolStatus;
+      const display = formatToolDisplay(
+        params.toolCall?.kind ?? "tool",
+        params.toolCall?.title ?? "unknown",
+        params.toolCall?.rawInput,
+        params.toolCall?.locations,
+      );
       if (this.showTools) {
         this.upsertTool(
           toolCallId,
-          params.toolCall?.title ?? "unknown",
+          display.title,
           params.toolCall?.kind ?? "tool",
           normalizeToolStatus(toolStatus),
+          display.detail,
         );
       }
       this.sealedToolMeta.set(toolCallId, {
-        title: params.toolCall?.title ?? "unknown",
+        title: display.title,
         kind: params.toolCall?.kind ?? "tool",
+        ...(display.detail !== undefined ? { detail: display.detail } : {}),
       });
     }
     await this.finishCurrentConversationSegment();
@@ -317,11 +428,18 @@ export class LarkAcpClient implements acp.Client {
         const toolCallId = u.toolCallId;
         if (!toolCallId) return;
         this.status = "calling_tool";
+        const display = formatToolDisplay(
+          u.kind ?? "tool",
+          u.title ?? "unknown",
+          u.rawInput,
+          u.locations,
+        );
         this.upsertTool(
           toolCallId,
-          u.title ?? "unknown",
+          display.title,
           u.kind ?? "tool",
           normalizeToolStatus((u.status ?? "in_progress") as ToolStatus),
+          display.detail,
         );
         this.scheduleFlush();
         return;
@@ -333,11 +451,17 @@ export class LarkAcpClient implements acp.Client {
         if (!toolCallId) return;
         if (u.status !== "completed" && u.status !== "failed") return;
 
-        const detail = toolUpdateDetail(u.content);
+        const display = formatToolDisplay(
+          u.kind ?? "tool",
+          u.title ?? "unknown",
+          u.rawInput,
+          u.locations,
+        );
+        const detail = display.detail ?? toolUpdateDetail(u.content);
         if (this.status !== "responding") this.status = "calling_tool";
         this.upsertTool(
           toolCallId,
-          u.title ?? "unknown",
+          display.title,
           u.kind ?? "tool",
           normalizeToolStatus(u.status as ToolStatus),
           detail,
@@ -417,13 +541,14 @@ export class LarkAcpClient implements acp.Client {
     if (meta !== undefined) this.sealedToolMeta.delete(toolCallId);
     const resolvedTitle = title !== "unknown" ? title : (meta?.title ?? title);
     const resolvedKind = toolKind !== "tool" ? toolKind : (meta?.kind ?? toolKind);
+    const resolvedDetail = detail ?? meta?.detail;
     this.timeline.push({
       kind: "tool",
       toolCallId,
       title: resolvedTitle,
       toolKind: resolvedKind,
       status,
-      ...(detail !== undefined ? { detail } : {}),
+      ...(resolvedDetail !== undefined ? { detail: resolvedDetail } : {}),
     });
   }
 

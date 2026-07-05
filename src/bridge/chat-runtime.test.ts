@@ -205,7 +205,19 @@ function makeFakeAgent(): FakeAgentHandle {
           { id: "agent", name: "Agent" },
         ],
       },
-      configOptions: [{ id: "auto_edit", name: "Auto Edit", type: "boolean", currentValue: false }],
+      configOptions: [
+        { id: "auto_edit", name: "Auto Edit", type: "boolean", currentValue: false },
+        {
+          id: "approval_mode",
+          name: "Approval Mode",
+          type: "select",
+          currentValue: "ask",
+          options: [
+            { name: "Ask", value: "ask" },
+            { name: "Auto", value: "auto" },
+          ],
+        },
+      ],
     } as AgentProcess["sessionCapabilities"],
     getRecentStderr: () => ["fatal: boom"],
   };
@@ -388,7 +400,19 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     const setModel = vi.fn(async () => ({}));
     const setMode = vi.fn(async () => ({}));
     const setConfig = vi.fn(async () => ({
-      configOptions: [{ id: "auto_edit", name: "Auto Edit", type: "boolean", currentValue: true }],
+      configOptions: [
+        { id: "auto_edit", name: "Auto Edit", type: "boolean", currentValue: true },
+        {
+          id: "approval_mode",
+          name: "Approval Mode",
+          type: "select",
+          currentValue: "auto",
+          options: [
+            { name: "Ask", value: "ask" },
+            { name: "Auto", value: "auto" },
+          ],
+        },
+      ],
     }));
     fake.agent.connection = {
       ...fake.agent.connection,
@@ -460,7 +484,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       agent: "node",
       mode: "Agent",
       model: "New",
-      permission: "Auto Edit: on",
+      permission: "Auto Edit: on · Approval Mode: Auto",
     });
     expect(saved.at(-1)).toMatchObject({
       controls: {
@@ -473,5 +497,91 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
         bridgePermissionMode: "alwaysAsk",
       },
     });
+  });
+
+  it("rejects invalid controls without mutating runtime or persisted session", async () => {
+    const fake = makeFakeAgent();
+    const setModel = vi.fn(async () => ({}));
+    fake.agent.connection = {
+      ...fake.agent.connection,
+      unstable_setSessionModel: setModel,
+    } as AgentProcess["connection"];
+    spawnAgentMock.mockResolvedValue(fake.agent);
+
+    const saved: unknown[] = [];
+    const store: SessionStore = {
+      ...stubSessionStore(),
+      save: async (record) => {
+        saved.push(record);
+      },
+    };
+    const notices: Array<{ title: string; body: string; template: string }> = [];
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([], notices),
+      sessionStore: store,
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "hello" }],
+      messageId: "om_controls_failed",
+      chatId: "oc_test",
+    });
+
+    await expect(runtime.applyControls({ modelId: "missing-model" })).rejects.toThrow(
+      "Model missing-model",
+    );
+
+    expect(setModel).not.toHaveBeenCalled();
+    expect(runtime.capabilities()).toMatchObject({ models: { currentModelId: "model-old" } });
+    expect(saved).toHaveLength(1);
+    expect(saved.at(-1)).not.toMatchObject({ controls: { modelId: "missing-model" } });
+    expect(notices.at(-1)).toMatchObject({ title: "⚠️ Session 设置失败", template: "red" });
+    expect(notices.at(-1)?.body).toContain("失败项: Model missing-model");
+    expect(notices.at(-1)?.body).toContain("runtime 和 sessions.json 未更新");
+  });
+
+  it("rolls back ACP changes when a later control fails", async () => {
+    const fake = makeFakeAgent();
+    const setModel = vi.fn(async () => ({}));
+    const setMode = vi.fn(async () => {
+      throw new Error("mode rejected");
+    });
+    fake.agent.connection = {
+      ...fake.agent.connection,
+      unstable_setSessionModel: setModel,
+      setSessionMode: setMode,
+    } as AgentProcess["connection"];
+    spawnAgentMock.mockResolvedValue(fake.agent);
+
+    const saved: unknown[] = [];
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter(),
+      sessionStore: {
+        ...stubSessionStore(),
+        save: async (record) => {
+          saved.push(record);
+        },
+      },
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "hello" }],
+      messageId: "om_controls_rollback",
+      chatId: "oc_test",
+    });
+
+    await expect(runtime.applyControls({ modelId: "model-new", modeId: "agent" })).rejects.toThrow(
+      "Mode agent: mode rejected",
+    );
+
+    expect(setModel).toHaveBeenNthCalledWith(1, { sessionId: "sess_fake", modelId: "model-new" });
+    expect(setModel).toHaveBeenNthCalledWith(2, { sessionId: "sess_fake", modelId: "model-old" });
+    expect(runtime.capabilities()).toMatchObject({
+      models: { currentModelId: "model-old" },
+      modes: { currentModeId: "ask" },
+    });
+    expect(saved).toHaveLength(1);
   });
 });

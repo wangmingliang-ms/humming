@@ -505,11 +505,14 @@ export class LarkBridge {
     threadId: string | null,
     controls: SessionControls,
   ): Promise<{ readonly applied: boolean; readonly recordSessionId: string }> {
-    const record = await this.sessionStore.setControls({ chatId, threadId }, controls);
     const runtime = this.chats.get(runtimeKey(chatId, threadId));
-    if (!runtime) return { applied: false, recordSessionId: record.sessionId };
-    await runtime.applyControls(controls);
-    return { applied: true, recordSessionId: record.sessionId };
+    if (runtime) {
+      await runtime.applyControls(controls);
+      return { applied: true, recordSessionId: runtime.capabilities().session.sessionId };
+    }
+
+    const record = await this.sessionStore.setControls({ chatId, threadId }, controls);
+    return { applied: false, recordSessionId: record.sessionId };
   }
 
   // ----- WS event handlers ------------------------------------------------

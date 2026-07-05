@@ -12,6 +12,7 @@ import {
 } from "../acp/agent-process.js";
 import type {
   SessionCapabilitiesSnapshot,
+  SessionConfigControlValue,
   SessionControls,
   SessionStore,
 } from "../session-store/session-store.js";
@@ -186,8 +187,18 @@ export class ChatRuntime {
   async applyControls(controls: SessionControls): Promise<void> {
     const state = this.state;
     if (!state) throw new Error("session runtime is not started yet");
-    await this.applyControlsToState(state, controls);
-    await this.persistSession(state.agent.sessionId, controls);
+    try {
+      this.validateControls(state.sessionCapabilities, controls);
+      const nextCapabilities = await this.applyControlsToState(state, controls);
+      if (controls.bridgePermissionMode !== undefined) {
+        state.client.setPermissionMode(controls.bridgePermissionMode);
+      }
+      state.sessionCapabilities = nextCapabilities;
+      await this.persistSession(state.agent.sessionId, controls);
+    } catch (err) {
+      await this.notifyControlFailure(state, err);
+      throw err;
+    }
   }
 
   private async bootstrap(firstMessage: PendingMessage): Promise<ChatRuntimeState> {
@@ -260,7 +271,12 @@ export class ChatRuntime {
       this.handleUnexpectedExit(code, signal);
     });
 
-    if (latest?.controls) await this.applyControlsToState(state, latest.controls);
+    if (latest?.controls) {
+      state.sessionCapabilities = await this.applyControlsToState(state, latest.controls);
+      if (latest.controls.bridgePermissionMode !== undefined) {
+        state.client.setPermissionMode(latest.controls.bridgePermissionMode);
+      }
+    }
 
     return state;
   }
@@ -287,51 +303,179 @@ export class ChatRuntime {
     };
   }
 
+  private validateControls(snapshot: SessionCapabilitiesSnapshot, controls: SessionControls): void {
+    if (controls.modelId !== undefined) {
+      if (!snapshot.models) {
+        throw new ControlApplyError(
+          "Model",
+          controls.modelId,
+          "agent does not expose ACP model controls",
+        );
+      }
+      if (!snapshot.models.availableModels.some((model) => model.modelId === controls.modelId)) {
+        throw new ControlApplyError("Model", controls.modelId, "modelId is not in availableModels");
+      }
+    }
+
+    if (controls.modeId !== undefined) {
+      if (!snapshot.modes) {
+        throw new ControlApplyError(
+          "Mode",
+          controls.modeId,
+          "agent does not expose ACP mode controls",
+        );
+      }
+      if (!snapshot.modes.availableModes.some((mode) => mode.id === controls.modeId)) {
+        throw new ControlApplyError("Mode", controls.modeId, "modeId is not in availableModes");
+      }
+    }
+
+    for (const [configId, value] of Object.entries(controls.config ?? {})) {
+      const option = snapshot.configOptions?.find((candidate) => candidate.id === configId);
+      if (!option) {
+        throw new ControlApplyError("Config", configId, "configId is not in configOptions");
+      }
+      if (option.type === "boolean") {
+        if (!("type" in value) || value.type !== "boolean" || typeof value.value !== "boolean") {
+          throw new ControlApplyError("Config", configId, "expected boolean config value");
+        }
+        continue;
+      }
+      if (typeof value.value !== "string") {
+        throw new ControlApplyError("Config", configId, "expected select config value");
+      }
+      if (!selectOptionValues(option.options).has(value.value)) {
+        throw new ControlApplyError(
+          "Config",
+          configId,
+          `select value is not in available options: ${value.value}`,
+        );
+      }
+    }
+
+    if (
+      controls.bridgePermissionMode !== undefined &&
+      !PERMISSION_MODES.includes(controls.bridgePermissionMode)
+    ) {
+      throw new ControlApplyError(
+        "Permission",
+        controls.bridgePermissionMode,
+        "bridgePermissionMode is not supported",
+      );
+    }
+  }
+
+  private async notifyControlFailure(state: ChatRuntimeState, err: unknown): Promise<void> {
+    const messageId = state.lastMessageId;
+    if (!messageId) return;
+    const body = [
+      "Session control 设置失败，当前 runtime 和 sessions.json 未更新。",
+      "",
+      formatControlFailure(err),
+      "",
+      "请让 agent 重新查询 capabilities 后，使用有效的 modelId / modeId / config 值再试。",
+    ].join("\n");
+    await this.opts.presenter
+      .replyNoticeCard(messageId, {
+        title: "⚠️ Session 设置失败",
+        body,
+        template: "red",
+      })
+      .catch((sendErr) => this.logger.warn({ err: sendErr }, "control failure notice failed"));
+  }
+
   private async applyControlsToState(
     state: ChatRuntimeState,
     controls: SessionControls,
-  ): Promise<void> {
-    if (controls.modelId !== undefined) {
-      await state.agent.connection.unstable_setSessionModel({
-        sessionId: state.agent.sessionId,
-        modelId: controls.modelId,
-      });
-      if (state.sessionCapabilities.models) {
-        state.sessionCapabilities = {
-          ...state.sessionCapabilities,
-          models: { ...state.sessionCapabilities.models, currentModelId: controls.modelId },
+  ): Promise<SessionCapabilitiesSnapshot> {
+    let next = state.sessionCapabilities;
+    const rollbacks: Array<() => Promise<void>> = [];
+    try {
+      if (controls.modelId !== undefined) {
+        const previousModelId = next.models?.currentModelId;
+        try {
+          await state.agent.connection.unstable_setSessionModel({
+            sessionId: state.agent.sessionId,
+            modelId: controls.modelId,
+          });
+        } catch (err) {
+          throw new ControlApplyError("Model", controls.modelId, formatAgentError(err));
+        }
+        if (previousModelId && previousModelId !== controls.modelId) {
+          rollbacks.push(() =>
+            state.agent.connection.unstable_setSessionModel({
+              sessionId: state.agent.sessionId,
+              modelId: previousModelId,
+            }),
+          );
+        }
+        if (next.models) {
+          next = {
+            ...next,
+            models: { ...next.models, currentModelId: controls.modelId },
+          };
+        }
+      }
+      if (controls.modeId !== undefined) {
+        const previousModeId = next.modes?.currentModeId;
+        try {
+          await state.agent.connection.setSessionMode({
+            sessionId: state.agent.sessionId,
+            modeId: controls.modeId,
+          });
+        } catch (err) {
+          throw new ControlApplyError("Mode", controls.modeId, formatAgentError(err));
+        }
+        if (previousModeId && previousModeId !== controls.modeId) {
+          rollbacks.push(() =>
+            state.agent.connection.setSessionMode({
+              sessionId: state.agent.sessionId,
+              modeId: previousModeId,
+            }),
+          );
+        }
+        if (next.modes) {
+          next = {
+            ...next,
+            modes: { ...next.modes, currentModeId: controls.modeId },
+          };
+        }
+      }
+      for (const [configId, value] of Object.entries(controls.config ?? {})) {
+        const previousOption = next.configOptions?.find((option) => option.id === configId);
+        try {
+          const response = await state.agent.connection.setSessionConfigOption({
+            sessionId: state.agent.sessionId,
+            configId,
+            ...value,
+          });
+          next = {
+            ...next,
+            configOptions: response.configOptions,
+          };
+        } catch (err) {
+          throw new ControlApplyError("Config", configId, formatAgentError(err));
+        }
+        if (previousOption) {
+          rollbacks.push(() =>
+            state.agent.connection.setSessionConfigOption({
+              sessionId: state.agent.sessionId,
+              configId,
+              ...configRollbackValue(previousOption),
+            }),
+          );
+        }
+      }
+      if (controls.bridgePermissionMode !== undefined) {
+        next = {
+          ...next,
+          bridgePermissionMode: controls.bridgePermissionMode,
         };
       }
-    }
-    if (controls.modeId !== undefined) {
-      await state.agent.connection.setSessionMode({
-        sessionId: state.agent.sessionId,
-        modeId: controls.modeId,
-      });
-      if (state.sessionCapabilities.modes) {
-        state.sessionCapabilities = {
-          ...state.sessionCapabilities,
-          modes: { ...state.sessionCapabilities.modes, currentModeId: controls.modeId },
-        };
-      }
-    }
-    for (const [configId, value] of Object.entries(controls.config ?? {})) {
-      const response = await state.agent.connection.setSessionConfigOption({
-        sessionId: state.agent.sessionId,
-        configId,
-        ...value,
-      });
-      state.sessionCapabilities = {
-        ...state.sessionCapabilities,
-        configOptions: response.configOptions,
-      };
-    }
-    if (controls.bridgePermissionMode !== undefined) {
-      state.client.setPermissionMode(controls.bridgePermissionMode);
-      state.sessionCapabilities = {
-        ...state.sessionCapabilities,
-        bridgePermissionMode: controls.bridgePermissionMode,
-      };
+      return next;
+    } catch (err) {
+      await rollbackControlChanges(rollbacks, this.logger);
+      throw err;
     }
   }
 
@@ -628,6 +772,62 @@ function mergeSessionControls(
       ...(patch?.config ?? {}),
     },
   };
+}
+
+function selectOptionValues(
+  options: Extract<
+    NonNullable<SessionCapabilitiesSnapshot["configOptions"]>[number],
+    { type: "select" }
+  >["options"],
+): Set<string> {
+  const values = new Set<string>();
+  for (const option of options) {
+    if ("value" in option) {
+      values.add(option.value);
+      continue;
+    }
+    for (const child of option.options) values.add(child.value);
+  }
+  return values;
+}
+
+function configRollbackValue(
+  option: NonNullable<SessionCapabilitiesSnapshot["configOptions"]>[number],
+): SessionConfigControlValue {
+  if (option.type === "boolean") return { type: "boolean", value: option.currentValue };
+  return { value: option.currentValue };
+}
+
+async function rollbackControlChanges(
+  rollbacks: Array<() => Promise<void>>,
+  logger: LarkLogger,
+): Promise<void> {
+  for (const rollback of rollbacks.reverse()) {
+    try {
+      await rollback();
+    } catch (err) {
+      logger.warn({ err }, "session control rollback failed");
+    }
+  }
+}
+
+class ControlApplyError extends Error {
+  override readonly name = "ControlApplyError";
+
+  constructor(
+    readonly kind: string,
+    readonly target: string,
+    readonly reason: string,
+  ) {
+    super(`${kind} ${target}: ${reason}`);
+  }
+}
+
+function formatControlFailure(err: unknown): string {
+  if (err instanceof ControlApplyError) {
+    return `失败项: ${err.kind} ${err.target}\n原因: ${err.reason}`;
+  }
+  return `原因: ${formatAgentError(err)}`;
 }
 
 function formatExitCode(code: number | null, signal: NodeJS.Signals | null | undefined): string {

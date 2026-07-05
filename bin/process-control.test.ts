@@ -5,8 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   bridgeLogPath,
   bridgePidPath,
+  bridgeRestartMarkerPath,
   bridgeUnitName,
+  clearBridgeRestartMarker,
   isAlive,
+  markBridgeRestart,
   parseProcessElapsedSeconds,
   readPid,
   rewriteSubcommand,
@@ -24,15 +27,30 @@ afterEach(() => {
 });
 
 describe("path helpers", () => {
-  it("compose PID and log paths under the home dir", () => {
+  it("compose PID, log, and restart-marker paths under the home dir", () => {
     expect(bridgePidPath(dir)).toBe(path.join(dir, "bridge.pid"));
     expect(bridgeLogPath(dir)).toBe(path.join(dir, "bridge.log"));
+    expect(bridgeRestartMarkerPath(dir)).toBe(path.join(dir, "bridge.restart"));
   });
 
   it("derives a stable per-home systemd unit name", () => {
     expect(bridgeUnitName(dir)).toMatch(/^lark-acp-bridge-[a-f0-9]{10}\.service$/);
     expect(bridgeUnitName(dir)).toBe(bridgeUnitName(dir));
     expect(bridgeUnitName(path.join(dir, "other"))).not.toBe(bridgeUnitName(dir));
+  });
+});
+
+describe("restart marker helpers", () => {
+  it("creates and clears the restart marker", () => {
+    const marker = bridgeRestartMarkerPath(dir);
+    expect(fs.existsSync(marker)).toBe(false);
+
+    markBridgeRestart(dir);
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.readFileSync(marker, "utf-8").trim()).toMatch(/^\d+$/);
+
+    clearBridgeRestartMarker(dir);
+    expect(fs.existsSync(marker)).toBe(false);
   });
 });
 

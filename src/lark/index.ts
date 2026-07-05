@@ -2,3 +2,10 @@ export { LarkHttpClient } from "./lark-http.js";
 export type { LarkHttpOptions } from "./lark-http.js";
 export { LarkWsConnection } from "./lark-ws.js";
 export type { LarkWsOptions } from "./lark-ws.js";
+export {
+  LIFECYCLE_NOTICE_KINDS,
+  LifecycleNoticeTimeoutError,
+  buildLifecycleNoticeCard,
+  sendLifecycleNotice,
+} from "./lifecycle-notifier.js";
+export type { LifecycleNoticeKind, LifecycleNoticeOptions } from "./lifecycle-notifier.js";

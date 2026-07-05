@@ -26,6 +26,7 @@ const APP_NAME = "lark-acp";
 
 const PID_FILE = "bridge.pid";
 const LOG_FILE = "bridge.log";
+const RESTART_MARKER_FILE = "bridge.restart";
 const SYSTEMD_UNIT_PREFIX = "lark-acp-bridge";
 const SYSTEMD_UNIT_SUFFIX = ".service";
 
@@ -66,6 +67,22 @@ export function bridgePidPath(homeDir: string): string {
 /** Absolute path of the bridge log file under a home dir. */
 export function bridgeLogPath(homeDir: string): string {
   return path.join(homeDir, LOG_FILE);
+}
+
+/** Absolute path of the restart marker consumed by the foreground bridge. */
+export function bridgeRestartMarkerPath(homeDir: string): string {
+  return path.join(homeDir, RESTART_MARKER_FILE);
+}
+
+/** Mark the next managed shutdown/start as a restart, not a plain stop/start. */
+export function markBridgeRestart(homeDir: string): void {
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.writeFileSync(bridgeRestartMarkerPath(homeDir), `${Date.now()}\n`, "utf-8");
+}
+
+/** Remove a stale restart marker if a restart command fails before completion. */
+export function clearBridgeRestartMarker(homeDir: string): void {
+  removeQuietly(bridgeRestartMarkerPath(homeDir));
 }
 
 /** Stable per-home user-systemd unit name for the managed bridge daemon. */

@@ -15,6 +15,7 @@ export type {
   LarkBridgeLarkOptions,
   LarkBridgeAgentOptions,
   LarkBridgeSessionOptions,
+  LarkBridgeLifecycleOptions,
   AgentResolver,
   ResolvedAgentInvocation,
 } from "./bridge/bridge.js";
@@ -47,3 +48,10 @@ export type { BindingAgentResolver } from "./binding-store/settings-binding-stor
 
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";
+export {
+  LIFECYCLE_NOTICE_KINDS,
+  LifecycleNoticeTimeoutError,
+  buildLifecycleNoticeCard,
+  sendLifecycleNotice,
+} from "./lark/lifecycle-notifier.js";
+export type { LifecycleNoticeKind, LifecycleNoticeOptions } from "./lark/lifecycle-notifier.js";

@@ -4,4 +4,5 @@ export type {
   LarkBridgeLarkOptions,
   LarkBridgeAgentOptions,
   LarkBridgeSessionOptions,
+  LarkBridgeLifecycleOptions,
 } from "./bridge.js";

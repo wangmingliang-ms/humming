@@ -53,6 +53,9 @@ import {
   stopBridge,
   statusBridge,
   tailLog,
+  bridgeRestartMarkerPath,
+  markBridgeRestart,
+  clearBridgeRestartMarker,
   rewriteSubcommand,
   ProcessControlError,
   DEFAULT_LOG_LINES,
@@ -237,6 +240,7 @@ type FileRuntime = {
   readonly permissionMode?: PermissionMode;
   readonly groupRequireMention?: boolean;
   readonly unboundCwd?: string;
+  readonly lifecycleNotifyChatIds?: readonly string[];
 };
 
 type FileConfig = {
@@ -365,6 +369,7 @@ function readConfigFile(filePath: string): FileConfig {
     ...optBoolField("runtime.hideCancelButton", runtimeObj["hideCancelButton"]),
     ...optBoolField("runtime.groupRequireMention", runtimeObj["groupRequireMention"]),
     ...optStringField("runtime.unboundCwd", runtimeObj["unboundCwd"]),
+    ...optStringArrayField("runtime.lifecycleNotifyChatIds", runtimeObj["lifecycleNotifyChatIds"]),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
   };
 
@@ -474,6 +479,18 @@ function optNumberField(
 ): Record<string, number> {
   if (value === undefined) return {};
   return { [key]: value };
+}
+
+function optStringArrayField(label: string, value: unknown): Record<string, readonly string[]> {
+  if (value === undefined) return {};
+  if (!Array.isArray(value)) throw new CliError(`config: ${label} must be an array of strings`);
+  const parsed: string[] = [];
+  value.forEach((item, index) => {
+    if (typeof item !== "string") throw new CliError(`config: ${label}[${index}] must be a string`);
+    parsed.push(item);
+  });
+  const key = label.split(".").pop() ?? label;
+  return { [key]: parsed };
 }
 
 // ---------- argv parsing --------------------------------------------------
@@ -771,6 +788,7 @@ type EffectiveConfig = {
   readonly showCancelButton: boolean;
   readonly permissionMode: PermissionMode;
   readonly groupRequireMention: boolean;
+  readonly lifecycleNotifyChatIds: readonly string[];
   /** Reception-area cwd for unbound chats (default = home dir; null disables). */
   readonly unboundCwd: string | null;
 };
@@ -845,6 +863,7 @@ function resolveConfig(
   const hideTools = args.hideTools ?? file.runtime.hideTools ?? false;
   const hideCancelButton = args.hideCancelButton ?? file.runtime.hideCancelButton ?? false;
   const groupRequireMention = args.groupRequireMention ?? file.runtime.groupRequireMention ?? false;
+  const lifecycleNotifyChatIds = file.runtime.lifecycleNotifyChatIds ?? [];
 
   // Reception area: default ON, cwd = home dir. Precedence: --unbound-cwd flag
   // > runtime.unboundCwd > home dir. An explicit empty string disables it
@@ -884,6 +903,7 @@ function resolveConfig(
     showCancelButton: !hideCancelButton,
     permissionMode,
     groupRequireMention,
+    lifecycleNotifyChatIds,
     unboundCwd,
   };
 }
@@ -974,7 +994,8 @@ function printHelp(): void {
     `      "hideThoughts": false,`,
     `      "hideTools": false,`,
     `      "hideCancelButton": false,`,
-    `      "permissionMode": "${DEFAULT_PERMISSION_MODE}"`,
+    `      "permissionMode": "${DEFAULT_PERMISSION_MODE}",`,
+    `      "lifecycleNotifyChatIds": ["oc_..."]`,
     `    },`,
     `    "agents": {`,
     `      "my-claude": {`,
@@ -1165,6 +1186,9 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   cliLogger.info(
     `unbound:     ${cfg.unboundCwd ? `reception area @ ${cfg.unboundCwd}` : "off (reply /bind notice)"}`,
   );
+  cliLogger.info(
+    `lifecycle:   ${cfg.lifecycleNotifyChatIds.length > 0 ? `notify ${cfg.lifecycleNotifyChatIds.length} chat(s)` : "off"}`,
+  );
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
   // Bindings live in settings.json's `bindings` block (one file for all
@@ -1198,6 +1222,10 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     groupRequireMention: cfg.groupRequireMention,
     unboundCwd: cfg.unboundCwd,
     settingsPath: configPath,
+    lifecycle: {
+      notificationChatIds: cfg.lifecycleNotifyChatIds,
+      restartMarkerPath: bridgeRestartMarkerPath(homeDir),
+    },
     sessionStore,
     bindingStore,
     logger: rootLogger,
@@ -1245,13 +1273,19 @@ async function runStart(args: ParsedArgs): Promise<void> {
 async function runRestart(args: ParsedArgs): Promise<void> {
   const spawnArgv = buildProxyArgv(args);
   const homeDir = resolveHomeDir(args.home);
-  await stopBridge({ homeDir });
-  await startBridge({
-    homeDir,
-    selfPath: fileURLToPath(import.meta.url),
-    spawnArgv,
-    workingDirectory: process.cwd(),
-  });
+  markBridgeRestart(homeDir);
+  try {
+    await stopBridge({ homeDir });
+    await startBridge({
+      homeDir,
+      selfPath: fileURLToPath(import.meta.url),
+      spawnArgv,
+      workingDirectory: process.cwd(),
+    });
+  } catch (err) {
+    clearBridgeRestartMarker(homeDir);
+    throw err;
+  }
 }
 
 /**

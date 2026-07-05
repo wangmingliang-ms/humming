@@ -148,6 +148,21 @@ describe("readConfigFile — runtime.agent round-trip", () => {
     fs.writeFileSync(p, JSON.stringify({ runtime: { agent: 42 } }));
     expect(() => readConfigFile(p)).toThrowError(/runtime\.agent must be a string/);
   });
+
+  it("reads lifecycle notification chat ids from settings.json", () => {
+    const p = path.join(dir, "settings.json");
+    fs.writeFileSync(p, JSON.stringify({ runtime: { lifecycleNotifyChatIds: ["oc_A", "oc_B"] } }));
+    const cfg = readConfigFile(p);
+    expect(cfg.runtime.lifecycleNotifyChatIds).toEqual(["oc_A", "oc_B"]);
+  });
+
+  it("rejects non-string lifecycle notification chat ids", () => {
+    const p = path.join(dir, "settings.json");
+    fs.writeFileSync(p, JSON.stringify({ runtime: { lifecycleNotifyChatIds: ["oc_A", 42] } }));
+    expect(() => readConfigFile(p)).toThrowError(
+      /runtime\.lifecycleNotifyChatIds\[1\] must be a string/,
+    );
+  });
 });
 
 describe("legacy migration isolation", () => {

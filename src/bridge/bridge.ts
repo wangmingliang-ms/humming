@@ -4,6 +4,7 @@ import path from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
 import { LarkHttpClient } from "../lark/lark-http.js";
+import { sendLifecycleNotice, type LifecycleNoticeKind } from "../lark/lifecycle-notifier.js";
 import { LarkWsConnection } from "../lark/lark-ws.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
@@ -203,10 +204,20 @@ export interface LarkBridgeSessionOptions {
   maxConcurrentChats?: number;
 }
 
+export interface LarkBridgeLifecycleOptions {
+  /** Chats that receive bridge lifecycle notices. Empty/absent disables them. */
+  notificationChatIds?: readonly string[];
+  /** File created by `lark-acp restart`; when present, stop/start render restart wording. */
+  restartMarkerPath?: string | null;
+  /** Per-chat send timeout for best-effort lifecycle notices. */
+  noticeTimeoutMs?: number;
+}
+
 export interface LarkBridgeOptions {
   lark: LarkBridgeLarkOptions;
   agent: LarkBridgeAgentOptions;
   session?: LarkBridgeSessionOptions;
+  lifecycle?: LarkBridgeLifecycleOptions;
 
   /**
    * In group chats, only handle messages that @-mention the bot. Default
@@ -307,6 +318,9 @@ export class LarkBridge {
   private readonly unboundCwd: string | null;
   private readonly settingsPath: string | null;
   private readonly lark: LarkBridgeLarkOptions;
+  private readonly lifecycleNotificationChatIds: readonly string[];
+  private readonly restartMarkerPath: string | null;
+  private readonly lifecycleNoticeTimeoutMs: number | undefined;
 
   private readonly chats = new Map<string, ChatRuntime>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -349,6 +363,9 @@ export class LarkBridge {
     this.groupRequireMention = opts.groupRequireMention ?? false;
     this.unboundCwd = opts.unboundCwd ?? null;
     this.settingsPath = opts.settingsPath ?? null;
+    this.lifecycleNotificationChatIds = opts.lifecycle?.notificationChatIds ?? [];
+    this.restartMarkerPath = opts.lifecycle?.restartMarkerPath ?? null;
+    this.lifecycleNoticeTimeoutMs = opts.lifecycle?.noticeTimeoutMs;
   }
 
   /**
@@ -382,10 +399,14 @@ export class LarkBridge {
     this.ws.start();
 
     this.logger.info("bridge started");
+    await this.sendLifecycleStartedNotice();
   }
 
   async stop(): Promise<void> {
+    if (!this.started) return;
+    this.started = false;
     this.logger.info("stopping bridge");
+    await this.sendLifecycleStoppingNotice();
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     if (this.reloadTimer) clearTimeout(this.reloadTimer);
     if (this.settingsWatcher) {
@@ -397,6 +418,42 @@ export class LarkBridge {
     await this.sessionStore.close();
     await this.bindingStore.close();
     this.logger.info("bridge stopped");
+  }
+
+  private async sendLifecycleStartedNotice(): Promise<void> {
+    const restarted = this.consumeRestartMarker();
+    await this.sendLifecycleNotice(restarted ? "restarted" : "started");
+  }
+
+  private async sendLifecycleStoppingNotice(): Promise<void> {
+    await this.sendLifecycleNotice(this.hasRestartMarker() ? "restarting" : "stopping");
+  }
+
+  private async sendLifecycleNotice(kind: LifecycleNoticeKind): Promise<void> {
+    await sendLifecycleNotice({
+      http: this.http,
+      chatIds: this.lifecycleNotificationChatIds,
+      kind,
+      logger: this.logger,
+      ...(this.lifecycleNoticeTimeoutMs !== undefined
+        ? { timeoutMs: this.lifecycleNoticeTimeoutMs }
+        : {}),
+    });
+  }
+
+  private hasRestartMarker(): boolean {
+    return this.restartMarkerPath !== null && fs.existsSync(this.restartMarkerPath);
+  }
+
+  private consumeRestartMarker(): boolean {
+    const marker = this.restartMarkerPath;
+    if (marker === null || !fs.existsSync(marker)) return false;
+    try {
+      fs.unlinkSync(marker);
+    } catch (err) {
+      this.logger.warn({ err, marker }, "failed to remove restart marker");
+    }
+    return true;
   }
 
   /** Active chat runtime count (mostly for tests / metrics). */

@@ -169,6 +169,8 @@ lark-acp stop                    # 停止后台 bridge
 - **状态文件都在 home 目录下**（`~/.lark-acp/`，可用 `--home` / `$LARK_ACP_HOME` 覆盖）：
   `bridge.pid`、`bridge.log`。`start` / `restart` 会把你传的全局 / proxy 选项、以及
   `-- <agent-cmd>` 透传部分**原样**转发给后台进程。
+- **生命周期通知**：在 settings.json 写 `"runtime": { "lifecycleNotifyChatIds": ["oc_..."] }` 后，
+  bridge 启动完成会给这些会话发「已启动」，`stop` 时发「正在停止」，`restart` 时发「正在重启」和「已重启」。通知是 best-effort，发送失败只记日志，不阻塞进程管理。
 - **Linux / WSL 上是真后台托管**：如果 `systemctl --user` 可用，`start` 会用
   `systemd-run --user` 启动一个 transient service（unit 名会显示在 `status` 里），bridge
   不再挂在当前 terminal 下面；关闭终端不会停。没有 systemd 的平台才回退到普通 detached
@@ -204,6 +206,7 @@ CLI 读取一份配置文件（默认 `~/.lark-acp/settings.json`；旧的 `~/.c
     "hideTools": false,
     "hideCancelButton": false,
     "permissionMode": "alwaysAsk",
+    "lifecycleNotifyChatIds": ["oc_xxx"], // 可选：start/stop/restart 生命周期通知目标会话
   },
   "agents": {
     // 在已有的内置预设上"打补丁"——只需要写要改的字段

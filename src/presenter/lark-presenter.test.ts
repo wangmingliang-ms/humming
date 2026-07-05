@@ -150,20 +150,15 @@ describe("LarkCardPresenter card summary", () => {
     for (const card of cards) {
       const elements = card.body?.elements ?? [];
       expect(elements.at(-1)).toMatchObject({
-        tag: "note",
-        elements: [
-          {
-            tag: "plain_text",
-            content:
-              "Agent: Claude · Mode: Plan Mode · Model: Claude Sonnet 5 · Permission: Edit Automatically: on",
-          },
-        ],
+        tag: "markdown",
+        content:
+          '<font color="grey">Agent: Claude · Mode: Plan Mode · Model: Claude Sonnet 5 · Permission: Edit Automatically: on</font>',
       });
     }
 
     const runningElements = cards[0]?.body?.elements ?? [];
     expect(runningElements.at(-3)).toMatchObject({ tag: "button" });
-    expect(runningElements.at(-1)).toMatchObject({ tag: "note" });
+    expect(runningElements.at(-1)).toMatchObject({ tag: "markdown" });
   });
 
   it("distinguishes approved and rejected permission cards", async () => {

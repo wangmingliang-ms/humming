@@ -242,18 +242,13 @@ function buildSessionMetaElement(state: UnifiedCardState): object | null {
   const meta = state.meta;
   if (!meta) return null;
   return {
-    tag: "note",
-    elements: [
-      {
-        tag: "plain_text",
-        content: [
-          `Agent: ${meta.agent}`,
-          `Mode: ${meta.mode}`,
-          `Model: ${meta.model}`,
-          `Permission: ${meta.permission}`,
-        ].join(" · "),
-      },
-    ],
+    tag: "markdown",
+    content: `<font color=\"grey\">${[
+      `Agent: ${meta.agent}`,
+      `Mode: ${meta.mode}`,
+      `Model: ${meta.model}`,
+      `Permission: ${meta.permission}`,
+    ].join(" · ")}</font>`,
   };
 }
 

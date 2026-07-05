@@ -45,7 +45,7 @@ node dist/bin/lark-acp.js --help
 
 npm 官方仓库上的 `lark-acp` 名称已被无关的包占用，直接 `npm i -g lark-acp` 会装错东西。
 推荐用下面的脚本直接从本仓库安装（脚本会克隆到临时目录、`npm install` 并 `npm run build`，再
-`npm install -g --install-links` 安装成全局命令，最后清理临时目录）：
+`npm install -g --install-links` 安装成全局命令，随后执行 `lark-acp init` 初始化 `~/.lark-acp` 模板，最后清理临时目录）：
 
 **Linux / macOS / WSL：**
 
@@ -79,6 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/unin
 ```
 lark-acp [global-options] proxy [--agent <preset>] [-- <extra-args>...]
 lark-acp [global-options] proxy -- <agent-cmd> [agent-args...]
+lark-acp [global-options] init                       # 初始化 ~/.lark-acp 模板
 lark-acp [global-options] start [--agent <preset>]   # 后台运行 proxy
 lark-acp [global-options] stop | restart | status
 lark-acp logs [-f] [-n <lines>]
@@ -173,7 +174,7 @@ lark-acp stop                    # 停止后台 bridge
   `-- <agent-cmd>` 透传部分**原样**转发给后台进程。
 - **生命周期通知**：在 settings.json 写 `"runtime": { "lifecycleNotifyChatIds": ["oc_..."] }` 后，
   bridge 启动完成会给这些会话发「已启动」，`stop` 时发「正在停止」，`restart` 时发「正在重启」和「已重启」。通知是 best-effort，发送失败只记日志，不阻塞进程管理。
-- **安装/初始化模板**：执行 `lark-acp install` 会创建/刷新 `~/.lark-acp/AGENTS.md`、`~/.lark-acp/CLAUDE.md`，并创建 `~/.lark-acp/settings.back.json`、`~/.lark-acp/sessions.back.json` 作为可复制参考模板。`settings.json` / `sessions.json` 仍只在真实配置或会话产生时创建；`.back.json` 不含真实凭据。
+- **初始化模板**：执行 `lark-acp init` 会创建/刷新 `~/.lark-acp/AGENTS.md`、`~/.lark-acp/CLAUDE.md`，并创建 `~/.lark-acp/settings.back.json`、`~/.lark-acp/sessions.back.json` 作为可复制参考模板。官方 install 脚本会在全局命令安装完成后自动执行一次 `lark-acp init`；手动安装或换 home 时也可以单独运行。`settings.json` / `sessions.json` 仍只在真实配置或会话产生时创建；`.back.json` 不含真实凭据。
 - **Linux / WSL 上是真后台托管**：如果 `systemctl --user` 可用，`start` 会用
   `systemd-run --user` 启动一个 transient service（unit 名会显示在 `status` 里），bridge
   不再挂在当前 terminal 下面；关闭终端不会停。没有 systemd 的平台才回退到普通 detached

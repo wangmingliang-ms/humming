@@ -62,6 +62,9 @@ echo "lark-acp install: building ..."
 echo "lark-acp install: installing globally ..."
 (cd "$repo_dir" && npm install -g --install-links .) || fail "global install failed."
 
+echo "lark-acp install: initializing ~/.lark-acp templates ..."
+(cd "$repo_dir" && node dist/bin/lark-acp.js init) || fail "lark-acp init failed."
+
 if command -v lark-acp >/dev/null 2>&1; then
   echo "lark-acp install: done. Run 'lark-acp --help' to get started."
 else

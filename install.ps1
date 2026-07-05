@@ -76,6 +76,10 @@ try {
     Write-Host "lark-acp install: installing globally ..."
     npm install -g --install-links .
     if ($LASTEXITCODE -ne 0) { Fail "global install failed." }
+
+    Write-Host "lark-acp install: initializing ~/.lark-acp templates ..."
+    node dist/bin/lark-acp.js init
+    if ($LASTEXITCODE -ne 0) { Fail "lark-acp init failed." }
   }
   finally {
     Pop-Location

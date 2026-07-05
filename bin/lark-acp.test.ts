@@ -23,7 +23,7 @@ import {
   migrateLegacyIfNeeded,
   resolveHomeDir,
   parseControlJson,
-  runInstall,
+  runInit,
   DEFAULT_AGENT,
   type ParsedArgs,
 } from "./lark-acp.js";
@@ -59,9 +59,9 @@ describe("parseArgs — bare subcommands need no --agent", () => {
     expect(args.subcommandIndex).toBe(0);
   });
 
-  it("accepts explicit install without spawning the bridge", () => {
-    const args = parseArgs(["--home", "/tmp/lark-acp-home", "install"]);
-    expect(args.command).toBe("install");
+  it("accepts explicit init without spawning the bridge", () => {
+    const args = parseArgs(["--home", "/tmp/lark-acp-home", "init"]);
+    expect(args.command).toBe("init");
     expect(args.home).toBe("/tmp/lark-acp-home");
   });
 
@@ -146,12 +146,12 @@ describe("parseControlJson", () => {
   });
 });
 
-describe("runInstall", () => {
+describe("runInit", () => {
   let dir: string;
   let stdoutSpy: ReturnType<typeof viSpyWrite>;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-install-"));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-init-"));
     stdoutSpy = viSpyWrite();
   });
 
@@ -162,7 +162,7 @@ describe("runInstall", () => {
 
   it("seeds templates/examples but does not create live settings or sessions", async () => {
     const home = path.join(dir, "home");
-    await runInstall(parseArgs(["--home", home, "install"]));
+    await runInit(parseArgs(["--home", home, "init"]));
 
     expect(fs.existsSync(path.join(home, "AGENTS.md"))).toBe(true);
     expect(fs.existsSync(path.join(home, "CLAUDE.md"))).toBe(true);
@@ -178,7 +178,7 @@ describe("runInstall", () => {
     });
     expect(fs.existsSync(path.join(home, "settings.json"))).toBe(false);
     expect(fs.existsSync(path.join(home, "sessions.json"))).toBe(false);
-    expect(stdoutSpy.output()).toContain("installed lark-acp home templates");
+    expect(stdoutSpy.output()).toContain("initialized lark-acp home templates");
   });
 });
 

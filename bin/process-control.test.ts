@@ -7,6 +7,7 @@ import {
   bridgePidPath,
   bridgeUnitName,
   isAlive,
+  parseProcessElapsedSeconds,
   readPid,
   rewriteSubcommand,
   ProcessControlError,
@@ -75,6 +76,24 @@ describe("isAlive", () => {
   it("reports a very-high, almost-certainly-unused PID as dead", () => {
     // 0x7fffffff is above any real PID on Linux/Windows; signal-0 → ESRCH.
     expect(isAlive(0x7fffffff)).toBe(false);
+  });
+});
+
+describe("parseProcessElapsedSeconds", () => {
+  it("parses the integer-seconds form of `ps -o etimes=`", () => {
+    expect(parseProcessElapsedSeconds("  10267\n")).toBe(10267);
+    expect(parseProcessElapsedSeconds("0\n")).toBe(0);
+  });
+
+  it("returns null for the empty output of a nonexistent PID", () => {
+    expect(parseProcessElapsedSeconds("")).toBeNull();
+    expect(parseProcessElapsedSeconds("   \n")).toBeNull();
+  });
+
+  it("returns null for non-integer / negative garbage", () => {
+    for (const bad of ["abc", "-5", "3.14", "10 20"]) {
+      expect(parseProcessElapsedSeconds(bad)).toBeNull();
+    }
   });
 });
 

@@ -362,7 +362,7 @@ export function statusBridge(opts: StatusOptions): void {
   if (unitPid !== null && isAlive(unitPid)) {
     fs.mkdirSync(opts.homeDir, { recursive: true });
     if (readPid(pidPath) !== unitPid) fs.writeFileSync(pidPath, `${unitPid}\n`, "utf-8");
-    const uptime = formatUptime(pidFileAgeMs(pidPath));
+    const uptime = formatUptime(bridgeUptimeMs(unitPid, pidPath));
     const suffix = uptime.length > 0 ? `, up ${uptime}` : "";
     process.stdout.write(`bridge: running (PID ${unitPid}${suffix}, systemd unit ${unitName})\n`);
     process.stdout.write(`  logs: ${bridgeLogPath(opts.homeDir)}\n`);
@@ -375,7 +375,7 @@ export function statusBridge(opts: StatusOptions): void {
     process.stdout.write("bridge: not running\n");
     return;
   }
-  const uptime = formatUptime(pidFileAgeMs(pidPath));
+  const uptime = formatUptime(bridgeUptimeMs(pid, pidPath));
   const suffix = uptime.length > 0 ? `, up ${uptime}` : "";
   process.stdout.write(`bridge: running (PID ${pid}${suffix})\n`);
   process.stdout.write(`  logs: ${bridgeLogPath(opts.homeDir)}\n`);
@@ -538,6 +538,41 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
     if (Date.now() >= deadline) return false;
     await delay(EXIT_POLL_INTERVAL_MS);
   }
+}
+
+/**
+ * Best-effort true uptime of a process in ms, read from the kernel's own
+ * accounting via `ps -o etimes=` (seconds since start). Unlike the PID file's
+ * mtime, this is immune to wall-clock steps (NTP, suspend/resume): `ps`
+ * derives elapsed time from the monotonic boot clock. Returns `null` when `ps`
+ * is unavailable (Windows) or the PID is unknown, so callers can fall back.
+ */
+function processUptimeMs(pid: number): number | null {
+  const result = spawnSync("ps", ["-o", "etimes=", "-p", String(pid)], { encoding: "utf-8" });
+  if (result.error !== undefined || result.status !== 0) return null;
+  const seconds = parseProcessElapsedSeconds(result.stdout ?? "");
+  return seconds === null ? null : seconds * 1_000;
+}
+
+/**
+ * Parse the output of `ps -o etimes= -p <pid>` — a single non-negative integer
+ * (elapsed seconds) surrounded by whitespace, or empty when the PID is gone.
+ * Returns the second count, or `null` for empty/malformed output.
+ */
+export function parseProcessElapsedSeconds(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const seconds = Number(trimmed);
+  return Number.isInteger(seconds) && seconds >= 0 ? seconds : null;
+}
+
+/**
+ * Uptime of the running bridge in ms: the kernel's monotonic process age when
+ * available ({@link processUptimeMs}), else the PID file's wall-clock age as a
+ * cross-platform fallback ({@link pidFileAgeMs}).
+ */
+function bridgeUptimeMs(pid: number, pidPath: string): number | null {
+  return processUptimeMs(pid) ?? pidFileAgeMs(pidPath);
 }
 
 /** Age of the PID file in ms (≈ process start time), or `null` if unreadable. */

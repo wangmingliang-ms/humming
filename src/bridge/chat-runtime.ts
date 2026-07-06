@@ -673,6 +673,14 @@ export class ChatRuntime {
 
     const result = await this.promptOrDisconnect(state, pending);
 
+    if (this.suppressPromptErrorNotice || this.aborted || this.state !== state) {
+      this.logger.info("prompt completed after runtime was superseded; skipping session persist");
+      await state.client
+        .finalize("cancelled")
+        .catch((err) => this.logger.debug({ err }, "finalize after superseded prompt rejected"));
+      return;
+    }
+
     this.logger.info({ stopReason: result.stopReason }, "prompt done");
     await state.client.finalize(stopReasonToStatus(result.stopReason));
     await this.persistSession(state.agent.sessionId);

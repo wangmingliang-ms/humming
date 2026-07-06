@@ -446,6 +446,41 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     expect(saved.at(-1)).not.toMatchObject({ title: expect.stringContaining("[上下文:") });
   });
 
+  it("does not persist a stale session when a superseded prompt later resolves", async () => {
+    const fake = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(fake.agent);
+
+    const saved: unknown[] = [];
+    const store: SessionStore = {
+      ...stubSessionStore(),
+      save: async (record) => {
+        saved.push(record);
+      },
+    };
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([]),
+      sessionStore: store,
+      agentLabel: "claude",
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "long task" }],
+      messageId: "om_supersede",
+      chatId: "oc_test",
+    });
+    runtime.supersede();
+    fake.resolvePrompt("end_turn");
+
+    await vi.waitFor(() => expect(runtime.processing).toBe(false), {
+      timeout: 1_000,
+      interval: 20,
+    });
+
+    expect(saved).toHaveLength(1);
+    expect(saved.at(-1)).toMatchObject({ sessionId: "sess_fake", agentLabel: "claude" });
+  });
+
   it("applies and reports session controls with ACP-shaped requests", async () => {
     const fake = makeFakeAgent();
     const setModel = vi.fn(async () => ({}));

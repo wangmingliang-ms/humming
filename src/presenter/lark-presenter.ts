@@ -33,6 +33,9 @@ const CANCEL_BUTTON_TEXT = "中断当前任务";
 // https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-json-v2-structure
 const CARD_SCHEMA_V2 = "2.0";
 const CARD_CONFIG_V2 = { width_mode: "fill", update_multi: true } as const;
+export const NOTICE_BODY_CHAR_LIMIT = 1_500;
+const NOTICE_TRUNCATION_SUFFIX =
+  "\n\n…\n\n_内容过长，已截断；完整细节请查看 bridge.log 或本地日志。_";
 
 function summaryForStatus(status: AgentStatus): string {
   return STATUS_HEADER[status].content;
@@ -192,11 +195,16 @@ function buildResolvedCard(
   );
 }
 
+function truncateNoticeBody(body: string): string {
+  if (body.length <= NOTICE_BODY_CHAR_LIMIT) return body;
+  return `${body.slice(0, Math.max(0, NOTICE_BODY_CHAR_LIMIT - NOTICE_TRUNCATION_SUFFIX.length)).trimEnd()}${NOTICE_TRUNCATION_SUFFIX}`;
+}
+
 function buildNoticeCard(notice: NoticeCardSpec): object {
   return buildV2Card(
     notice.title,
     notice.template,
-    [{ tag: "markdown", content: notice.body }],
+    [{ tag: "markdown", content: truncateNoticeBody(notice.body) }],
     notice.title,
   );
 }

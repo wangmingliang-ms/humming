@@ -1181,9 +1181,18 @@ class ControlApplyError extends Error {
 
 function formatControlFailure(err: unknown): string {
   if (err instanceof ControlApplyError) {
-    return `失败项: ${err.kind} ${err.target}\n原因: ${err.reason}`;
+    return truncateUserVisibleText(`失败项: ${err.kind} ${err.target}\n原因: ${err.reason}`);
   }
-  return `原因: ${formatAgentError(err)}`;
+  return truncateUserVisibleText(`原因: ${formatAgentError(err)}`);
+}
+
+const USER_VISIBLE_ERROR_LIMIT = 1_000;
+const STDERR_NOTICE_LINE_LIMIT = 8;
+const STDERR_NOTICE_CHAR_LIMIT = 1_500;
+
+function truncateUserVisibleText(text: string, limit = USER_VISIBLE_ERROR_LIMIT): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit)).trimEnd()}…（已截断，完整错误见 bridge.log）`;
 }
 
 function formatExitCode(code: number | null, signal: NodeJS.Signals | null | undefined): string {
@@ -1191,11 +1200,13 @@ function formatExitCode(code: number | null, signal: NodeJS.Signals | null | und
 }
 
 function formatExitBody(reason: string, stderrTail: readonly string[]): string {
-  const stderrSuffix =
-    stderrTail.length > 0
-      ? `\n\nstderr (最后 ${stderrTail.length} 行):\n${stderrTail.join("\n")}`
-      : "";
-  return `${reason}${stderrSuffix}`;
+  const safeReason = truncateUserVisibleText(reason);
+  if (stderrTail.length === 0) return safeReason;
+  const visibleTail = stderrTail.slice(-STDERR_NOTICE_LINE_LIMIT);
+  const stderrText = truncateUserVisibleText(visibleTail.join("\n"), STDERR_NOTICE_CHAR_LIMIT);
+  const omitted = Math.max(0, stderrTail.length - visibleTail.length);
+  const omittedLine = omitted > 0 ? `（已省略 ${omitted} 行；完整 stderr 见 bridge.log）\n` : "";
+  return `${safeReason}\n\nstderr (最后 ${visibleTail.length} 行):\n${omittedLine}${stderrText}`;
 }
 
 function stopReasonToStatus(reason: acp.StopReason): AgentStatus {
@@ -1214,13 +1225,16 @@ function stopReasonToStatus(reason: acp.StopReason): AgentStatus {
 }
 
 function formatAgentError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === "object") {
-    const obj = err as Record<string, unknown>;
-    if (typeof obj["message"] === "string") return obj["message"];
-    return JSON.stringify(err);
-  }
-  return String(err);
+  const raw = (() => {
+    if (err instanceof Error) return err.message;
+    if (err && typeof err === "object") {
+      const obj = err as Record<string, unknown>;
+      if (typeof obj["message"] === "string") return obj["message"];
+      return JSON.stringify(err);
+    }
+    return String(err);
+  })();
+  return truncateUserVisibleText(raw);
 }
 
 const ACP_AUTH_REQUIRED_CODE = -32_000;

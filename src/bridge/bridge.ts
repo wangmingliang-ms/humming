@@ -107,15 +107,24 @@ class BindError extends Error {
   override readonly name = "BindError";
 }
 
+const MAX_USER_FACING_ERROR_CHARS = 1_000;
+
+function truncateUserFacingError(message: string): string {
+  if (message.length <= MAX_USER_FACING_ERROR_CHARS) return message;
+  return `${message.slice(0, MAX_USER_FACING_ERROR_CHARS).trimEnd()}…（已截断，完整错误见 bridge.log）`;
+}
+
 function formatBootstrapError(err: unknown): string {
   // Auth failures get a clean, actionable message — no confusing internal
   // "failed to create session" chain.
-  if (err instanceof AgentAuthError) return `🔑 ${err.message}`;
-  if (!(err instanceof Error)) return String(err);
+  if (err instanceof AgentAuthError) return `🔑 ${truncateUserFacingError(err.message)}`;
+  if (!(err instanceof Error)) return truncateUserFacingError(String(err));
   const cause = err.cause;
-  if (cause instanceof AgentAuthError) return `🔑 ${cause.message}`;
-  if (cause instanceof Error && cause.message) return `${err.message}\n→ ${cause.message}`;
-  return err.message;
+  if (cause instanceof AgentAuthError) return `🔑 ${truncateUserFacingError(cause.message)}`;
+  if (cause instanceof Error && cause.message) {
+    return truncateUserFacingError(`${err.message}\n→ ${cause.message}`);
+  }
+  return truncateUserFacingError(err.message);
 }
 
 interface CardActionPayload {
@@ -1529,12 +1538,12 @@ function buildRouteFailureNotice(err: unknown): NoticeCardSpec {
 }
 
 function formatUserFacingError(err: unknown): string {
-  if (err instanceof Error) return err.message;
+  if (err instanceof Error) return truncateUserFacingError(err.message);
   if (err && typeof err === "object") {
     const obj = err as Record<string, unknown>;
-    if (typeof obj["message"] === "string") return obj["message"];
+    if (typeof obj["message"] === "string") return truncateUserFacingError(obj["message"]);
   }
-  return String(err);
+  return truncateUserFacingError(String(err));
 }
 
 function sameAgentInvocationRecord(a: SessionRecord, b: SessionRecord): boolean {

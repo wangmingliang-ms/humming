@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as acp from "@agentclientprotocol/sdk";
-import { LarkCardPresenter } from "./lark-presenter.js";
+import { LarkCardPresenter, NOTICE_BODY_CHAR_LIMIT } from "./lark-presenter.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
 
@@ -223,5 +223,21 @@ describe("LarkCardPresenter card summary", () => {
     await presenter.sendInterruptCard("om_1", permissionRequest(), "req_1", "oc_1", "omt_1");
 
     expect(calls.map((call) => call.opts?.replyInThread)).toEqual([true, true]);
+  });
+
+  it("truncates oversized notice card bodies", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+
+    await presenter.replyNoticeCard("om_1", {
+      title: "⚠️ Agent 异常退出",
+      body: `Agent crashed\n\nstderr (最后 50 行):\n${"x".repeat(NOTICE_BODY_CHAR_LIMIT + 1_000)}`,
+      template: "red",
+    });
+
+    const content = cards[0]?.body?.elements?.[0]?.content ?? "";
+    expect(content.length).toBeLessThanOrEqual(NOTICE_BODY_CHAR_LIMIT);
+    expect(content).toContain("内容过长，已截断");
+    expect(content).toContain("bridge.log");
   });
 });

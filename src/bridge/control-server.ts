@@ -97,6 +97,7 @@ export class BridgeControlServer {
 
     this.server = net.createServer({ allowHalfOpen: true }, (socket) => {
       let buf = "";
+      let handled = false;
       socket.setEncoding("utf-8");
       socket.on("error", (err) => {
         const code = errnoCode(err);
@@ -107,14 +108,17 @@ export class BridgeControlServer {
         this.logger.warn({ err }, "control socket error");
       });
       socket.on("data", (chunk) => {
+        if (handled) return;
         buf += chunk;
+        const newline = buf.indexOf("\n");
+        if (newline < 0) return;
+        handled = true;
+        this.reply(socket, buf.slice(0, newline));
       });
       socket.on("end", () => {
-        this.handleRaw(buf)
-          .then((response) => socket.end(`${JSON.stringify(response)}\n`))
-          .catch((err: unknown) =>
-            socket.end(`${JSON.stringify({ ok: false, error: formatError(err) })}\n`),
-          );
+        if (handled) return;
+        handled = true;
+        this.reply(socket, buf);
       });
     });
 
@@ -137,6 +141,15 @@ export class BridgeControlServer {
     if (!server) return;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     removeQuietly(this.socketPath);
+  }
+
+  private async reply(socket: net.Socket, raw: string): Promise<void> {
+    try {
+      const response = await this.handleRaw(raw);
+      socket.end(`${JSON.stringify(response)}\n`);
+    } catch (err: unknown) {
+      socket.end(`${JSON.stringify({ ok: false, error: formatError(err) })}\n`);
+    }
   }
 
   private async handleRaw(raw: string): Promise<ControlResponse> {
@@ -214,21 +227,46 @@ export async function sendControlRequest(
   return new Promise<ControlResponse>((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let buf = "";
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
     socket.setEncoding("utf-8");
     socket.on("connect", () => {
-      socket.end(JSON.stringify(request));
+      socket.write(`${JSON.stringify(request)}\n`);
     });
     socket.on("data", (chunk) => {
       buf += chunk;
+      const newline = buf.indexOf("\n");
+      if (newline < 0) return;
+      const frame = buf.slice(0, newline);
+      settle(() => {
+        socket.end();
+        try {
+          const parsed = JSON.parse(frame) as ControlResponse;
+          resolve(parsed);
+        } catch (err) {
+          reject(err);
+        }
+      });
     });
-    socket.on("error", reject);
+    socket.on("error", (err) => settle(() => reject(err)));
     socket.on("end", () => {
-      try {
-        const parsed = JSON.parse(buf) as ControlResponse;
-        resolve(parsed);
-      } catch (err) {
-        reject(err);
-      }
+      if (settled) return;
+      settle(() => {
+        if (buf.trim().length === 0) {
+          reject(new Error("empty control response"));
+          return;
+        }
+        try {
+          const parsed = JSON.parse(buf) as ControlResponse;
+          resolve(parsed);
+        } catch (err) {
+          reject(err);
+        }
+      });
     });
   });
 }

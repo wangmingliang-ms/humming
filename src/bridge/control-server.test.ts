@@ -176,6 +176,66 @@ describe("BridgeControlServer", () => {
     });
   });
 
+  it("responds to newline-framed requests before the client half-closes", async () => {
+    const socketPath = path.join(dir, "control.sock");
+    server = new BridgeControlServer({
+      socketPath,
+      logger: createPinoLogger(),
+      handlers: {
+        capabilities: async (chatId, threadId) => ({
+          session: { chatId, threadId, sessionId: "sess_pipe" },
+          agent: { command: "node", args: [], cwd: "/repo" },
+          bridgePermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
+          bridgePermissionMode: "alwaysAsk",
+        }),
+        setControls: async () => ({ applied: true }),
+        bindSession: async (record) => ({ bound: true, record }),
+        setAgent: async (record) => ({ switched: true, record }),
+        agentProbeFailed: async () => ({ notified: true }),
+      },
+    });
+    await server.start();
+
+    const socket = net.createConnection(socketPath);
+    socket.setEncoding("utf-8");
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+
+    const responsePromise = new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("timed out waiting for newline-framed control response"));
+      }, 500);
+      let raw = "";
+      socket.on("data", (chunk) => {
+        raw += chunk;
+        if (!raw.includes("\n")) return;
+        clearTimeout(timeout);
+        socket.destroy();
+        resolve(raw);
+      });
+      socket.once("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+
+    socket.write(
+      `${JSON.stringify({
+        method: "capabilities",
+        params: { chatId: "oc_A", threadId: "th_1" },
+      })}\n`,
+    );
+
+    const raw = await responsePromise;
+    expect(JSON.parse(raw)).toMatchObject({
+      ok: true,
+      result: { session: { chatId: "oc_A", threadId: "th_1", sessionId: "sess_pipe" } },
+    });
+  });
+
   it("does not crash when a control client disconnects before the response", async () => {
     const socketPath = path.join(dir, "control.sock");
     let releaseHandler: (() => void) | null = null;

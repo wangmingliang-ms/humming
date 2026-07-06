@@ -66,8 +66,9 @@ Both `install.sh` and `install.ps1` change from temp-dir to persistent:
 
 1. Resolve the managed checkout dir `<home>/humming-project`.
 2. If it does not exist: `git clone https://github.com/$HUMMING_REPO.git` into it
-   at branch `$HUMMING_REF`. If it already exists: `git fetch` +
-   `git reset --hard origin/$HUMMING_REF` (idempotent re-install).
+   at branch `$HUMMING_REF`. If it already exists: `git fetch origin` +
+   `git checkout -f $HUMMING_REF` + `git reset --hard origin/$HUMMING_REF`
+   (idempotent re-install, same sequence as `update` step 2).
 3. `npm install` in the checkout.
 4. `npm run build`.
 5. **`npm link`** (instead of `npm install -g --install-links .`) so the global
@@ -93,8 +94,13 @@ Flow:
 1. **Locate** the managed checkout `<home>/humming-project`.
    - **If it does not exist → hard error**, non-zero exit, message telling the
      user to re-run the install script. No clone, no self-heal.
-2. **Hard-sync `main`:** `git fetch origin` then
-   `git reset --hard origin/$HUMMING_REF` (default `main`).
+2. **Hard-sync `main`:** `git fetch origin`, then `git checkout -f $HUMMING_REF`
+   (default `main`), then `git reset --hard origin/$HUMMING_REF`. `fetch` runs
+   first so an overridden `HUMMING_REF` that is not yet a local branch can still
+   be checked out (git DWIM auto-creates a tracking branch from `origin/<ref>`);
+   `checkout -f` guarantees we land on the target branch even if the checkout was
+   left detached or the worktree was dirtied, matching the "always hard-synced,
+   machine-owned artifact" invariant.
 3. **Reinstall + rebuild:** `npm install` then `npm run build`, run *in* the
    checkout dir.
 4. **Refresh global command:** `npm link` (idempotent — ensures the global bin

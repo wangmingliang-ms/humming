@@ -302,6 +302,13 @@ export class HummingClient implements acp.Client {
   private permissionBoundaryThisPrompt = false;
   private needsBoundaryCompaction = false;
   private readonly cardFailureNoticePhases = new Set<CardUpdateFailurePhase>();
+  /**
+   * True only between {@link setContext} and terminal {@link finalize}. ACP
+   * adapters can still deliver buffered session updates after a prompt has
+   * already resolved or after the runtime has been superseded. Those late
+   * updates must not reopen a sealed card and make it look in-progress again.
+   */
+  private acceptingRenderableUpdates = false;
 
   constructor(opts: HummingClientOptions) {
     this.presenter = opts.presenter;
@@ -329,6 +336,7 @@ export class HummingClient implements acp.Client {
     this.currentChatId = chatId;
     this.currentThreadId = threadId;
     this.cardFailureNoticePhases.clear();
+    this.acceptingRenderableUpdates = true;
   }
 
   // ----- Permission flow --------------------------------------------------
@@ -495,6 +503,7 @@ export class HummingClient implements acp.Client {
     const u = params.update;
     switch (u.sessionUpdate) {
       case "agent_message_chunk":
+        if (!this.acceptingRenderableUpdates) return;
         if (u.content.type === "text") {
           this.appendText("text", u.content.text);
           this.markCompactionNeededIfOverSoftLimit();
@@ -504,6 +513,7 @@ export class HummingClient implements acp.Client {
         return;
 
       case "agent_thought_chunk":
+        if (!this.acceptingRenderableUpdates) return;
         if (u.content.type === "text" && this.showThoughts) {
           this.appendText("thought", u.content.text);
           this.markCompactionNeededIfOverSoftLimit();
@@ -513,6 +523,7 @@ export class HummingClient implements acp.Client {
         return;
 
       case "tool_call": {
+        if (!this.acceptingRenderableUpdates) return;
         this.compactTimelineAtBoundary("tool");
         if (!this.showTools) {
           this.scheduleFlush();
@@ -539,6 +550,7 @@ export class HummingClient implements acp.Client {
       }
 
       case "tool_call_update": {
+        if (!this.acceptingRenderableUpdates) return;
         if (!this.showTools) return;
         const toolCallId = u.toolCallId;
         if (!toolCallId) return;
@@ -618,6 +630,7 @@ export class HummingClient implements acp.Client {
     this.cardCreating = null;
     this.permissionBoundaryThisPrompt = false;
     this.needsBoundaryCompaction = false;
+    this.acceptingRenderableUpdates = false;
     this.status = "thinking";
   }
 

@@ -173,6 +173,37 @@ describe("HummingClient card-v2 conversation rendering", () => {
     ]);
   });
 
+  it("ignores late renderable updates after a prompt has already been finalized", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Done." },
+      },
+    });
+    await waitForFlush();
+    await client.finalize("complete");
+    const opCountAfterFinalize = ops.length;
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Late chunk from old prompt." },
+      },
+    });
+    await waitForFlush();
+
+    expect(ops).toHaveLength(opCountAfterFinalize);
+    expect(ops.at(-1)).toMatchObject({
+      kind: "updateUnified",
+      state: { status: "complete", cancellable: false },
+    });
+  });
+
   it("seals the current conversation card before an approval card and starts a new card after approval", async () => {
     const ops: RenderOp[] = [];
     const client = makeClient(ops);

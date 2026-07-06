@@ -12,7 +12,7 @@ When a user asks to change humming settings, bind a chat to a repository, bind t
 - Settings example: `{{SETTINGS_EXAMPLE_PATH}}`
 - Sessions example: `{{SESSIONS_EXAMPLE_PATH}}`
 
-Do not print or copy secrets. Treat App IDs, chat IDs, session IDs, tokens, API keys, and connection strings as sensitive.
+Do not print or copy secrets. Treat App IDs, chat IDs, session IDs, tokens, API keys, and connection strings as sensitive. Use `humming setup` to create/save Feishu credentials; it masks App ID in output and never prints App Secret.
 
 ## Settings / bindings
 

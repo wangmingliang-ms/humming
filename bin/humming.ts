@@ -40,6 +40,11 @@ import {
   probeAgentSessionCapabilities,
 } from "../src/index.js";
 import { installHomeTemplates } from "../src/home-templates.js";
+import {
+  runFeishuQrRegistration,
+  type FeishuRegistrationDomain,
+  type FeishuQrRegistrationProgress,
+} from "../src/lark/registration.js";
 import type {
   LarkLogger,
   PermissionMode,
@@ -580,6 +585,7 @@ type ParsedArgs = {
   readonly command:
     | "proxy"
     | "agents"
+    | "setup"
     | "help"
     | "version"
     | "start"
@@ -628,6 +634,8 @@ type ParsedArgs = {
   readonly targetAgent?: string;
   readonly targetSessionId?: string;
   readonly controlJson?: string | boolean;
+  readonly setupTarget?: FeishuRegistrationDomain;
+  readonly setupForce?: boolean;
 };
 
 const HELP_FLAGS = new Set(["-h", "--help"]);
@@ -690,6 +698,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       break;
     }
     if (token === "agents") return finalize("agents");
+    if (token === "setup") return finalize("setup", undefined, [], parseSetupFlags(argv, i + 1));
     if (token === "init") return finalize("init");
     if (token === "update") return finalize("update");
     if (token === "help") return finalize("help");
@@ -825,6 +834,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       readonly targetAgent?: string;
       readonly targetSessionId?: string;
       readonly controlJson?: string | boolean;
+      readonly setupTarget?: FeishuRegistrationDomain;
+      readonly setupForce?: boolean;
     } = {},
   ): ParsedArgs {
     return {
@@ -856,8 +867,37 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(extra.targetAgent !== undefined ? { targetAgent: extra.targetAgent } : {}),
       ...(extra.targetSessionId !== undefined ? { targetSessionId: extra.targetSessionId } : {}),
       ...(extra.controlJson !== undefined ? { controlJson: extra.controlJson } : {}),
+      ...(extra.setupTarget !== undefined ? { setupTarget: extra.setupTarget } : {}),
+      ...(extra.setupForce !== undefined ? { setupForce: extra.setupForce } : {}),
     };
   }
+}
+
+function parseSetupFlags(
+  argv: readonly string[],
+  start: number,
+): { readonly setupTarget: FeishuRegistrationDomain; readonly setupForce?: boolean } {
+  let target: FeishuRegistrationDomain = "feishu";
+  let force = false;
+  let i = start;
+  while (i < argv.length) {
+    const token = argv[i];
+    if (token === undefined) break;
+    if (token === "--force") {
+      force = true;
+      i += 1;
+      continue;
+    }
+    if (token === "feishu" || token === "lark") {
+      target = token;
+      i += 1;
+      continue;
+    }
+    throw new CliError(
+      `setup accepts only optional target feishu|lark and --force (got: ${token})`,
+    );
+  }
+  return { setupTarget: target, ...(force ? { setupForce: true } : {}) };
 }
 
 /**
@@ -1228,6 +1268,90 @@ function formatError(err: unknown): string {
   return String(err);
 }
 
+type SetupCredentials = {
+  readonly appId: string;
+  readonly appSecret: string;
+};
+
+type SetupSummary = SetupCredentials & {
+  readonly settingsPath: string;
+  readonly domain: FeishuRegistrationDomain;
+  readonly botName?: string;
+};
+
+const SETTINGS_FILE_MODE = 0o600;
+
+function maskCredentialId(value: string): string {
+  if (value.length <= 8) return "[saved]";
+  const prefix = value.startsWith("cli_") ? "cli_" : value.slice(0, 4);
+  return `${prefix}…${value.slice(-4)}`;
+}
+
+function formatSetupSummary(summary: SetupSummary): string {
+  return [
+    "Feishu / Lark bot configured.",
+    `Settings: ${summary.settingsPath}`,
+    `App ID: ${maskCredentialId(summary.appId)}`,
+    `App Secret: [saved]`,
+    `Domain: ${summary.domain}`,
+    ...(summary.botName !== undefined ? [`Bot: ${summary.botName}`] : []),
+    "",
+    `Next: ${APP_NAME} start`,
+    "",
+  ].join("\n");
+}
+
+/**
+ * Merge scan-created credentials into settings.json while preserving unrelated settings.
+ *
+ * @throws {CliError} when the existing settings file cannot be parsed as a JSON object.
+ */
+function writeSetupCredentials(settingsPath: string, credentials: SetupCredentials): void {
+  const existing = readSettingsObjectForWrite(settingsPath);
+  const next = {
+    ...existing,
+    credentials: {
+      appId: credentials.appId,
+      appSecret: credentials.appSecret,
+    },
+  };
+  atomicWritePrivateJson(settingsPath, next);
+}
+
+function readSettingsObjectForWrite(settingsPath: string): Record<string, unknown> {
+  if (!fs.existsSync(settingsPath)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+  } catch (err) {
+    throw new CliError(`settings file ${settingsPath} is not valid JSON: ${formatError(err)}`);
+  }
+  if (!isRecord(parsed))
+    throw new CliError(`settings file ${settingsPath} must contain a JSON object`);
+  return parsed;
+}
+
+function atomicWritePrivateJson(filePath: string, value: Readonly<Record<string, unknown>>): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  fs.writeFileSync(tmpPath, content, { encoding: "utf-8", mode: SETTINGS_FILE_MODE });
+  try {
+    fs.chmodSync(tmpPath, SETTINGS_FILE_MODE);
+  } catch {
+    // Best effort: Windows and some filesystems ignore POSIX modes.
+  }
+  fs.renameSync(tmpPath, filePath);
+  try {
+    fs.chmodSync(filePath, SETTINGS_FILE_MODE);
+  } catch {
+    // Best effort: Windows and some filesystems ignore POSIX modes.
+  }
+}
+
 const SILENT_LOGGER: LarkLogger = {
   debug(): void {},
   info(): void {},
@@ -1250,6 +1374,7 @@ function printHelp(): void {
     `Usage:`,
     `  ${APP_NAME} [global-options] proxy [--agent <preset>] [-- <extra-args>...]`,
     `  ${APP_NAME} [global-options] proxy -- <agent-cmd> [agent-args]...`,
+    `  ${APP_NAME} [global-options] setup [feishu|lark] [--force]`,
     `  ${APP_NAME} [global-options] start [--agent <preset>]   (run proxy in background)`,
     `  ${APP_NAME} [global-options] init                       (seed home templates)`,
     `  ${APP_NAME} [global-options] stop | restart | status`,
@@ -1301,6 +1426,9 @@ function printHelp(): void {
     `                         Combined with --agent, extra tokens are appended to the`,
     `                         preset's args.`,
     `  agents                 List built-in agent presets and exit.`,
+    `  setup [feishu|lark]    Scan a QR code to create a Feishu/Lark bot app`,
+    `    --force              Replace existing credentials in settings.json.`,
+    `                         Output masks App ID and never prints App Secret.`,
     `  init                   Create/update humming home templates and examples:`,
     `                         AGENTS.md, CLAUDE.md, settings.back.json, sessions.back.json.`,
     `                         Does NOT create live settings.json or sessions.json.`,
@@ -2171,6 +2299,74 @@ async function runInit(args: ParsedArgs): Promise<void> {
   );
 }
 
+async function runSetup(args: ParsedArgs): Promise<void> {
+  const homeDir = resolveHomeDir(args.home);
+  fs.mkdirSync(homeDir, { recursive: true });
+  const configPath = resolveSettingsPath(args.configPath, homeDir);
+  installHomeTemplates({
+    homeDir,
+    settingsPath: configPath,
+    sessionsPath: path.join(homeDir, "sessions.json"),
+    controlSocketPath: bridgeControlSocketPath(homeDir),
+  });
+  migrateLegacyIfNeeded(homeDir, configPath, SILENT_LOGGER);
+
+  const existing = readConfigFile(configPath);
+  if (existing.credentials.appId && existing.credentials.appSecret && args.setupForce !== true) {
+    throw new CliError(
+      `Feishu / Lark credentials already exist in ${configPath}. Re-run with \`${APP_NAME} setup --force\` to replace them.`,
+    );
+  }
+
+  const target = args.setupTarget ?? "feishu";
+  process.stdout.write("Feishu / Lark scan setup\n\n");
+  const result = await runFeishuQrRegistration({
+    domain: target,
+    onProgress: printSetupProgress,
+  });
+  if (result === null) {
+    throw new CliError("Feishu / Lark scan setup did not complete. No credentials were changed.");
+  }
+
+  writeSetupCredentials(configPath, { appId: result.appId, appSecret: result.appSecret });
+  process.stdout.write(
+    formatSetupSummary({
+      settingsPath: configPath,
+      appId: result.appId,
+      appSecret: result.appSecret,
+      domain: result.domain,
+      ...(result.botName !== undefined ? { botName: result.botName } : {}),
+    }),
+  );
+}
+
+function printSetupProgress(event: FeishuQrRegistrationProgress): void {
+  switch (event.kind) {
+    case "connecting":
+      process.stdout.write("Connecting to Feishu / Lark...\n");
+      return;
+    case "qr":
+      if (event.rendered) {
+        process.stdout.write("\nScan the QR code above with Feishu / Lark mobile.\n");
+      } else {
+        process.stdout.write("Open this URL with Feishu / Lark mobile:\n");
+      }
+      process.stdout.write(`${event.qrUrl}\n\n`);
+      return;
+    case "polling":
+      process.stdout.write("Waiting for scan approval...\n");
+      return;
+    case "success":
+      process.stdout.write(`Configuration received for ${maskCredentialId(event.appId)}.\n\n`);
+      return;
+    case "failed":
+      process.stdout.write(`Setup failed or was denied: ${event.reason}\n`);
+      return;
+    default:
+      assertNever(event);
+  }
+}
+
 /**
  * Turn a `start`/`restart` invocation into the `proxy` argv to background.
  *
@@ -2308,6 +2504,9 @@ async function main(): Promise<void> {
       printAgents(buildRegistry(file.agents));
       return;
     }
+    case "setup":
+      await runSetup(args);
+      return;
     case "init":
       await runInit(args);
       return;
@@ -2394,6 +2593,10 @@ export {
   parseControlJson,
   runProxy,
   runInit,
+  runSetup,
+  writeSetupCredentials,
+  formatSetupSummary,
+  maskCredentialId,
   resolveUpdateRef,
   restartHasExplicitOptions,
   DEFAULT_AGENT,

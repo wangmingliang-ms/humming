@@ -92,6 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/humming/main/unins
 ```
 humming [global-options] proxy [--agent <preset>] [-- <extra-args>...]
 humming [global-options] proxy -- <agent-cmd> [agent-args...]
+humming [global-options] setup [feishu|lark] [--force] # 扫码一键创建飞书/Lark Bot 并保存凭据
 humming [global-options] init                       # 初始化 ~/.humming 模板
 humming [global-options] start [--agent <preset>]   # 后台运行 proxy
 humming [global-options] stop | restart | status
@@ -118,6 +119,30 @@ humming version
 全局选项必须放在 `proxy`（或 `start` / `restart`）子命令之前。
 
 `proxy` 是**前台**运行（占住终端，`Ctrl-C` 停止）；`start` 把同样的 `proxy` 放到**后台**跑，见下文「后台运行与进程管理」。
+
+### 一键扫码配置飞书 / Lark Bot
+
+推荐先跑：
+
+```bash
+humming setup
+```
+
+Humming 会在终端显示二维码；用飞书 / Lark 手机 App 扫码确认后，飞书开放平台会自动创建一个适合 agent 的自建 Bot 应用，并把 App ID / App Secret 返回给本机 CLI。Humming 会把凭据保存到 `~/.humming/settings.json` 的 `credentials` block，并尽量把文件权限设置为 `0600`。
+
+已有凭据时，`setup` 默认拒绝覆盖；确实要重新生成/替换时使用：
+
+```bash
+humming setup --force
+```
+
+国际版 Lark 可以显式指定：
+
+```bash
+humming setup lark
+```
+
+安全约束：命令输出只显示脱敏后的 App ID，**不会打印 App Secret**。如果扫码流程不可用，仍可按下方「配置文件」和「飞书开发者后台配置」手动创建应用并填写凭据。
 
 ### 内置 agent 预设
 
@@ -388,11 +413,11 @@ CLI 读取一份配置文件（默认 `~/.humming/settings.json`；旧的 `~/.co
 }
 ```
 
-凭据可以用环境变量代替文件：`HUMMING_APP_ID` / `HUMMING_APP_SECRET`。
+凭据可以通过 `humming setup` 扫码生成并写入文件，也可以用环境变量代替文件：`HUMMING_APP_ID` / `HUMMING_APP_SECRET`。
 
 `humming agents` 会列出当前配置下所有可用的预设，并标出来源（`[built-in]` / `[user]` / `[overridden]`）。
 
-> 在飞书开放平台 [开发者后台](https://open.larksuite.com/app) 创建一个"自建应用"，从「凭证与基础信息」页拿 `App ID` / `App Secret`；在「事件与回调」里把订阅模式切到 **长连接 (WebSocket)**。具体步骤见下文「飞书开发者后台配置」。
+> 推荐使用 `humming setup` 一键扫码创建应用。只有在扫码流程不可用、或你需要复用已有自建应用时，才需要到飞书开放平台 [开发者后台](https://open.larksuite.com/app) 手动创建应用，从「凭证与基础信息」页拿 `App ID` / `App Secret`；在「事件与回调」里把订阅模式切到 **长连接 (WebSocket)**。具体步骤见下文「飞书开发者后台配置」。
 
 ### 飞书开发者后台配置
 

@@ -65,6 +65,28 @@ export { SettingsBindingStore } from "./binding-store/settings-binding-store.js"
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";
 export {
+  FeishuRegistrationError,
+  beginFeishuRegistration,
+  initFeishuRegistration,
+  pollFeishuRegistration,
+  probeFeishuBot,
+  renderQrToTerminal,
+  runFeishuQrRegistration,
+} from "./lark/registration.js";
+export type {
+  FeishuBeginRegistrationResult,
+  FeishuBotProbeResult,
+  FeishuQrRegistrationProgress,
+  FeishuQrRegistrationResult,
+  FeishuRegistrationCredentials,
+  FeishuRegistrationDomain,
+  FeishuRegistrationOptions,
+  FeishuRegistrationTransport,
+  PollFeishuRegistrationOptions,
+  QrTerminalRenderer,
+  RunFeishuQrRegistrationOptions,
+} from "./lark/registration.js";
+export {
   LIFECYCLE_NOTICE_KINDS,
   LifecycleNoticeTimeoutError,
   buildLifecycleNoticeCard,

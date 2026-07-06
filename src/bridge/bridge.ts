@@ -1636,19 +1636,12 @@ function buildSessionAgentSwitchedNotice(
   before?: SessionRecord | null,
 ): NoticeCardSpec {
   const beforeAgent = before ? (before.agentLabel ?? before.agentCommand) : "未绑定";
+  const currentAgent = record.agentLabel ?? record.agentCommand;
   const lines = [
-    "当前 topic 的 Agent 已切换。旧 Agent 的内部对话历史不会自动迁移；下一条消息会用新 Agent 创建全新 ACP session。",
+    `当前 topic 的 Agent 已切换为 **${currentAgent}**。旧 Agent 的内部对话历史不会自动迁移；下一条消息会用新 Agent 创建全新 ACP session。`,
     "",
-    "**修改明细**",
-    `• Agent：${beforeAgent} → ${record.agentLabel ?? record.agentCommand}`,
-    `• Repo：${before?.cwd ?? "未绑定"} → ${record.cwd}`,
-    `• Mode：${displayControlMode(before?.controls)} → ${displayControlMode(record.controls)}`,
-    `• Model：${displayControlModel(before?.controls)} → ${displayControlModel(record.controls)}`,
-    `• Permission：${displayControlPermission(before?.controls)} → ${displayControlPermission(record.controls)}`,
-    `• Controls：${displayControlConfig(before?.controls)} → ${displayControlConfig(record.controls)}`,
-    "",
-    "**切换后**",
-    `• Agent：${record.agentLabel ?? record.agentCommand}`,
+    "**切换结果**",
+    `• Agent：${beforeAgent} → ${currentAgent}`,
     `• Repo：${record.cwd}`,
     `• Mode：${displayControlMode(record.controls)}`,
     `• Model：${displayControlModel(record.controls)}`,

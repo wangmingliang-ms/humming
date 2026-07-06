@@ -411,10 +411,14 @@ describe("session bind conflicts", () => {
     const notice = presenter.notices.at(-1);
     expect(notice).toMatchObject({ title: "✅ Agent 已切换", template: "green" });
     expect(notice?.body).toContain("旧 Agent 的内部对话历史不会自动迁移");
+    expect(notice?.body).toContain("**切换结果**");
     expect(notice?.body).toContain("Agent：claude → codex");
-    expect(notice?.body).toContain("Model：opus → —");
-    expect(notice?.body).toContain("Mode：default → —");
-    expect(notice?.body).toContain("Controls：acceptEdits: on → —");
+    expect(notice?.body).toContain(`Repo：${repoA}`);
+    expect(notice?.body).toContain("Model：—");
+    expect(notice?.body).toContain("Mode：—");
+    expect(notice?.body).toContain("Controls：—");
+    expect(notice?.body).not.toContain("**修改明细**");
+    expect(notice?.body).not.toContain("**切换后**");
     expect(notice?.body).not.toContain("s_claude_old");
     expect(notice?.body).not.toContain("profile:copilot");
   });

@@ -96,6 +96,14 @@ export class BridgeControlServer {
     this.server = net.createServer({ allowHalfOpen: true }, (socket) => {
       let buf = "";
       socket.setEncoding("utf-8");
+      socket.on("error", (err) => {
+        const code = errnoCode(err);
+        if (code === "EPIPE" || code === "ECONNRESET") {
+          this.logger.debug({ err }, "control client disconnected before response");
+          return;
+        }
+        this.logger.warn({ err }, "control socket error");
+      });
       socket.on("data", (chunk) => {
         buf += chunk;
       });

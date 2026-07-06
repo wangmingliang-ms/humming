@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -173,5 +174,53 @@ describe("BridgeControlServer", () => {
         noticeMessageId: "om_notice",
       },
     });
+  });
+
+  it("does not crash when a control client disconnects before the response", async () => {
+    const socketPath = path.join(dir, "control.sock");
+    let releaseHandler: (() => void) | null = null;
+    const release = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    server = new BridgeControlServer({
+      socketPath,
+      logger: createPinoLogger(),
+      handlers: {
+        capabilities: async (chatId, threadId) => {
+          await release;
+          return {
+            session: { chatId, threadId, sessionId: "sess_slow" },
+            agent: { command: "node", args: [], cwd: "/repo" },
+            bridgePermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
+            bridgePermissionMode: "alwaysAsk",
+          };
+        },
+        setControls: async () => ({ applied: true }),
+        bindSession: async (record) => ({ bound: true, record }),
+        setAgent: async (record) => ({ switched: true, record }),
+        agentProbeFailed: async () => ({ notified: true }),
+      },
+    });
+    await server.start();
+
+    const socket = net.createConnection(socketPath);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+    socket.write(
+      JSON.stringify({
+        method: "capabilities",
+        params: { chatId: "oc_A", threadId: "th_1" },
+      }),
+    );
+    socket.destroy();
+    releaseHandler?.();
+
+    const response = await sendControlRequest(socketPath, {
+      method: "capabilities",
+      params: { chatId: "oc_A", threadId: "th_1" },
+    });
+    expect(response).toMatchObject({ ok: true, result: { session: { sessionId: "sess_slow" } } });
   });
 });

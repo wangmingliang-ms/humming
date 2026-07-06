@@ -43,6 +43,12 @@ export interface ChatRuntimeOptions {
   permissionMode: PermissionMode;
   agentLabel?: string;
   /**
+   * Controls copied from the most recent session profile in the same chat +
+   * repo. Used only when this runtime creates a brand-new ACP session; existing
+   * topic sessions keep their own persisted controls.
+   */
+  inheritedControls?: SessionControls;
+  /**
    * Start a new ACP session even if sessions.json has a saved session for this
    * chat/thread. Used when a repo binding is unavailable and the bridge falls
    * back to the Humming home reception area — the old session belongs to the
@@ -214,6 +220,10 @@ export class ChatRuntime {
   async applyControls(controls: SessionControls): Promise<void> {
     const state = this.state;
     if (!state) throw new Error("session runtime is not started yet");
+    const beforeSnapshot = cloneCapabilitiesSnapshot({
+      ...state.sessionCapabilities,
+      bridgePermissionMode: state.client.getPermissionMode(),
+    });
     try {
       this.validateControls(state.sessionCapabilities, controls);
       const nextCapabilities = await this.applyControlsToState(state, controls);
@@ -222,6 +232,15 @@ export class ChatRuntime {
       }
       state.sessionCapabilities = nextCapabilities;
       await this.persistSession(state.agent.sessionId, controls);
+      await this.notifyControlSuccess(
+        state,
+        beforeSnapshot,
+        {
+          ...state.sessionCapabilities,
+          bridgePermissionMode: state.client.getPermissionMode(),
+        },
+        controls,
+      );
     } catch (err) {
       await this.notifyControlFailure(state, err);
       throw err;
@@ -260,7 +279,10 @@ export class ChatRuntime {
       showTools: this.opts.showTools,
       showCancelButton: this.opts.showCancelButton,
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
-      permissionMode: latest?.controls?.bridgePermissionMode ?? this.opts.permissionMode,
+      permissionMode:
+        latest?.controls?.bridgePermissionMode ??
+        this.opts.inheritedControls?.bridgePermissionMode ??
+        this.opts.permissionMode,
       metaProvider,
       onSessionInfoUpdate: (update) => {
         if (stateRef === null) return;
@@ -319,6 +341,29 @@ export class ChatRuntime {
       state.sessionCapabilities = await this.applyControlsToState(state, latest.controls);
       if (latest.controls.bridgePermissionMode !== undefined) {
         state.client.setPermissionMode(latest.controls.bridgePermissionMode);
+      }
+    } else if (this.opts.inheritedControls) {
+      const { controls, ignored } = filterInheritedControls(
+        state.sessionCapabilities,
+        this.opts.inheritedControls,
+      );
+      if (hasControls(controls)) {
+        try {
+          state.sessionCapabilities = await this.applyControlsToState(state, controls);
+          if (controls.bridgePermissionMode !== undefined) {
+            state.client.setPermissionMode(controls.bridgePermissionMode);
+          }
+          await this.persistSession(agent.sessionId, controls);
+        } catch (err) {
+          ignored.push({
+            kind: "Apply",
+            target: "inherited controls",
+            reason: formatAgentError(err),
+          });
+        }
+      }
+      if (ignored.length > 0) {
+        await this.notifyInheritedControlsIgnored(firstMessage.messageId, ignored);
       }
     }
 
@@ -426,6 +471,45 @@ export class ChatRuntime {
         template: "red",
       })
       .catch((sendErr) => this.logger.warn({ err: sendErr }, "control failure notice failed"));
+  }
+
+  private async notifyControlSuccess(
+    state: ChatRuntimeState,
+    before: SessionCapabilitiesSnapshot,
+    after: SessionCapabilitiesSnapshot,
+    controls: SessionControls,
+  ): Promise<void> {
+    const messageId = state.lastMessageId;
+    if (!messageId) return;
+    await this.opts.presenter
+      .replyNoticeCard(messageId, {
+        title: "✅ Session profile 已更新",
+        body: renderControlSuccessBody(before, after, controls),
+        template: "green",
+      })
+      .catch((sendErr) => this.logger.warn({ err: sendErr }, "control success notice failed"));
+  }
+
+  private async notifyInheritedControlsIgnored(
+    messageId: string,
+    ignored: readonly IgnoredInheritedControl[],
+  ): Promise<void> {
+    const body = [
+      "从当前 repo 最近 session 继承 profile 时，部分 session 设置在当前 agent 上无效，已忽略。",
+      "",
+      ...ignored.map((item) => `• ${item.kind} ${item.target}：${item.reason}`),
+      "",
+      "其余可用设置已正常应用，session 会继续启动。",
+    ].join("\n");
+    await this.opts.presenter
+      .replyNoticeCard(messageId, {
+        title: "⚠️ 部分继承的 session 设置无效，已忽略",
+        body,
+        template: "orange",
+      })
+      .catch((sendErr) =>
+        this.logger.warn({ err: sendErr }, "inherited controls warning notice failed"),
+      );
   }
 
   private async applyControlsToState(
@@ -816,6 +900,76 @@ function bridgePermissionLabel(mode: SessionCapabilitiesSnapshot["bridgePermissi
   }
 }
 
+function renderControlSuccessBody(
+  before: SessionCapabilitiesSnapshot,
+  after: SessionCapabilitiesSnapshot,
+  controls: SessionControls,
+): string {
+  const changed = controlChangeLines(before, after, controls);
+  return [
+    "当前 topic 的 session profile 已切换。",
+    "",
+    "**修改明细**",
+    ...changed,
+    "",
+    "**当前 profile**",
+    `• Agent：${displayAgent(after.agent)}`,
+    `• Mode：${displayMode(after)}`,
+    `• Model：${displayModel(after)}`,
+    `• Permission：${displayPermission(after)}`,
+    `• Controls：${displayControls(after)}`,
+  ].join("\n");
+}
+
+function controlChangeLines(
+  before: SessionCapabilitiesSnapshot,
+  after: SessionCapabilitiesSnapshot,
+  controls: SessionControls,
+): string[] {
+  const lines: string[] = [];
+  if (controls.modeId !== undefined) {
+    lines.push(`• Mode：${displayMode(before)} → ${displayMode(after)}`);
+  }
+  if (controls.modelId !== undefined) {
+    lines.push(`• Model：${displayModel(before)} → ${displayModel(after)}`);
+  }
+  if (controls.bridgePermissionMode !== undefined) {
+    lines.push(
+      `• Permission：${bridgePermissionLabel(before.bridgePermissionMode)} → ${bridgePermissionLabel(after.bridgePermissionMode)}`,
+    );
+  }
+  for (const configId of Object.keys(controls.config ?? {})) {
+    lines.push(
+      `• Control ${displayConfigName(after, configId)}：${displayConfigValue(before, configId)} → ${displayConfigValue(after, configId)}`,
+    );
+  }
+  return lines.length > 0 ? lines : ["• 无实际变化"];
+}
+
+function displayControls(snapshot: SessionCapabilitiesSnapshot): string {
+  const options = snapshot.configOptions ?? [];
+  if (options.length === 0) return "—";
+  return options
+    .map((option) => `${option.name}: ${displayConfigCurrentValue(option)}`)
+    .join(" · ");
+}
+
+function displayConfigName(snapshot: SessionCapabilitiesSnapshot, configId: string): string {
+  const option = snapshot.configOptions?.find((candidate) => candidate.id === configId);
+  return option?.name ?? configId;
+}
+
+function displayConfigValue(snapshot: SessionCapabilitiesSnapshot, configId: string): string {
+  const option = snapshot.configOptions?.find((candidate) => candidate.id === configId);
+  return option ? displayConfigCurrentValue(option) : "—";
+}
+
+function cloneCapabilitiesSnapshot(
+  snapshot: SessionCapabilitiesSnapshot,
+): SessionCapabilitiesSnapshot {
+  return structuredClone(snapshot) as SessionCapabilitiesSnapshot;
+}
+
 function mergeSessionControls(
   existing: SessionControls | undefined,
   patch: SessionControls | undefined,
@@ -828,6 +982,116 @@ function mergeSessionControls(
       ...(patch?.config ?? {}),
     },
   };
+}
+
+function hasControls(controls: SessionControls): boolean {
+  return (
+    controls.modelId !== undefined ||
+    controls.modeId !== undefined ||
+    controls.bridgePermissionMode !== undefined ||
+    Object.keys(controls.config ?? {}).length > 0
+  );
+}
+
+interface IgnoredInheritedControl {
+  readonly kind: string;
+  readonly target: string;
+  readonly reason: string;
+}
+
+function filterInheritedControls(
+  snapshot: SessionCapabilitiesSnapshot,
+  controls: SessionControls,
+): { controls: SessionControls; ignored: IgnoredInheritedControl[] } {
+  const out: SessionControls = {};
+  const ignored: IgnoredInheritedControl[] = [];
+
+  if (controls.modelId !== undefined) {
+    if (!snapshot.models) {
+      ignored.push({
+        kind: "Model",
+        target: controls.modelId,
+        reason: "agent does not expose ACP model controls",
+      });
+    } else if (
+      !snapshot.models.availableModels.some((model) => model.modelId === controls.modelId)
+    ) {
+      ignored.push({
+        kind: "Model",
+        target: controls.modelId,
+        reason: "modelId is not in availableModels",
+      });
+    } else {
+      out.modelId = controls.modelId;
+    }
+  }
+
+  if (controls.modeId !== undefined) {
+    if (!snapshot.modes) {
+      ignored.push({
+        kind: "Mode",
+        target: controls.modeId,
+        reason: "agent does not expose ACP mode controls",
+      });
+    } else if (!snapshot.modes.availableModes.some((mode) => mode.id === controls.modeId)) {
+      ignored.push({
+        kind: "Mode",
+        target: controls.modeId,
+        reason: "modeId is not in availableModes",
+      });
+    } else {
+      out.modeId = controls.modeId;
+    }
+  }
+
+  const validConfig: Record<string, SessionConfigControlValue> = {};
+  for (const [configId, value] of Object.entries(controls.config ?? {})) {
+    const option = snapshot.configOptions?.find((candidate) => candidate.id === configId);
+    if (!option) {
+      ignored.push({
+        kind: "Config",
+        target: configId,
+        reason: "configId is not in configOptions",
+      });
+      continue;
+    }
+    if (option.type === "boolean") {
+      if (!("type" in value) || value.type !== "boolean" || typeof value.value !== "boolean") {
+        ignored.push({ kind: "Config", target: configId, reason: "expected boolean config value" });
+        continue;
+      }
+      validConfig[configId] = value;
+      continue;
+    }
+    if (typeof value.value !== "string") {
+      ignored.push({ kind: "Config", target: configId, reason: "expected select config value" });
+      continue;
+    }
+    if (!selectOptionValues(option.options).has(value.value)) {
+      ignored.push({
+        kind: "Config",
+        target: configId,
+        reason: `select value is not in available options: ${value.value}`,
+      });
+      continue;
+    }
+    validConfig[configId] = value;
+  }
+  if (Object.keys(validConfig).length > 0) out.config = validConfig;
+
+  if (controls.bridgePermissionMode !== undefined) {
+    if (PERMISSION_MODES.includes(controls.bridgePermissionMode)) {
+      out.bridgePermissionMode = controls.bridgePermissionMode;
+    } else {
+      ignored.push({
+        kind: "Permission",
+        target: controls.bridgePermissionMode,
+        reason: "bridgePermissionMode is not supported",
+      });
+    }
+  }
+
+  return { controls: out, ignored };
 }
 
 function selectOptionValues(

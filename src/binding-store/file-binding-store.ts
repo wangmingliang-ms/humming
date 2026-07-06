@@ -121,34 +121,15 @@ function toBinding(chatId: string, value: unknown): ChatBinding | null {
   const v = value as Record<string, unknown>;
 
   const cwd = v["cwd"];
-  const agentCommand = v["agentCommand"];
-  if (typeof cwd !== "string" || typeof agentCommand !== "string") return null;
+  if (typeof cwd !== "string") return null;
 
-  const agentArgs = Array.isArray(v["agentArgs"])
-    ? v["agentArgs"].filter((a): a is string => typeof a === "string")
-    : [];
-  const agentLabel = typeof v["agentLabel"] === "string" ? v["agentLabel"] : agentCommand;
-  const agentEnv = toStringRecord(v["agentEnv"]);
   const createdAt = typeof v["createdAt"] === "number" ? v["createdAt"] : Date.now();
   const updatedAt = typeof v["updatedAt"] === "number" ? v["updatedAt"] : createdAt;
 
   return {
     chatId,
     cwd,
-    agentLabel,
-    agentCommand,
-    agentArgs,
-    ...(agentEnv ? { agentEnv } : {}),
     createdAt,
     updatedAt,
   };
-}
-
-function toStringRecord(value: unknown): Record<string, string> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const out: Record<string, string> = {};
-  for (const [k, val] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof val === "string") out[k] = val;
-  }
-  return Object.keys(out).length ? out : undefined;
 }

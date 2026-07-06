@@ -57,7 +57,6 @@ export {
 export type { BindingStore, ChatBinding } from "./binding-store/binding-store.js";
 export { FileBindingStore, BindingStoreIoError } from "./binding-store/file-binding-store.js";
 export { SettingsBindingStore } from "./binding-store/settings-binding-store.js";
-export type { BindingAgentResolver } from "./binding-store/settings-binding-store.js";
 
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";

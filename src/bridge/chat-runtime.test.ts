@@ -437,9 +437,10 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       },
     };
     const states: UnifiedCardState[] = [];
+    const notices: Array<{ title: string; body: string; template: string }> = [];
     const runtime = new ChatRuntime({
       ...opts(),
-      presenter: recordingPresenter(states),
+      presenter: recordingPresenter(states, notices),
       sessionStore: store,
     });
 
@@ -504,6 +505,16 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
         bridgePermissionMode: "alwaysAsk",
       },
     });
+    const notice = notices.at(-1);
+    expect(notice).toMatchObject({ title: "✅ Session profile 已更新", template: "green" });
+    expect(notice?.body).toContain("当前 topic 的 session profile 已切换");
+    expect(notice?.body).toContain("Agent：node");
+    expect(notice?.body).toContain("Mode：Ask → Agent");
+    expect(notice?.body).toContain("Model：Old → New");
+    expect(notice?.body).toContain("Permission：Auto approve → Ask approvals");
+    expect(notice?.body).toContain("Control Auto Edit：off → on");
+    expect(notice?.body).toContain("Control Approval Mode：Ask → Auto");
+    expect(notice?.body).toContain("Controls：Auto Edit: on · Approval Mode: Auto");
   });
 
   it("rejects invalid controls without mutating runtime or persisted session", async () => {
@@ -564,7 +575,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     const saved: unknown[] = [];
     const runtime = new ChatRuntime({
       ...opts(),
-      presenter: recordingPresenter(),
+      presenter: recordingPresenter([]),
       sessionStore: {
         ...stubSessionStore(),
         save: async (record) => {

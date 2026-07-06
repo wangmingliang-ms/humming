@@ -34,6 +34,7 @@ describe("installHomeTemplates", () => {
     expect(agents).toContain(path.join(dir, "control.sock"));
     expect(agents).toContain("before/after details");
     expect(agents).toContain("humming commands");
+    expect(agents).toContain("Chat bindings are repo-only");
 
     expect(fs.existsSync(settingsPath)).toBe(false);
     expect(fs.existsSync(sessionsPath)).toBe(false);
@@ -42,8 +43,11 @@ describe("installHomeTemplates", () => {
     ).toMatchObject({
       credentials: { appId: "cli_xxxxxxxxxxxxxxxx" },
       runtime: { agent: "claude" },
-      bindings: { oc_example_chat_id: { agent: "claude" } },
+      bindings: { oc_example_chat_id: { cwd: "/absolute/path/to/repo" } },
     });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(dir, "settings.back.json"), "utf-8")),
+    ).not.toMatchObject({ bindings: { oc_example_chat_id: { agent: "claude" } } });
     expect(
       JSON.parse(fs.readFileSync(path.join(dir, "sessions.back.json"), "utf-8")),
     ).toMatchObject({

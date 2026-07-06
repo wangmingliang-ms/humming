@@ -175,7 +175,7 @@ humming stop                    # 停止后台 bridge
   `bridge.pid`、`bridge.log`。`start` / `restart` 会把你传的全局 / proxy 选项、以及
   `-- <agent-cmd>` 透传部分**原样**转发给后台进程。
 - **Lifecycle / binding 通知**：在 settings.json 写 `"runtime": { "lifecycleNotifyChatIds": ["oc_..."] }` 后，
-  bridge 启动完成会给这些会话发「已启动」，`stop` 时发「正在停止」，`restart` 时发「正在重启」和「已重启」。通知是 best-effort，发送失败只记日志，不阻塞进程管理。每次 repo 绑定成功也会发「已绑定 repo」通知并列出修改明细；通过 CLI 绑定 topic session 成功时会发「已绑定 session」通知，包含 session title 和修改明细。
+  bridge 启动完成会给这些会话发「已启动」，`stop` 时发「正在停止」，`restart` 时发「正在重启」和「已重启」。通知是 best-effort，发送失败只记日志，不阻塞进程管理。每次 repo 绑定成功也会发「已绑定 repo」通知并列出修改明细；通过 CLI 绑定 topic session 成功时会发「已绑定 session」通知，包含 session title 和 Agent / Mode / Model / Permission / Controls 修改明细；`sessions set-control` 成功时会发「Session profile 已更新」通知，展示当前 Agent、Mode、Model、Permission 和 Config controls。
 - **初始化模板**：执行 `humming init` 会创建/刷新 `~/.humming/AGENTS.md`、`~/.humming/CLAUDE.md`，并创建 `~/.humming/settings.back.json`、`~/.humming/sessions.back.json` 作为可复制参考模板。官方 install 脚本会在全局命令安装完成后自动执行一次 `humming init`；手动安装或换 home 时也可以单独运行。`settings.json` / `sessions.json` 仍只在真实配置或会话产生时创建；`.back.json` 不含真实凭据。
 - **Linux / WSL 上是真后台托管**：如果 `systemctl --user` 可用，`start` 会用
   `systemd-run --user` 启动一个 transient service（unit 名会显示在 `status` 里），bridge
@@ -210,7 +210,7 @@ humming sessions list \
 humming sessions list --agent codex --cwd /absolute/path/to/repo --json
 ```
 
-`humming sessions bind` 把**当前 topic** 绑定到一个已有 session。它故意不接受 `--cwd`：只能绑定当前 chat repo 内的 session，不会修改 chat binding，也不支持 topic 跨 repo 绑定。绑定前 CLI 会用 `session/list` 验证 session 属于当前 repo；绑定后 bridge 会停止当前 topic runtime、更新 `sessions.json`，并回复一张包含 session title 与修改明细的「已绑定 session」通知卡片。下一条 topic 消息会 resume 这个 session。
+`humming sessions bind` 把**当前 topic** 绑定到一个已有 session。它故意不接受 `--cwd`：只能绑定当前 chat repo 内的 session，不会修改 chat binding，也不支持 topic 跨 repo 绑定。绑定前 CLI 会用 `session/list` 验证 session 属于当前 repo；绑定后 bridge 会停止当前 topic runtime、更新 `sessions.json`，并回复一张包含 session title、Agent、Mode、Model、Permission、Controls 与修改明细的「已绑定 session」通知卡片。下一条 topic 消息会 resume 这个 session。
 
 如果目标 session 已经绑定到另一个 chat/thread，本次 bind 会被拒绝，并发送「Session 已被绑定」冲突通知；不要通过手改 `sessions.json` 绕过，应先在原 thread `/new` 重置或确认原绑定不再需要。
 
@@ -239,7 +239,7 @@ humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_
 - `configOptions`: ACP `SessionConfigOption[]`。
 - `bridgePermissionModes` / `bridgePermissionMode`: humming 自己的 permission-card 策略，不是 ACP 原生字段。
 
-设置 session controls 时传一个完整 JSON payload；CLI 会写入 `sessions.json`，如果对应 runtime 正在运行，会立刻拆成 ACP 单项调用：
+设置 session controls 时传一个完整 JSON payload；CLI 会写入 `sessions.json`，如果对应 runtime 正在运行，会立刻拆成 ACP 单项调用。成功后 Humming 会发送「Session profile 已更新」通知；runtime 正在运行时通知会回复到当前 topic 的最近消息，runtime 未运行时通知会直接发到 chat，下一条消息按已存 profile 启动/恢复。
 
 ```bash
 humming sessions set-control \

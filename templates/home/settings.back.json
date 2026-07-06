@@ -24,8 +24,7 @@
   },
   "bindings": {
     "oc_example_chat_id": {
-      "cwd": "/absolute/path/to/repo",
-      "agent": "claude"
+      "cwd": "/absolute/path/to/repo"
     }
   }
 }

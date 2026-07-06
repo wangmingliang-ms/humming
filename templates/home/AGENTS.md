@@ -24,14 +24,13 @@ To bind or rebind a chat, update the top-level `bindings` object:
 {
   "bindings": {
     "<chatId>": {
-      "cwd": "/absolute/path/to/repo",
-      "agent": "claude"
+      "cwd": "/absolute/path/to/repo"
     }
   }
 }
 ```
 
-Valid built-in agent names normally include `claude`, `codex`, `copilot`, `gemini`, `opencode`, and `claude-agent`; confirm with `humming agents` when unsure.
+Chat bindings are repo-only. Do not write an agent into `bindings`: Agent / Model / Mode / Permission / Config controls belong to the topic/session profile. New topics inherit the most recent profile from the same chat + repo; if the repo has no prior session, humming uses the global default Agent from `runtime.agent`.
 
 ## Session controls
 
@@ -76,6 +75,8 @@ All fields are optional; include only the controls the user asked to change. ACP
 
 If set-control fails, humming should surface a clear error notice to the user and keep the live runtime plus `sessions.json` unchanged. Ask the agent to query capabilities again and retry with valid ids/values.
 
+When set-control succeeds, humming sends a `Session profile 已更新` notice that includes the current Agent, Mode, Model, Permission, and Config controls. If the runtime is not currently running, the notice is sent to the chat and the next message will start/resume with the stored profile.
+
 ## Binding the current topic to an existing agent session
 
 When the user asks to continue a desktop Claude Code / Codex / other ACP session from the current Feishu topic, do **not** hand-edit `sessions.json`. Use the humming CLI.
@@ -106,7 +107,7 @@ Bind the current topic to the selected session in the current chat repo:
 humming sessions bind --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent claude --session-id "<selected-session-id>"
 ```
 
-On success humming sends a notice card naming the bound session title and showing the change details. The next user message in this topic resumes that session.
+On success humming sends a notice card naming the bound session title and showing the change details, including Agent / Mode / Model / Permission / Config controls where known. The next user message in this topic resumes that session.
 
 ## Permission terminology
 

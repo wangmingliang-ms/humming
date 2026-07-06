@@ -49,7 +49,6 @@ interface ReceptionBinding {
   fallbackFrom?: {
     chatId: string;
     cwd: string;
-    agentLabel: string;
     reason: string;
     reboundCwd: string;
     reboundAgentLabel: string;
@@ -80,9 +79,14 @@ const CLAUDE: ResolvedAgentInvocation = {
   args: ["-y", "claude-code-acp"],
   label: "claude",
 };
+const CODEX: ResolvedAgentInvocation = {
+  command: "npx",
+  args: ["-y", "codex-acp"],
+  label: "codex",
+};
 const resolver: AgentResolver = (sel) => {
   if (sel === "claude") return CLAUDE;
-  if (sel === "codex") return { command: "npx", args: ["-y", "codex-acp"], label: "codex" };
+  if (sel === "codex") return CODEX;
   const [command, ...args] = sel.trim().split(/\s+/);
   return { command: command ?? "x", args, label: sel };
 };
@@ -118,10 +122,7 @@ beforeEach(async () => {
   settingsPath = path.join(home, "settings.json");
 
   presenter = new RecordingPresenter();
-  bindingStore = new SettingsBindingStore(settingsPath, (sel) => {
-    const inv = sel ? resolver(sel) : CLAUDE;
-    return { agentLabel: inv.label, agentCommand: inv.command, agentArgs: inv.args };
-  });
+  bindingStore = new SettingsBindingStore(settingsPath);
   sessionStore = new FileSessionStore(home);
   await bindingStore.init();
   await sessionStore.init();
@@ -148,34 +149,50 @@ describe("reception area", () => {
     expect(await b.resolveBinding("oc_new")).toBeNull();
   });
 
-  it("prefers a real binding over the reception area", async () => {
+  it("prefers a real repo binding over the reception area and uses the default agent", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
-    await bindingStore.set({
-      chatId: "oc_bound",
-      cwd: repoA,
-      agentLabel: "codex",
-      agentCommand: "npx",
-      agentArgs: ["-y", "codex-acp"],
-      createdAt: 1,
-      updatedAt: 1,
-    });
+    await bindingStore.set({ chatId: "oc_bound", cwd: repoA, createdAt: 1, updatedAt: 1 });
     const eff = await b.resolveBinding("oc_bound");
-    expect(eff).toMatchObject({ cwd: repoA, label: "codex", explicit: true, reception: false });
+    expect(eff).toMatchObject({ cwd: repoA, label: "claude", explicit: true, reception: false });
+  });
+
+  it("new topic runtime inherits Agent + controls from the latest session in the same repo", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+    await bindingStore.set({ chatId: "oc_bound", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await sessionStore.save({
+      chatId: "oc_bound",
+      threadId: "th_old",
+      sessionId: "s_codex",
+      agentCommand: CODEX.command,
+      agentArgs: [...CODEX.args],
+      agentLabel: CODEX.label,
+      cwd: repoA,
+      controls: { modeId: "agent", bridgePermissionMode: "alwaysAsk" },
+      createdAt: 1,
+      updatedAt: 10,
+    });
+
+    const eff = await b.resolveBinding("oc_bound");
+    const runtime = await b.acquireRuntime("oc_bound", "th_new", eff!);
+
+    const opts = (
+      runtime as {
+        opts: { agentLabel?: string; agentCommand: string; inheritedControls?: unknown };
+      }
+    ).opts;
+    expect(opts).toMatchObject({ agentLabel: "codex", agentCommand: "npx" });
+    expect(opts.inheritedControls).toMatchObject({
+      modeId: "agent",
+      bridgePermissionMode: "alwaysAsk",
+    });
   });
 
   it("warns once and automatically rebinds to the reception area when the bound repo was deleted", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
-    await bindingStore.set({
-      chatId: "oc_deleted",
-      cwd: repoA,
-      agentLabel: "codex",
-      agentCommand: "npx",
-      agentArgs: ["-y", "codex-acp"],
-      createdAt: 1,
-      updatedAt: 1,
-    });
+    await bindingStore.set({ chatId: "oc_deleted", cwd: repoA, createdAt: 1, updatedAt: 1 });
     fs.rmSync(repoA, { recursive: true, force: true });
 
     const eff = await b.resolveBinding("oc_deleted");
@@ -188,15 +205,11 @@ describe("reception area", () => {
       fallbackFrom: {
         chatId: "oc_deleted",
         cwd: repoA,
-        agentLabel: "codex",
         reboundCwd: home,
         reboundAgentLabel: "claude",
       },
     });
-    expect(await bindingStore.get("oc_deleted")).toMatchObject({
-      cwd: home,
-      agentLabel: "claude",
-    });
+    expect(await bindingStore.get("oc_deleted")).toMatchObject({ cwd: home });
 
     const next = await b.resolveBinding("oc_deleted");
     expect(next).toMatchObject({ cwd: home, label: "claude", explicit: true, reception: false });
@@ -206,15 +219,7 @@ describe("reception area", () => {
   it("sends an error notice and continues in the reception area for a deleted repo", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
-    await bindingStore.set({
-      chatId: "oc_deleted",
-      cwd: repoA,
-      agentLabel: "codex",
-      agentCommand: "npx",
-      agentArgs: ["-y", "codex-acp"],
-      createdAt: 1,
-      updatedAt: 1,
-    });
+    await bindingStore.set({ chatId: "oc_deleted", cwd: repoA, createdAt: 1, updatedAt: 1 });
     fs.rmSync(repoA, { recursive: true, force: true });
 
     const eff = await b.resolveBinding("oc_deleted");
@@ -234,9 +239,8 @@ describe("reception area", () => {
 
     const count = presenter.notices.length;
     const next = await b.resolveBinding("oc_deleted");
-    if (next?.fallbackFrom) {
+    if (next?.fallbackFrom)
       await b.notifyUnavailableBindingFallback("om_deleted_2", next.fallbackFrom);
-    }
     expect(presenter.notices.length).toBe(count);
   });
 
@@ -265,21 +269,23 @@ describe("reception area", () => {
     );
     expect(
       JSON.parse(fs.readFileSync(path.join(home, "settings.back.json"), "utf-8")),
-    ).toMatchObject({ runtime: { agent: "claude" } });
+    ).toMatchObject({
+      runtime: { agent: "claude" },
+      bindings: { oc_example_chat_id: { cwd: "/absolute/path/to/repo" } },
+    });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(home, "settings.back.json"), "utf-8")),
+    ).not.toMatchObject({ bindings: { oc_example_chat_id: { agent: "claude" } } });
     expect(
       JSON.parse(fs.readFileSync(path.join(home, "sessions.back.json"), "utf-8")),
     ).toMatchObject({
-      oc_example_chat_id: [
-        {
-          controls: { bridgePermissionMode: "alwaysAsk" },
-        },
-      ],
+      oc_example_chat_id: [{ controls: { bridgePermissionMode: "alwaysAsk" } }],
     });
   });
 });
 
 describe("hot-reload of bindings", () => {
-  it("tears down a chat runtime when its binding appears via settings.json and notifies details", async () => {
+  it("tears down a chat runtime when its repo binding appears via settings.json and notifies details", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
     await b.snapshotBindings();
@@ -290,7 +296,7 @@ describe("hot-reload of bindings", () => {
     expect(b.activeChatCount).toBe(1);
 
     // Simulate the agent binding the chat by editing settings.json directly.
-    const settings = { bindings: { oc_x: { cwd: repoA, agent: "codex" } } };
+    const settings = { bindings: { oc_x: { cwd: repoA } } };
     fs.writeFileSync(settingsPath, JSON.stringify(settings));
 
     await b.reloadBindings();
@@ -298,25 +304,17 @@ describe("hot-reload of bindings", () => {
     // The stale reception runtime is gone; next message will respawn in repoA.
     expect(b.activeChatCount).toBe(0);
     const eff = await b.resolveBinding("oc_x");
-    expect(eff).toMatchObject({ cwd: repoA, label: "codex", explicit: true });
+    expect(eff).toMatchObject({ cwd: repoA, label: "claude", explicit: true });
     const notice = presenter.notices.find((n) => n.title === "✅ 已绑定 repo");
     expect(notice?.body).toContain("修改明细");
     expect(notice?.body).toContain(repoA);
-    expect(notice?.body).toContain("codex");
+    expect(notice?.body).not.toContain("Agent：");
   });
 
   it("no-ops when the settings file is unchanged", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
-    await bindingStore.set({
-      chatId: "oc_y",
-      cwd: repoA,
-      agentLabel: "claude",
-      agentCommand: "npx",
-      agentArgs: ["-y", "claude-code-acp"],
-      createdAt: 1,
-      updatedAt: 1,
-    });
+    await bindingStore.set({ chatId: "oc_y", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await b.snapshotBindings();
     const recv = await b.resolveBinding("oc_y");
     await b.acquireRuntime("oc_y", null, recv!);
@@ -329,15 +327,7 @@ describe("hot-reload of bindings", () => {
   it("tolerates a half-written settings.json (keeps last-good state)", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
-    await bindingStore.set({
-      chatId: "oc_z",
-      cwd: repoA,
-      agentLabel: "claude",
-      agentCommand: "npx",
-      agentArgs: ["-y", "claude-code-acp"],
-      createdAt: 1,
-      updatedAt: 1,
-    });
+    await bindingStore.set({ chatId: "oc_z", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await b.snapshotBindings();
     await b.acquireRuntime("oc_z", null, (await b.resolveBinding("oc_z"))!);
     expect(b.activeChatCount).toBe(1);
@@ -379,7 +369,12 @@ describe("session bind conflicts", () => {
     expect(body).toContain(
       "**修改明细**\n• Title：未绑定 → Desktop task\n• Agent：未绑定 → claude\n• Repo：未绑定 → ",
     );
+    expect(body).toContain("• Mode：— → —");
+    expect(body).toContain("• Model：— → —");
+    expect(body).toContain("• Permission：— → —");
+    expect(body).toContain("• Controls：— → —");
     expect(body).toContain("**绑定后**\n• Title：Desktop task\n• Agent：claude\n• Repo：");
+    expect(body).toContain("• Mode：—\n• Model：—\n• Permission：—\n• Controls：—");
     expect(body).not.toContain("Session title");
     expect(body).not.toContain("Title:");
   });

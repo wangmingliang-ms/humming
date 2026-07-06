@@ -224,9 +224,9 @@ function migrateLegacyIfNeeded(homeDir: string, settingsPath: string, logger: La
   }
 
   // Fold legacy bindings.json into a `bindings` block in settings.json,
-  // normalising each entry to the compact { cwd, agent } shape the new
+  // normalising each entry to the compact { cwd } shape the new
   // SettingsBindingStore reads (old FileBindingStore stored a fat record).
-  let bindings: Record<string, { cwd: string; agent?: string }> = {};
+  let bindings: Record<string, { cwd: string }> = {};
   if (fs.existsSync(legacyBindings)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(legacyBindings, "utf-8")) as unknown;
@@ -236,9 +236,7 @@ function migrateLegacyIfNeeded(homeDir: string, settingsPath: string, logger: La
           const rec = raw as Record<string, unknown>;
           const cwd = rec["cwd"];
           if (typeof cwd !== "string") continue;
-          // Old shape stored the agent under `agentLabel`; new shape uses `agent`.
-          const agent = rec["agent"] ?? rec["agentLabel"];
-          bindings[chatId] = { cwd, ...(typeof agent === "string" ? { agent } : {}) };
+          bindings[chatId] = { cwd };
         }
       }
     } catch {
@@ -315,14 +313,13 @@ type FileConfig = {
   readonly dataDir?: string;
   readonly runtime: FileRuntime;
   readonly agents: Readonly<Record<string, UserPresetPatch>>;
-  /** chatId -> { cwd, agent } bindings, persisted in settings.json. */
+  /** chatId -> { cwd } bindings, persisted in settings.json. */
   readonly bindings: Readonly<Record<string, StoredBinding>>;
 };
 
 /** One chat's persisted binding as stored in settings.json's `bindings` block. */
 type StoredBinding = {
   readonly cwd: string;
-  readonly agent?: string;
 };
 
 const EMPTY_FILE_CONFIG: FileConfig = { credentials: {}, runtime: {}, agents: {}, bindings: {} };
@@ -453,7 +450,7 @@ function readConfigFile(filePath: string): FileConfig {
   };
 }
 
-/** Parse the `bindings` block: chatId -> { cwd, agent? }. Invalid entries throw. */
+/** Parse the `bindings` block: chatId -> { cwd }. Invalid entries throw. */
 function parseBindingsBlock(value: unknown): Readonly<Record<string, StoredBinding>> {
   const obj = asObjectOpt("bindings", value);
   if (!obj) return {};
@@ -465,8 +462,7 @@ function parseBindingsBlock(value: unknown): Readonly<Record<string, StoredBindi
     if (cwd === undefined) {
       throw new CliError(`config: bindings.${chatId}.cwd is required`);
     }
-    const agent = asStringOpt(`bindings.${chatId}.agent`, entry["agent"]);
-    out[chatId] = { cwd, ...(agent !== undefined ? { agent } : {}) };
+    out[chatId] = { cwd };
   }
   return out;
 }
@@ -1508,7 +1504,7 @@ function resolveSessionTargetContext(args: ParsedArgs): {
   if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
     throw new CliError(`cwd "${cwd}" is not a directory`);
   }
-  const selection = args.targetAgent ?? binding?.agent ?? file.runtime.agent ?? DEFAULT_AGENT;
+  const selection = args.targetAgent ?? file.runtime.agent ?? DEFAULT_AGENT;
   const invocation = makeAgentResolver(registry)(selection);
   return { homeDir, dataDir, configPath, file, registry, chatId, threadId, cwd, invocation };
 }
@@ -1769,18 +1765,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
   );
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
-  // Bindings live in settings.json's `bindings` block (one file for all
-  // state). Resolve each binding's agent selection via the registry, falling
-  // back to the CLI default agent when a binding names none.
-  const bindingStore = new SettingsBindingStore(configPath, (agentSelection) => {
-    const inv = agentSelection ? resolver(agentSelection) : defaultAgent;
-    return {
-      agentLabel: inv.label,
-      agentCommand: inv.command,
-      agentArgs: inv.args,
-      ...(inv.env ? { agentEnv: inv.env } : {}),
-    };
-  });
+  const bindingStore = new SettingsBindingStore(configPath);
 
   const bridge = new LarkBridge({
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },

@@ -60,7 +60,7 @@ const COMMAND_NOTICES: Readonly<Record<"cancel" | "new" | "unbind", NoticeCardSp
   },
   unbind: {
     title: "⛔ 已解绑",
-    body: "本会话已解绑，agent 进程已停止。下次消息将使用默认配置（若已配置），否则请先 /bind <路径> [agent]。",
+    body: "本会话已解绑，agent 进程已停止。下次消息将使用默认配置（若已配置），否则请先 /bind <路径>。",
     template: "grey",
   },
 };
@@ -68,16 +68,17 @@ const COMMAND_NOTICES: Readonly<Record<"cancel" | "new" | "unbind", NoticeCardSp
 const BIND_USAGE_NOTICE: NoticeCardSpec = {
   title: "ℹ️ 用法：/bind",
   body: [
-    "把当前会话绑定到一个仓库目录 + agent：",
+    "把当前会话绑定到一个仓库目录：",
     "",
-    "• /bind <路径>            绑定目录，使用默认 agent",
-    "• /bind <路径> <agent>    绑定目录，并指定 agent（如 claude、codex）",
+    "• /bind <路径>            绑定目录",
+    "",
+    "Agent / Model / Mode / Permission / Controls 属于 session profile，不属于 chat binding。新 topic 会继承当前 repo 最近 session profile；没有历史 session 时使用全局默认 Agent。",
     "",
     "其它命令：",
     "• /where                 查看当前绑定",
     "• /unbind                解除绑定",
     "",
-    "示例：/bind ~/workspace/copilot-intellij claude",
+    "示例：/bind ~/workspace/copilot-intellij",
   ].join("\n"),
   template: "blue",
 };
@@ -173,9 +174,9 @@ export interface LarkBridgeAgentOptions {
   /** Maps a selection string → concrete invocation. See {@link AgentResolver}. */
   resolver: AgentResolver;
   /**
-   * Pre-resolved agent used for chats without an explicit binding, and as
-   * the fallback for `/bind <path>` when no agent is named. `null` means
-   * chats must `/bind` with an explicit agent before they can run.
+   * Pre-resolved agent used as the cold-start fallback when a chat/repo has no
+   * session profile to inherit. Chat bindings are repo-only; Agent belongs to
+   * the topic/session profile.
    */
   defaultAgent?: ResolvedAgentInvocation | null;
   /**
@@ -260,7 +261,7 @@ export interface LarkBridgeOptions {
   controlSocketPath?: string | null;
 
   sessionStore: SessionStore;
-  /** Persistent per-chat repo + agent binding (one bot → many repos). */
+  /** Persistent per-chat repo binding (one bot → many repos). */
   bindingStore: BindingStore;
 
   /** Override the default pino-backed logger. */
@@ -302,12 +303,13 @@ interface EffectiveBinding {
    * fallback to the reception area so the conversation can keep going.
    */
   readonly fallbackFrom?: UnavailableBinding;
+  /** Controls copied from the most recent session profile in the same chat + repo. */
+  readonly inheritedControls?: SessionControls;
 }
 
 interface UnavailableBinding {
   readonly chatId: string;
   readonly cwd: string;
-  readonly agentLabel: string;
   readonly reason: string;
   readonly reboundCwd: string;
   readonly reboundAgentLabel: string;
@@ -315,7 +317,6 @@ interface UnavailableBinding {
 
 interface BindingSnapshot {
   readonly cwd: string;
-  readonly agentLabel: string;
 }
 
 /**
@@ -534,7 +535,11 @@ export class LarkBridge {
       return { applied: true, recordSessionId: runtime.capabilities().session.sessionId };
     }
 
+    const before = await this.sessionStore.getLatest(chatId, threadId);
     const record = await this.sessionStore.setControls({ chatId, threadId }, controls);
+    await this.presenter
+      .sendNoticeCard(chatId, buildStoredControlUpdatedNotice(before, record, controls))
+      .catch((err) => this.logger.warn({ err, chatId, threadId }, "stored control notice failed"));
     return { applied: false, recordSessionId: record.sessionId };
   }
 
@@ -719,9 +724,9 @@ export class LarkBridge {
     chatId: string,
     messageId: string,
   ): Promise<void> {
-    let target: { cwd: string; invocation: ResolvedAgentInvocation };
+    let cwd: string;
     try {
-      target = this.resolveBindTarget(rawCwd, rawAgent);
+      cwd = this.resolveBindTarget(rawCwd, rawAgent);
     } catch (err) {
       const reason = err instanceof BindError ? err.message : formatBootstrapError(err);
       this.logger.warn({ err, chatId }, "bind rejected");
@@ -737,24 +742,20 @@ export class LarkBridge {
     const existing = await this.bindingStore.get(chatId);
     const binding: ChatBinding = {
       chatId,
-      cwd: target.cwd,
-      agentLabel: target.invocation.label,
-      agentCommand: target.invocation.command,
-      agentArgs: [...target.invocation.args],
-      ...(target.invocation.env ? { agentEnv: { ...target.invocation.env } } : {}),
+      cwd,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
     await this.bindingStore.set(binding);
     this.bindingSnapshots.set(chatId, bindingSnapshotOf(binding));
 
-    // A rebind changes repo/agent; tear down the live runtime and drop any
-    // persisted ACP sessions so the next message starts fresh in the new cwd
-    // instead of resuming a session that belongs to the old repo.
+    // A rebind changes repo; tear down the live runtime and drop any persisted
+    // ACP sessions so the next message starts fresh in the new cwd instead of
+    // resuming a session that belongs to the old repo.
     this.teardownChat(chatId);
     await this.clearChatSessions(chatId);
 
-    this.logger.info({ chatId, cwd: target.cwd, agent: target.invocation.label }, "chat bound");
+    this.logger.info({ chatId, cwd }, "chat bound");
     await this.presenter.replyNoticeCard(messageId, buildRepoBoundNotice(existing, binding));
   }
 
@@ -803,26 +804,11 @@ export class LarkBridge {
    * @throws {BindError} when the path is missing / not a directory, or the
    *         agent selection cannot be resolved.
    */
-  private resolveBindTarget(
-    rawCwd: string,
-    rawAgent: string | null,
-  ): { cwd: string; invocation: ResolvedAgentInvocation } {
-    const cwd = expandAndValidateDir(rawCwd);
-
+  private resolveBindTarget(rawCwd: string, rawAgent: string | null): string {
     if (rawAgent) {
-      let invocation: ResolvedAgentInvocation;
-      try {
-        invocation = this.resolver(rawAgent);
-      } catch (err) {
-        throw new BindError(`无法解析 agent「${rawAgent}」：${formatBootstrapError(err)}`);
-      }
-      return { cwd, invocation };
+      throw new BindError("/bind 现在只绑定 repo，不再绑定 Agent。请使用 /bind <路径>。");
     }
-
-    if (!this.defaultAgent) {
-      throw new BindError("未指定 agent，且没有配置默认 agent。请使用 /bind <路径> <agent>。");
-    }
-    return { cwd, invocation: this.defaultAgent };
+    return expandAndValidateDir(rawCwd);
   }
 
   // ----- Prompt routing ---------------------------------------------------
@@ -904,12 +890,13 @@ export class LarkBridge {
           return fallback;
         }
       }
+      if (!this.defaultAgent) return null;
       return {
         cwd: stored.cwd,
-        command: stored.agentCommand,
-        args: stored.agentArgs,
-        ...(stored.agentEnv ? { env: stored.agentEnv } : {}),
-        label: stored.agentLabel,
+        command: this.defaultAgent.command,
+        args: this.defaultAgent.args,
+        ...(this.defaultAgent.env ? { env: this.defaultAgent.env } : {}),
+        label: this.defaultAgent.label,
         explicit: true,
         reception: false,
       };
@@ -920,7 +907,6 @@ export class LarkBridge {
         const fallback = this.buildReceptionFallback({
           chatId,
           cwd: this.defaultCwd,
-          agentLabel: this.defaultAgent.label,
           reason: unavailable,
         });
         if (fallback) {
@@ -990,10 +976,6 @@ export class LarkBridge {
     const rebound: ChatBinding = {
       chatId,
       cwd: fallback.cwd,
-      agentLabel: fallback.label,
-      agentCommand: fallback.command,
-      agentArgs: [...fallback.args],
-      ...(fallback.env ? { agentEnv: { ...fallback.env } } : {}),
       createdAt: stored.createdAt,
       updatedAt: now,
     };
@@ -1008,7 +990,6 @@ export class LarkBridge {
     return this.buildReceptionFallback({
       chatId,
       cwd: stored.cwd,
-      agentLabel: stored.agentLabel,
       reason,
     });
   }
@@ -1036,6 +1017,10 @@ export class LarkBridge {
     const pinned = binding.fallbackFrom
       ? null
       : await this.sessionStore.getLatest(chatId, threadId);
+    const inherited =
+      pinned || binding.fallbackFrom
+        ? null
+        : await this.findRecentRepoSessionProfile(chatId, threadId, binding.cwd);
     const effective: EffectiveBinding = pinned
       ? {
           cwd: pinned.cwd,
@@ -1046,7 +1031,33 @@ export class LarkBridge {
           explicit: binding.explicit,
           reception: false,
         }
-      : binding;
+      : inherited
+        ? {
+            cwd: inherited.cwd,
+            command: inherited.agentCommand,
+            args: inherited.agentArgs,
+            ...(inherited.agentEnv ? { env: inherited.agentEnv } : {}),
+            label: inherited.agentLabel ?? inherited.agentCommand,
+            explicit: binding.explicit,
+            reception: false,
+            ...(inherited.controls ? { inheritedControls: inherited.controls } : {}),
+          }
+        : binding;
+
+    if (inherited) {
+      this.logger.info(
+        {
+          chatId,
+          threadId,
+          inheritedThreadId: inherited.threadId,
+          inheritedSessionId: inherited.sessionId,
+          cwd: inherited.cwd,
+          agent: inherited.agentLabel ?? inherited.agentCommand,
+          hasControls: inherited.controls !== undefined,
+        },
+        "inheriting recent repo session profile",
+      );
+    }
 
     // Inject the chat id + settings path so the agent can bind this chat by
     // editing settings.json. In the reception area also drop instruction files
@@ -1068,12 +1079,29 @@ export class LarkBridge {
       permissionMode: this.display.permissionMode,
       agentLabel: effective.label,
       ...(binding.fallbackFrom ? { ignoreStoredSession: true } : {}),
+      ...(effective.inheritedControls ? { inheritedControls: effective.inheritedControls } : {}),
       presenter: this.presenter,
       sessionStore: this.sessionStore,
       logger: this.logger,
     });
     this.chats.set(key, runtime);
     return runtime;
+  }
+
+  private async findRecentRepoSessionProfile(
+    chatId: string,
+    threadId: string | null,
+    cwd: string,
+  ): Promise<SessionRecord | null> {
+    const sessions = await this.sessionStore.listByChat(chatId);
+    const resolvedCwd = path.resolve(cwd);
+    for (const session of sessions) {
+      if (session.threadId === threadId) continue;
+      if (path.resolve(session.cwd) !== resolvedCwd) continue;
+      if (!session.agentCommand) continue;
+      return session;
+    }
+    return null;
   }
 
   /**
@@ -1406,11 +1434,19 @@ function buildSessionBoundNotice(
     `• Title：${beforeTitle} → ${title}`,
     `• Agent：${beforeAgent} → ${record.agentLabel ?? record.agentCommand}`,
     `• Repo：${beforeRepo} → ${record.cwd}`,
+    `• Mode：${displayControlMode(before?.controls)} → ${displayControlMode(record.controls)}`,
+    `• Model：${displayControlModel(before?.controls)} → ${displayControlModel(record.controls)}`,
+    `• Permission：${displayControlPermission(before?.controls)} → ${displayControlPermission(record.controls)}`,
+    `• Controls：${displayControlConfig(before?.controls)} → ${displayControlConfig(record.controls)}`,
     "",
     `**绑定后**`,
     `• Title：${title}`,
     `• Agent：${record.agentLabel ?? record.agentCommand}`,
     `• Repo：${record.cwd}`,
+    `• Mode：${displayControlMode(record.controls)}`,
+    `• Model：${displayControlModel(record.controls)}`,
+    `• Permission：${displayControlPermission(record.controls)}`,
+    `• Controls：${displayControlConfig(record.controls)}`,
   ];
   if (record.sessionUpdatedAt) lines.push(`• Session updated：${record.sessionUpdatedAt}`);
   return {
@@ -1418,6 +1454,99 @@ function buildSessionBoundNotice(
     body: lines.join("\n"),
     template: "green",
   };
+}
+
+function displayControlMode(controls: SessionControls | undefined): string {
+  return controls?.modeId ?? "—";
+}
+
+function displayControlModel(controls: SessionControls | undefined): string {
+  return controls?.modelId ?? "—";
+}
+
+function displayControlPermission(controls: SessionControls | undefined): string {
+  const mode = controls?.bridgePermissionMode;
+  switch (mode) {
+    case "alwaysAsk":
+      return "Ask approvals";
+    case "alwaysAllow":
+      return "Auto approve";
+    case "alwaysDeny":
+      return "Auto deny";
+    case undefined:
+      return "—";
+    default:
+      return mode;
+  }
+}
+
+function displayControlConfig(controls: SessionControls | undefined): string {
+  const config = controls?.config ?? {};
+  const entries = Object.entries(config);
+  if (entries.length === 0) return "—";
+  return entries.map(([key, value]) => `${key}: ${displayControlConfigValue(value)}`).join(" · ");
+}
+
+function displayControlConfigValue(value: NonNullable<SessionControls["config"]>[string]): string {
+  if ("type" in value && value.type === "boolean") return value.value ? "on" : "off";
+  return String(value.value);
+}
+
+function buildStoredControlUpdatedNotice(
+  before: SessionRecord | null,
+  after: SessionRecord,
+  changed: SessionControls,
+): NoticeCardSpec {
+  const lines = [
+    "当前 topic 的 session profile 已更新；runtime 未在运行，下一条消息会按新 profile 启动/恢复。",
+    "",
+    "**修改明细**",
+    ...storedControlChangeLines(before?.controls, after.controls, changed),
+    "",
+    "**当前 profile**",
+    `• Agent：${after.agentLabel ?? after.agentCommand}`,
+    `• Mode：${displayControlMode(after.controls)}`,
+    `• Model：${displayControlModel(after.controls)}`,
+    `• Permission：${displayControlPermission(after.controls)}`,
+    `• Controls：${displayControlConfig(after.controls)}`,
+  ];
+  return {
+    title: "✅ Session profile 已更新",
+    body: lines.join("\n"),
+    template: "green",
+  };
+}
+
+function storedControlChangeLines(
+  before: SessionControls | undefined,
+  after: SessionControls | undefined,
+  changed: SessionControls,
+): string[] {
+  const lines: string[] = [];
+  if (changed.modeId !== undefined) {
+    lines.push(`• Mode：${displayControlMode(before)} → ${displayControlMode(after)}`);
+  }
+  if (changed.modelId !== undefined) {
+    lines.push(`• Model：${displayControlModel(before)} → ${displayControlModel(after)}`);
+  }
+  if (changed.bridgePermissionMode !== undefined) {
+    lines.push(
+      `• Permission：${displayControlPermission(before)} → ${displayControlPermission(after)}`,
+    );
+  }
+  if (changed.config !== undefined) {
+    for (const configId of Object.keys(changed.config)) {
+      lines.push(
+        `• Control ${configId}：${displayStoredConfigValue(before, configId)} → ${displayStoredConfigValue(after, configId)}`,
+      );
+    }
+  }
+  return lines.length > 0 ? lines : ["• 无实际变化"];
+}
+
+function displayStoredConfigValue(controls: SessionControls | undefined, configId: string): string {
+  const value = controls?.config?.[configId];
+  return value ? displayControlConfigValue(value) : "—";
 }
 
 function buildSessionBindRejectedNotice(record: SessionRecord): NoticeCardSpec {
@@ -1441,14 +1570,14 @@ function buildSessionBindRejectedNotice(record: SessionRecord): NoticeCardSpec {
 }
 
 function bindingSnapshotOf(binding: ChatBinding): BindingSnapshot {
-  return { cwd: binding.cwd, agentLabel: binding.agentLabel };
+  return { cwd: binding.cwd };
 }
 
 function sameBindingSnapshot(
   before: BindingSnapshot | undefined,
   after: BindingSnapshot | undefined,
 ): boolean {
-  return before?.cwd === after?.cwd && before?.agentLabel === after?.agentLabel;
+  return before?.cwd === after?.cwd;
 }
 
 function buildRepoBoundNotice(
@@ -1456,25 +1585,18 @@ function buildRepoBoundNotice(
   after: BindingSnapshot | ChatBinding,
 ): NoticeCardSpec {
   const beforeCwd = before?.cwd ?? "未绑定";
-  const beforeAgent = before?.agentLabel ?? "未绑定";
   const changedRepo = before?.cwd !== after.cwd;
-  const changedAgent = before?.agentLabel !== after.agentLabel;
-  const changed = [changedRepo ? "repo" : null, changedAgent ? "agent" : null]
-    .filter((item): item is string => item !== null)
-    .join("、");
   const lines = [
     "本会话已绑定到 repo。",
     "",
     "**修改明细**",
     `• Repo：${beforeCwd} → ${after.cwd}`,
-    `• Agent：${beforeAgent} → ${after.agentLabel}`,
-    `• 变更项：${changed || "无实际变化"}`,
+    `• 变更项：${changedRepo ? "repo" : "无实际变化"}`,
     "",
     "**绑定后**",
     `• Repo：${after.cwd}`,
-    `• Agent：${after.agentLabel}`,
     "",
-    "下条消息将在该目录启动 agent。",
+    "下条消息将在该目录启动 agent；Agent 会从最近 session profile 继承，或使用全局默认 Agent。",
   ];
   return {
     title: "✅ 已绑定 repo",
@@ -1489,7 +1611,6 @@ function buildRepoUnavailableRebindNotice(from: UnavailableBinding): NoticeCardS
     "",
     "**不可用绑定**",
     `• Repo：${from.cwd}`,
-    `• Agent：${from.agentLabel}`,
     `• 原因：${from.reason}`,
     "",
     "**已重新绑定到**",
@@ -1505,11 +1626,7 @@ function buildRepoUnavailableRebindNotice(from: UnavailableBinding): NoticeCardS
   };
 }
 
-/**
- * Render the bind-instruction doc dropped into the reception cwd. It tells the
- * agent how to bind THIS chat to a repo by editing settings.json — including
- * that it may pick any agent (claude / codex / copilot / gemini / opencode).
- */
+/** Render the bind-instruction doc dropped into the reception cwd. */
 function renderBindInstructions(
   chatId: string,
   settingsPath: string,
@@ -1524,10 +1641,7 @@ function renderBindInstructions(
     "following:",
     "",
     "1. Determine the absolute path of the repository they mean (ask if unsure).",
-    '2. Determine which agent to use. If they name one (e.g. "use claude",',
-    '   "用 codex"), honour it. Valid agents: `claude`, `codex`, `copilot`,',
-    "   `gemini`, `opencode`, `claude-agent`. If they don't say, use `claude`.",
-    "3. Edit the JSON file at:",
+    "2. Edit the JSON file at:",
     `   ${settingsPath}`,
     "   Add (or update) an entry under the top-level `bindings` object keyed by",
     "   this chat's id. Preserve all other keys in the file.",
@@ -1535,7 +1649,7 @@ function renderBindInstructions(
     "```json",
     "{",
     '  "bindings": {',
-    `    "${chatId}": { "cwd": "/absolute/path/to/repo", "agent": "claude" }`,
+    `    "${chatId}": { "cwd": "/absolute/path/to/repo" }`,
     "  }",
     "}",
     "```",
@@ -1546,7 +1660,11 @@ function renderBindInstructions(
     "",
     "After you save the file, humming detects the change and re-routes this chat",
     "to the bound repository automatically — the user's next message will run",
-    "there. Tell the user the binding is done and which repo + agent you set.",
+    "there. Tell the user the binding is done and which repo you set. Do not put",
+    "an agent in the chat binding: Agent / Model / Mode / Permission / Config",
+    "controls belong to the topic/session profile. New topics inherit the most",
+    "recent profile from the same chat + repo, or use the global default Agent if",
+    "there is no history.",
     "",
     "Do not delete other chats' bindings or other top-level keys (credentials,",
     "runtime, agents).",

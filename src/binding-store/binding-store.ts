@@ -1,10 +1,10 @@
 /**
- * Persistent mapping from `chatId` → the repo + agent that chat is bound to.
+ * Persistent mapping from `chatId` → the repo that chat is bound to.
  *
  * This is what lets a single Lark bot serve many project groups: each chat
- * points at its own working directory and its own resolved ACP agent
- * invocation. Distinct from {@link SessionStore}, which records agent-side
- * conversation ids for resume — a binding answers "which repo/agent is this
+ * points at its own working directory. Distinct from {@link SessionStore},
+ * which records agent-side conversation ids and per-topic session profiles
+ * (agent + controls) for resume — a binding answers only "which repo is this
  * chat pointed at", of which there is exactly one per chat.
  *
  * The library does **not** ship a default — callers construct a
@@ -13,23 +13,15 @@
  */
 
 /**
- * A chat's current repo + agent binding. The agent invocation is stored
- * already-resolved (command / args / env) so spawning never needs the CLI
- * preset registry — mirrors how {@link SessionRecord} persists resolved
- * `agentCommand` / `agentArgs`.
+ * A chat's current repo binding. Agent/model/mode/permission/config live on
+ * {@link SessionRecord}; new topics inherit the current repo's recent session
+ * profile, falling back to the global default agent only when the repo has no
+ * history.
  */
 export interface ChatBinding {
   readonly chatId: string;
   /** Absolute working directory the agent subprocess runs in. */
   readonly cwd: string;
-  /**
-   * Display label for the bound agent (preset id like `claude`, or the raw
-   * command line). Shown by the `/where` command; never used for spawning.
-   */
-  readonly agentLabel: string;
-  readonly agentCommand: string;
-  readonly agentArgs: readonly string[];
-  readonly agentEnv?: Readonly<Record<string, string>>;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

@@ -3,8 +3,8 @@
  *
  * Proves the core promise — "one Lark bot, each chat bound to its own repo" —
  * without Lark credentials or a real agent: a fake presenter records the
- * notice cards, a spy resolver stands in for the CLI preset registry, and the
- * real FileBindingStore / FileSessionStore persist to a temp dir.
+ * notice cards and the real FileBindingStore / FileSessionStore persist to a
+ * temp dir.
  *
  * The bridge's inbound entry points (handleMessage / routeMessage) are private
  * and driven by the Lark WebSocket. We reach the command + routing layer
@@ -65,12 +65,9 @@ interface BridgeInternals {
 }
 
 function asInternals(bridge: LarkBridge): BridgeInternals {
-  // The bridge exposes routing only through WS-driven private methods; a
-  // typed view lets the test exercise them directly without a live socket.
   return bridge as unknown as BridgeInternals;
 }
 
-/** Spy resolver: `claude` / `codex` presets, anything else echoes as a raw cmd. */
 const resolver: AgentResolver = (selection: string): ResolvedAgentInvocation => {
   if (selection === "claude") {
     return { command: "npx", args: ["-y", "claude-code-acp"], label: "claude" };
@@ -131,56 +128,79 @@ afterEach(async () => {
 });
 
 describe("per-chat repo routing (integration)", () => {
-  it("binds two chats to two different repos + agents, isolated", async () => {
-    bridge = makeBridge();
+  it("binds two chats to two different repos, isolated", async () => {
+    bridge = makeBridge({
+      defaultAgent: { command: "npx", args: ["-y", "claude-code-acp"], label: "claude" },
+    });
     const b = asInternals(bridge);
 
-    await b.handleCommand({ kind: "bind", cwd: repoA, agent: "claude" }, "oc_A", null, "om_1");
-    await b.handleCommand({ kind: "bind", cwd: repoB, agent: "codex" }, "oc_B", null, "om_2");
+    await b.handleCommand({ kind: "bind", cwd: repoA, agent: null }, "oc_A", null, "om_1");
+    await b.handleCommand({ kind: "bind", cwd: repoB, agent: null }, "oc_B", null, "om_2");
 
-    const bindA = await bindingStore.get("oc_A");
-    const bindB = await bindingStore.get("oc_B");
-    expect(bindA).toMatchObject({ cwd: repoA, agentLabel: "claude", agentCommand: "npx" });
-    expect(bindB).toMatchObject({ cwd: repoB, agentLabel: "codex", agentCommand: "npx" });
+    expect(await bindingStore.get("oc_A")).toMatchObject({ cwd: repoA });
+    expect(await bindingStore.get("oc_B")).toMatchObject({ cwd: repoB });
 
-    // Resolution returns each chat's own repo — no cross-talk.
-    expect(await b.resolveBinding("oc_A")).toMatchObject({ cwd: repoA, explicit: true });
-    expect(await b.resolveBinding("oc_B")).toMatchObject({ cwd: repoB, explicit: true });
+    // Resolution returns each chat's own repo — no cross-talk. The runtime agent
+    // is the global default until a session profile exists for the repo.
+    expect(await b.resolveBinding("oc_A")).toMatchObject({
+      cwd: repoA,
+      explicit: true,
+      label: "claude",
+    });
+    expect(await b.resolveBinding("oc_B")).toMatchObject({
+      cwd: repoB,
+      explicit: true,
+      label: "claude",
+    });
 
-    // Both bind commands acked with a green "✅ 已绑定 repo" card and include details.
     const bindNotices = presenter.notices.filter((n) => n.title === "✅ 已绑定 repo");
     expect(bindNotices.length).toBe(2);
     expect(bindNotices[0]?.body).toContain("修改明细");
+    expect(bindNotices[0]?.body).not.toContain("Agent：");
   });
 
   it("persists bindings across a bridge/process restart", async () => {
     bridge = makeBridge();
     await asInternals(bridge).handleCommand(
-      { kind: "bind", cwd: repoA, agent: "claude" },
+      { kind: "bind", cwd: repoA, agent: null },
       "oc_A",
       null,
       "om_1",
     );
     await bindingStore.close();
 
-    // Simulate a restart: brand-new stores + bridge over the same dataDir.
     const store2 = new FileBindingStore(dataDir);
     await store2.init();
     const restored = await store2.get("oc_A");
-    expect(restored).toMatchObject({ cwd: repoA, agentLabel: "claude" });
+    expect(restored).toMatchObject({ cwd: repoA });
+    expect(restored).not.toHaveProperty("agentLabel");
     await store2.close();
   });
 
   it("rejects /bind to a non-existent directory (no binding written)", async () => {
     bridge = makeBridge();
     await asInternals(bridge).handleCommand(
-      { kind: "bind", cwd: path.join(repoA, "does-not-exist"), agent: "claude" },
+      { kind: "bind", cwd: path.join(repoA, "does-not-exist"), agent: null },
       "oc_A",
       null,
       "om_1",
     );
     expect(await bindingStore.get("oc_A")).toBeNull();
     expect(presenter.notices.some((n) => n.title === "⚠️ 绑定失败")).toBe(true);
+  });
+
+  it("rejects /bind agent arguments because Agent belongs to session profile", async () => {
+    bridge = makeBridge();
+    await asInternals(bridge).handleCommand(
+      { kind: "bind", cwd: repoA, agent: "codex" },
+      "oc_A",
+      null,
+      "om_1",
+    );
+    expect(await bindingStore.get("oc_A")).toBeNull();
+    const notice = presenter.notices.at(-1);
+    expect(notice).toMatchObject({ title: "⚠️ 绑定失败", template: "red" });
+    expect(notice?.body).toContain("/bind 现在只绑定 repo");
   });
 
   it("unbound chat with no default resolves to null (bridge asks for /bind)", async () => {
@@ -194,26 +214,26 @@ describe("per-chat repo routing (integration)", () => {
       defaultCwd: repoA,
     });
     const resolved = await asInternals(bridge).resolveBinding("oc_unbound");
-    expect(resolved).toMatchObject({ cwd: repoA, explicit: false });
+    expect(resolved).toMatchObject({ cwd: repoA, explicit: false, label: "claude" });
   });
 
   it("/unbind removes the binding", async () => {
     bridge = makeBridge();
     const b = asInternals(bridge);
-    await b.handleCommand({ kind: "bind", cwd: repoA, agent: "claude" }, "oc_A", null, "om_1");
+    await b.handleCommand({ kind: "bind", cwd: repoA, agent: null }, "oc_A", null, "om_1");
     expect(await bindingStore.get("oc_A")).not.toBeNull();
 
     await b.handleCommand({ kind: "unbind" }, "oc_A", null, "om_2");
     expect(await bindingStore.get("oc_A")).toBeNull();
   });
 
-  it("rebinding a chat overwrites its repo + agent", async () => {
+  it("rebinding a chat overwrites only its repo", async () => {
     bridge = makeBridge();
     const b = asInternals(bridge);
-    await b.handleCommand({ kind: "bind", cwd: repoA, agent: "claude" }, "oc_A", null, "om_1");
-    await b.handleCommand({ kind: "bind", cwd: repoB, agent: "codex" }, "oc_A", null, "om_2");
+    await b.handleCommand({ kind: "bind", cwd: repoA, agent: null }, "oc_A", null, "om_1");
+    await b.handleCommand({ kind: "bind", cwd: repoB, agent: null }, "oc_A", null, "om_2");
 
-    expect(await bindingStore.get("oc_A")).toMatchObject({ cwd: repoB, agentLabel: "codex" });
+    expect(await bindingStore.get("oc_A")).toMatchObject({ cwd: repoB });
     expect((await bindingStore.list()).length).toBe(1);
   });
 });

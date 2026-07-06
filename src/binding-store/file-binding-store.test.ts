@@ -30,9 +30,6 @@ function binding(chatId: string, over: Partial<ChatBinding> = {}): ChatBinding {
   return {
     chatId,
     cwd: "/work/proj",
-    agentLabel: "claude",
-    agentCommand: "npx",
-    agentArgs: ["-y", "@zed-industries/claude-code-acp"],
     createdAt: now,
     updatedAt: now,
     ...over,
@@ -57,13 +54,13 @@ describe("FileBindingStore", () => {
   it("persists across a fresh store instance (disk reload)", async () => {
     const first = newStore();
     await first.init();
-    await first.set(binding("oc_a", { cwd: "/repo/a", agentLabel: "codex" }));
+    await first.set(binding("oc_a", { cwd: "/repo/a" }));
     await first.set(binding("oc_b", { cwd: "/repo/b" }));
     await first.close(); // flush to disk
 
     const second = newStore();
     await second.init();
-    expect(await second.get("oc_a")).toMatchObject({ cwd: "/repo/a", agentLabel: "codex" });
+    expect(await second.get("oc_a")).toMatchObject({ cwd: "/repo/a" });
     expect(await second.get("oc_b")).toMatchObject({ cwd: "/repo/b" });
     expect((await second.list()).length).toBe(2);
   });
@@ -87,19 +84,6 @@ describe("FileBindingStore", () => {
     await store.delete("oc_never"); // no throw
   });
 
-  it("preserves agentEnv when present", async () => {
-    const store = newStore();
-    await store.init();
-    await store.set(binding("oc_a", { agentEnv: { ANTHROPIC_BASE_URL: "https://x" } }));
-    await store.close();
-
-    const reload = newStore();
-    await reload.init();
-    expect(await reload.get("oc_a")).toMatchObject({
-      agentEnv: { ANTHROPIC_BASE_URL: "https://x" },
-    });
-  });
-
   it("tolerates a corrupt file by starting empty", async () => {
     fs.writeFileSync(path.join(dir, "bindings.json"), "{ this is not json", "utf-8");
     const store = newStore();
@@ -110,12 +94,29 @@ describe("FileBindingStore", () => {
   it("skips structurally-invalid entries but keeps valid ones", async () => {
     const onDisk = {
       oc_good: binding("oc_good"),
-      oc_bad: { chatId: "oc_bad" }, // missing cwd / agentCommand
+      oc_bad: { chatId: "oc_bad" }, // missing cwd
     };
     fs.writeFileSync(path.join(dir, "bindings.json"), JSON.stringify(onDisk), "utf-8");
     const store = newStore();
     await store.init();
     expect(await store.get("oc_good")).toMatchObject({ cwd: "/work/proj" });
     expect(await store.get("oc_bad")).toBeNull();
+  });
+
+  it("ignores legacy agent fields when loading old bindings", async () => {
+    const onDisk = {
+      oc_old: {
+        ...binding("oc_old"),
+        agentLabel: "codex",
+        agentCommand: "npx",
+        agentArgs: ["-y", "codex-acp"],
+      },
+    };
+    fs.writeFileSync(path.join(dir, "bindings.json"), JSON.stringify(onDisk), "utf-8");
+    const store = newStore();
+    await store.init();
+    const got = await store.get("oc_old");
+    expect(got).toMatchObject({ cwd: "/work/proj" });
+    expect(got).not.toHaveProperty("agentLabel");
   });
 });

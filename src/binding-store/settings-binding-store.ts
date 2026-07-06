@@ -2,30 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import type { BindingStore, ChatBinding } from "./binding-store.js";
 
-/**
- * Resolve an agent selection string into a concrete invocation, so a binding
- * read from settings.json (which stores only `{ cwd, agent }`) can be turned
- * into the full {@link ChatBinding} the bridge needs. Injected by the CLI,
- * which owns the preset registry.
- */
-export type BindingAgentResolver = (agentSelection: string | undefined) => {
-  readonly agentLabel: string;
-  readonly agentCommand: string;
-  readonly agentArgs: readonly string[];
-  readonly agentEnv?: Readonly<Record<string, string>>;
-};
-
 /** Shape of one entry under the settings.json `bindings` block. */
 interface StoredBinding {
   cwd: string;
-  agent?: string;
 }
 
 /**
  * {@link BindingStore} backed by the `bindings` block of a single
  * `settings.json`. This keeps every piece of humming state in one file
  * (Miller's decision) and is the file the agent edits for natural-language
- * binding — the bridge watches it and hot-reloads (phase 2).
+ * binding — the bridge watches it and hot-reloads.
  *
  * Reads/writes are whole-file: the store loads settings.json, mutates only the
  * `bindings` key, and writes the whole object back atomically (temp + rename)
@@ -34,11 +20,9 @@ interface StoredBinding {
  */
 export class SettingsBindingStore implements BindingStore {
   private readonly settingsPath: string;
-  private readonly resolveAgent: BindingAgentResolver;
 
-  constructor(settingsPath: string, resolveAgent: BindingAgentResolver) {
+  constructor(settingsPath: string) {
     this.settingsPath = settingsPath;
-    this.resolveAgent = resolveAgent;
   }
 
   async init(): Promise<void> {
@@ -58,10 +42,7 @@ export class SettingsBindingStore implements BindingStore {
   async set(binding: ChatBinding): Promise<void> {
     const root = this.readRoot();
     const bindings = this.bindingsOf(root);
-    bindings[binding.chatId] = {
-      cwd: binding.cwd,
-      ...(binding.agentLabel ? { agent: binding.agentLabel } : {}),
-    };
+    bindings[binding.chatId] = { cwd: binding.cwd };
     root["bindings"] = bindings;
     this.writeRoot(root);
   }
@@ -99,17 +80,11 @@ export class SettingsBindingStore implements BindingStore {
 
   // ----- internals --------------------------------------------------------
 
-  /** Turn a `{ cwd, agent }` entry into a full ChatBinding via the resolver. */
   private hydrate(chatId: string, stored: StoredBinding): ChatBinding {
-    const inv = this.resolveAgent(stored.agent);
     const now = Date.now();
     return {
       chatId,
       cwd: stored.cwd,
-      agentLabel: inv.agentLabel,
-      agentCommand: inv.agentCommand,
-      agentArgs: inv.agentArgs,
-      ...(inv.agentEnv ? { agentEnv: inv.agentEnv } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -127,10 +102,7 @@ export class SettingsBindingStore implements BindingStore {
     for (const [chatId, val] of Object.entries(raw as Record<string, unknown>)) {
       if (val && typeof val === "object" && !Array.isArray(val)) {
         const cwd = (val as Record<string, unknown>)["cwd"];
-        const agent = (val as Record<string, unknown>)["agent"];
-        if (typeof cwd === "string") {
-          out[chatId] = { cwd, ...(typeof agent === "string" ? { agent } : {}) };
-        }
+        if (typeof cwd === "string") out[chatId] = { cwd };
       }
     }
     return out;

@@ -3,17 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SettingsBindingStore } from "./settings-binding-store.js";
-import type { BindingAgentResolver } from "./settings-binding-store.js";
 import type { ChatBinding } from "./binding-store.js";
 
 let dir: string;
 let settingsPath: string;
-
-/** A resolver mapping any selection to a fixed invocation; "claude" default. */
-const resolver: BindingAgentResolver = (sel) => {
-  const label = sel ?? "claude";
-  return { agentLabel: label, agentCommand: "npx", agentArgs: ["-y", `${label}-acp`] };
-};
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-settings-"));
@@ -33,9 +26,6 @@ function binding(chatId: string, over: Partial<ChatBinding> = {}): ChatBinding {
   return {
     chatId,
     cwd: "/work/proj",
-    agentLabel: "claude",
-    agentCommand: "npx",
-    agentArgs: ["-y", "claude-acp"],
     createdAt: now,
     updatedAt: now,
     ...over,
@@ -43,13 +33,13 @@ function binding(chatId: string, over: Partial<ChatBinding> = {}): ChatBinding {
 }
 
 describe("SettingsBindingStore", () => {
-  it("writes bindings under the `bindings` key of settings.json", async () => {
-    const store = new SettingsBindingStore(settingsPath, resolver);
+  it("writes repo-only bindings under the `bindings` key of settings.json", async () => {
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
-    await store.set(binding("oc_a", { cwd: "/repo/a", agentLabel: "codex" }));
+    await store.set(binding("oc_a", { cwd: "/repo/a" }));
 
     const root = readJson();
-    expect(root["bindings"]).toEqual({ oc_a: { cwd: "/repo/a", agent: "codex" } });
+    expect(root["bindings"]).toEqual({ oc_a: { cwd: "/repo/a" } });
   });
 
   it("preserves other top-level keys (credentials/runtime) on write", async () => {
@@ -60,40 +50,36 @@ describe("SettingsBindingStore", () => {
         runtime: { permissionMode: "alwaysAsk" },
       }),
     );
-    const store = new SettingsBindingStore(settingsPath, resolver);
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
     await store.set(binding("oc_a", { cwd: "/repo/a" }));
 
     const root = readJson();
     expect(root["credentials"]).toEqual({ appId: "cli_x", appSecret: "s" });
     expect(root["runtime"]).toEqual({ permissionMode: "alwaysAsk" });
-    expect(root["bindings"]).toEqual({ oc_a: { cwd: "/repo/a", agent: "claude" } });
+    expect(root["bindings"]).toEqual({ oc_a: { cwd: "/repo/a" } });
   });
 
-  it("round-trips get() by hydrating via the resolver", async () => {
-    const store = new SettingsBindingStore(settingsPath, resolver);
+  it("round-trips get() without hydrating any agent fields", async () => {
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
-    await store.set(binding("oc_a", { cwd: "/repo/a", agentLabel: "codex" }));
+    await store.set(binding("oc_a", { cwd: "/repo/a" }));
 
     const got = await store.get("oc_a");
-    expect(got).toMatchObject({
-      chatId: "oc_a",
-      cwd: "/repo/a",
-      agentLabel: "codex",
-      agentCommand: "npx",
-      agentArgs: ["-y", "codex-acp"],
-    });
+    expect(got).toMatchObject({ chatId: "oc_a", cwd: "/repo/a" });
+    expect(got).not.toHaveProperty("agentLabel");
+    expect(got).not.toHaveProperty("agentCommand");
   });
 
   it("returns null for an unknown chat", async () => {
-    const store = new SettingsBindingStore(settingsPath, resolver);
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
     expect(await store.get("oc_missing")).toBeNull();
   });
 
   it("delete() removes just that binding, keeps others + other keys", async () => {
     fs.writeFileSync(settingsPath, JSON.stringify({ credentials: { appId: "cli_x" } }));
-    const store = new SettingsBindingStore(settingsPath, resolver);
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
     await store.set(binding("oc_a"));
     await store.set(binding("oc_b"));
@@ -104,20 +90,21 @@ describe("SettingsBindingStore", () => {
     expect(readJson()["credentials"]).toEqual({ appId: "cli_x" });
   });
 
-  it("reads bindings written directly into settings.json (agent edits it)", async () => {
-    // Simulate the natural-language flow: an agent edits settings.json by hand.
+  it("ignores legacy agent fields when reading bindings written directly into settings.json", async () => {
     fs.writeFileSync(
       settingsPath,
       JSON.stringify({ bindings: { oc_z: { cwd: "/repo/z", agent: "codex" } } }),
     );
-    const store = new SettingsBindingStore(settingsPath, resolver);
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
-    expect(await store.get("oc_z")).toMatchObject({ cwd: "/repo/z", agentLabel: "codex" });
+    const got = await store.get("oc_z");
+    expect(got).toMatchObject({ cwd: "/repo/z" });
+    expect(got).not.toHaveProperty("agentLabel");
   });
 
   it("tolerates a corrupt/half-written settings.json as empty", async () => {
     fs.writeFileSync(settingsPath, "{ half written");
-    const store = new SettingsBindingStore(settingsPath, resolver);
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
     expect(await store.list()).toEqual([]);
     // a subsequent set() overwrites cleanly
@@ -126,7 +113,7 @@ describe("SettingsBindingStore", () => {
   });
 
   it("list() returns all bindings", async () => {
-    const store = new SettingsBindingStore(settingsPath, resolver);
+    const store = new SettingsBindingStore(settingsPath);
     await store.init();
     await store.set(binding("oc_a", { cwd: "/a" }));
     await store.set(binding("oc_b", { cwd: "/b" }));

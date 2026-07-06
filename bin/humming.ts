@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * `lark-acp` — bridge a Lark bot to any ACP-compatible AI agent.
+ * `humming` — bridge a Lark bot to any ACP-compatible AI agent.
  *
  * Synopsis:
  *
- *     lark-acp [global-options] proxy -- <agent-cmd> [agent-args...]
+ *     humming [global-options] proxy -- <agent-cmd> [agent-args...]
  *
  * The CLI is a thin wrapper around {@link LarkBridge}. It reads a
  * general config file (credentials + runtime defaults), merges in
@@ -15,7 +15,7 @@
  * Precedence (highest first):
  *
  *   1. CLI flags
- *   2. Environment variables (LARK_ACP_*)
+ *   2. Environment variables (HUMMING_*)
  *   3. Config file (`config.json`)
  *   4. Built-in defaults
  *
@@ -69,7 +69,7 @@ import {
 
 /**
  * Package version for `--version` / help text. Resolved lazily and tolerantly:
- * the built CLI lives at `dist/bin/lark-acp.js` (package.json two levels up),
+ * the built CLI lives at `dist/bin/humming.js` (package.json two levels up),
  * but when this module is imported from source (e.g. a vitest unit test) that
  * relative path differs. Never throw at import time over a cosmetic string —
  * fall back to `"?"` if resolution fails.
@@ -88,24 +88,26 @@ function resolveVersion(): string {
 
 const VERSION = resolveVersion();
 
-const APP_NAME = "lark-acp";
+const APP_NAME = "humming";
 const CONFIG_FILE = "config.json";
 const SETTINGS_FILE = "settings.json";
-const HOME_DIR_NAME = ".lark-acp";
+const HOME_DIR_NAME = ".humming";
+const PREVIOUS_HOME_DIR_NAME = ".lark-acp";
+const PREVIOUS_APP_NAME = "lark-acp";
 
-const ENV_APP_ID = "LARK_ACP_APP_ID";
-const ENV_APP_SECRET = "LARK_ACP_APP_SECRET";
-const ENV_CONFIG = "LARK_ACP_CONFIG";
-const ENV_DATA_DIR = "LARK_ACP_DATA_DIR";
-const ENV_HOME = "LARK_ACP_HOME";
-const ENV_PERMISSION_MODE = "LARK_ACP_PERMISSION_MODE";
+const ENV_APP_ID = "HUMMING_APP_ID";
+const ENV_APP_SECRET = "HUMMING_APP_SECRET";
+const ENV_CONFIG = "HUMMING_CONFIG";
+const ENV_DATA_DIR = "HUMMING_DATA_DIR";
+const ENV_HOME = "HUMMING_HOME";
+const ENV_PERMISSION_MODE = "HUMMING_PERMISSION_MODE";
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
 const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 /**
  * Agent used when neither `--agent` nor settings.json `runtime.agent` names one.
- * Makes a bare `lark-acp start` / `lark-acp proxy` work out-of-the-box on a
+ * Makes a bare `humming start` / `humming proxy` work out-of-the-box on a
  * fresh machine (claude authenticates via the local `claude` CLI, no API key).
  */
 const DEFAULT_AGENT = "claude";
@@ -113,12 +115,12 @@ const DEFAULT_AGENT = "claude";
 // ---------- paths ---------------------------------------------------------
 
 /**
- * The unified lark-acp home directory. Precedence:
+ * The unified humming home directory. Precedence:
  *   1. --home <dir>       (CLI, resolved by caller and passed in)
- *   2. $LARK_ACP_HOME
- *   3. ~/.lark-acp
+ *   2. $HUMMING_HOME
+ *   3. ~/.humming
  *
- * Everything lark-acp owns — settings.json, sessions.json, logs, inbox —
+ * Everything humming owns — settings.json, sessions.json, logs, inbox —
  * lives under here.
  */
 function defaultHomeDir(): string {
@@ -136,24 +138,43 @@ function resolveHomeDir(override: string | undefined): string {
   return defaultHomeDir();
 }
 
-/** Legacy $XDG_CONFIG_HOME/lark-acp, falling back to ~/.config/lark-acp. */
+/** Legacy $XDG_CONFIG_HOME/humming, falling back to ~/.config/humming. */
 function legacyConfigDir(): string {
   const xdg = process.env["XDG_CONFIG_HOME"];
   if (xdg && xdg.length > 0) return path.join(xdg, APP_NAME);
   return path.join(os.homedir(), ".config", APP_NAME);
 }
 
-/** Legacy $XDG_DATA_HOME/lark-acp, falling back to ~/.local/share/lark-acp. */
+/** Legacy $XDG_DATA_HOME/humming, falling back to ~/.local/share/humming. */
 function legacyDataDir(): string {
   const xdg = process.env["XDG_DATA_HOME"];
   if (xdg && xdg.length > 0) return path.join(xdg, APP_NAME);
   return path.join(os.homedir(), ".local", "share", APP_NAME);
 }
 
+/** Previous-brand unified home, used only for one-time state migration. */
+function previousHomeDir(): string {
+  return path.join(os.homedir(), PREVIOUS_HOME_DIR_NAME);
+}
+
+/** Previous-brand XDG config dir, used only for one-time state migration. */
+function previousConfigDir(): string {
+  const xdg = process.env["XDG_CONFIG_HOME"];
+  if (xdg && xdg.length > 0) return path.join(xdg, PREVIOUS_APP_NAME);
+  return path.join(os.homedir(), ".config", PREVIOUS_APP_NAME);
+}
+
+/** Previous-brand XDG data dir, used only for one-time state migration. */
+function previousDataDir(): string {
+  const xdg = process.env["XDG_DATA_HOME"];
+  if (xdg && xdg.length > 0) return path.join(xdg, PREVIOUS_APP_NAME);
+  return path.join(os.homedir(), ".local", "share", PREVIOUS_APP_NAME);
+}
+
 /**
  * Resolve the settings file path. Precedence:
  *   1. --config <path> (override)
- *   2. $LARK_ACP_CONFIG
+ *   2. $HUMMING_CONFIG
  *   3. <home>/settings.json
  */
 function resolveSettingsPath(override: string | undefined, homeDir: string): string {
@@ -164,14 +185,13 @@ function resolveSettingsPath(override: string | undefined, homeDir: string): str
 }
 
 /**
- * One-time migration of pre-`~/.lark-acp` installs. Only the real default home
- * (`~/.lark-acp`) is eligible for legacy migration; an explicit `--home` /
- * `$LARK_ACP_HOME` is treated as an isolated home and must not silently import
- * credentials/bindings from the user's legacy XDG paths.
+ * One-time migration of pre-`~/.humming` installs. Only the real default home
+ * (`~/.humming`) is eligible for legacy migration; an explicit `--home` /
+ * `$HUMMING_HOME` is treated as an isolated home and must not silently import
+ * credentials/bindings from legacy paths.
  *
- * When `<home>/settings.json` is absent but the legacy `~/.config/lark-acp/
- * config.json` exists, compose a fresh settings.json (config fields + any
- * legacy bindings) and copy the legacy sessions file across. Non-destructive:
+ * When `<home>/settings.json` is absent, import the previous-brand unified
+ * home if present, else import pre-unified XDG config/data. Non-destructive:
  * legacy files are left in place. Idempotent: skipped once settings.json exists.
  *
  * @throws {CliError} when legacy files exist but cannot be read/parsed.
@@ -180,9 +200,20 @@ function migrateLegacyIfNeeded(homeDir: string, settingsPath: string, logger: La
   if (fs.existsSync(settingsPath)) return;
   if (path.resolve(homeDir) !== path.resolve(defaultHomeDir())) return;
 
-  const legacyConfig = path.join(legacyConfigDir(), CONFIG_FILE);
-  const legacyBindings = path.join(legacyDataDir(), "bindings.json");
-  const legacySessions = path.join(legacyDataDir(), "sessions.json");
+  if (migratePreviousHomeIfNeeded(homeDir, settingsPath, logger)) return;
+
+  const legacyConfig = firstExistingPath(
+    path.join(legacyConfigDir(), CONFIG_FILE),
+    path.join(previousConfigDir(), CONFIG_FILE),
+  );
+  const legacyBindings = firstExistingPath(
+    path.join(legacyDataDir(), "bindings.json"),
+    path.join(previousDataDir(), "bindings.json"),
+  );
+  const legacySessions = firstExistingPath(
+    path.join(legacyDataDir(), "sessions.json"),
+    path.join(previousDataDir(), "sessions.json"),
+  );
   if (!fs.existsSync(legacyConfig)) return; // nothing to migrate
 
   let configObj: Record<string, unknown>;
@@ -229,6 +260,32 @@ function migrateLegacyIfNeeded(homeDir: string, settingsPath: string, logger: La
   }
 
   logger.info(`migrated legacy config into ${settingsPath} (old files left in place)`);
+}
+
+function migratePreviousHomeIfNeeded(
+  homeDir: string,
+  settingsPath: string,
+  logger: LarkLogger,
+): boolean {
+  const oldHome = previousHomeDir();
+  const oldSettings = path.join(oldHome, SETTINGS_FILE);
+  if (!fs.existsSync(oldSettings)) return false;
+
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.copyFileSync(oldSettings, settingsPath);
+
+  const oldSessions = path.join(oldHome, "sessions.json");
+  const newSessions = path.join(homeDir, "sessions.json");
+  if (fs.existsSync(oldSessions) && !fs.existsSync(newSessions)) {
+    fs.copyFileSync(oldSessions, newSessions);
+  }
+
+  logger.info(`migrated previous home into ${homeDir} (old files left in place)`);
+  return true;
+}
+
+function firstExistingPath(...paths: readonly string[]): string {
+  return paths.find((candidate) => fs.existsSync(candidate)) ?? paths[0]!;
 }
 
 // ---------- config file schema -------------------------------------------
@@ -1042,7 +1099,7 @@ function resolveConfig(
 
   // ----- dataDir: flag > env > file > XDG default -----
   // ----- dataDir: the home dir IS the data dir now. `--data-dir` and the
-  //       legacy $LARK_ACP_DATA_DIR are honoured as home-dir overrides for
+  //       legacy $HUMMING_DATA_DIR are honoured as home-dir overrides for
   //       backward compatibility; otherwise everything lives under homeDir. -----
   const legacyDataOverride = process.env[ENV_DATA_DIR];
   const rawDataDir =
@@ -1156,9 +1213,9 @@ function printHelp(): void {
     `                         runs here so you can bind by natural language`,
     `                         ("bind me to X using codex"). Default: the home`,
     `                         dir. Pass "" to disable (reply a /bind notice).`,
-    `  --home <dir>           lark-acp home directory holding settings.json,`,
-    `                         sessions, logs. (default: $LARK_ACP_HOME, else`,
-    `                         ~/.lark-acp). Created on startup if missing.`,
+    `  --home <dir>           humming home directory holding settings.json,`,
+    `                         sessions, logs. (default: $HUMMING_HOME, else`,
+    `                         ~/.humming). Created on startup if missing.`,
     `  --config <path>        Override the settings file path`,
     `                         (default: <home>/${SETTINGS_FILE})`,
     `  --data-dir <dir>       Deprecated alias — overrides the home/state dir`,
@@ -1184,7 +1241,7 @@ function printHelp(): void {
     `                         Combined with --agent, extra tokens are appended to the`,
     `                         preset's args.`,
     `  agents                 List built-in agent presets and exit.`,
-    `  init                   Create/update lark-acp home templates and examples:`,
+    `  init                   Create/update humming home templates and examples:`,
     `                         AGENTS.md, CLAUDE.md, settings.back.json, sessions.back.json.`,
     `                         Does NOT create live settings.json or sessions.json.`,
     ``,
@@ -1207,7 +1264,7 @@ function printHelp(): void {
     `                         Persist controls to sessions.json and apply them to`,
     `                         the live runtime when present. The controls JSON uses`,
     `                         ACP-shaped fields: modelId, modeId, config, plus`,
-    `                         lark-acp bridgePermissionMode.`,
+    `                         humming bridgePermissionMode.`,
     `  sessions list [--chat-id <id>] [--thread-id <id>] [--agent <preset>] [--cwd <dir>] [--json]`,
     `                         List existing ACP agent sessions. --cwd is allowed`,
     `                         for host/reception queries; otherwise cwd defaults`,
@@ -1220,7 +1277,7 @@ function printHelp(): void {
     `Settings file (${SETTINGS_FILE}, under the home dir):`,
     `  {`,
     `    "credentials": { "appId": "cli_...", "appSecret": "..." },`,
-    `    "dataDir": "./var/lark-acp",`,
+    `    "dataDir": "./var/humming",`,
     `    "runtime": {`,
     `      "cwd": "/work/project",`,
     `      "agent": "claude",`,
@@ -1260,9 +1317,9 @@ function printHelp(): void {
     `  ${APP_NAME} --cwd /work/project proxy --agent opencode`,
     `  ${APP_NAME} --hide-thoughts proxy --agent copilot`,
     `  ${APP_NAME} --permission-mode alwaysAllow proxy --agent claude`,
-    `  ${APP_NAME} sessions list --chat-id "$LARK_ACP_CHAT_ID" --agent claude --json`,
+    `  ${APP_NAME} sessions list --chat-id "$HUMMING_CHAT_ID" --agent claude --json`,
     `  ${APP_NAME} sessions list --agent codex --cwd /work/project --json`,
-    `  ${APP_NAME} sessions bind --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --agent claude --session-id <id>`,
+    `  ${APP_NAME} sessions bind --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent claude --session-id <id>`,
     `  ${APP_NAME} proxy -- node ./my-acp-server.js`,
     ``,
     `In-chat commands (one Lark bot → many repos):`,
@@ -1608,7 +1665,7 @@ function makeAgentResolver(registry: Registry): AgentResolver {
  *   3. settings.json `runtime.agent` (a preset id or a raw command string)
  *   4. built-in {@link DEFAULT_AGENT} (`claude`)
  *
- * Steps 3–4 let a bare `lark-acp start` / `lark-acp proxy` work out-of-the-box
+ * Steps 3–4 let a bare `humming start` / `humming proxy` work out-of-the-box
  * — no `--agent` required — which is what a fresh-machine install expects.
  *
  * @throws {CliError} when `--agent` names an unknown preset, or when the
@@ -1623,7 +1680,7 @@ function resolveDefaultAgent(
     const entry = registry.get(args.agentPreset);
     if (!entry) {
       throw new CliError(
-        `unknown agent preset: ${args.agentPreset} (run \`lark-acp agents\` to list presets)`,
+        `unknown agent preset: ${args.agentPreset} (run \`humming agents\` to list presets)`,
       );
     }
     const combinedArgs = [...entry.preset.args, ...args.agentExtraArgs];
@@ -1679,7 +1736,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     sessionsPath: path.join(homeDir, "sessions.json"),
     controlSocketPath: bridgeControlSocketPath(homeDir),
   });
-  // Migrate a pre-~/.lark-acp install into settings.json before reading it.
+  // Migrate a pre-~/.humming install into settings.json before reading it.
   migrateLegacyIfNeeded(homeDir, configPath, cliLogger);
 
   const file = readConfigFile(configPath);
@@ -1822,7 +1879,7 @@ async function runInit(args: ParsedArgs): Promise<void> {
   });
   process.stdout.write(
     [
-      `initialized lark-acp home templates in ${homeDir}:`,
+      `initialized humming home templates in ${homeDir}:`,
       `  AGENTS.md`,
       `  CLAUDE.md`,
       `  settings.back.json`,
@@ -1915,7 +1972,7 @@ function assertNever(x: never): never {
 }
 
 /**
- * True when this module is the process entry point (run as `lark-acp …`),
+ * True when this module is the process entry point (run as `humming …`),
  * false when it's imported (e.g. by a vitest unit test). Lets the file export
  * its pure helpers for testing without auto-running {@link main}. Symlinks are
  * resolved on both sides so a global-bin install (which runs through a symlink)
@@ -1946,7 +2003,7 @@ if (isMainModule()) {
   });
 }
 
-// Exported for unit tests (bin/lark-acp.test.ts). Not part of any public API —
+// Exported for unit tests (bin/humming.test.ts). Not part of any public API —
 // the package's only entry points are the `bin` scripts and `src/index.ts`.
 export {
   parseArgs,

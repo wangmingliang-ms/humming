@@ -49,7 +49,7 @@ function readTemplate(name: (typeof HOME_TEMPLATE_NAMES)[number]): string {
     const filePath = path.join(dir, name);
     if (fs.existsSync(filePath)) return fs.readFileSync(filePath, "utf-8");
   }
-  throw new Error(`lark-acp template ${name} not found in: ${TEMPLATE_DIR_CANDIDATES.join(", ")}`);
+  throw new Error(`humming template ${name} not found in: ${TEMPLATE_DIR_CANDIDATES.join(", ")}`);
 }
 
 function writeTemplate(filePath: string, content: string, overwrite: boolean): void {

@@ -1,6 +1,6 @@
 /**
  * Cross-platform process management for the bridge: background start, stop,
- * restart, status, and log tailing — driven by a PID file under the lark-acp
+ * restart, status, and log tailing — driven by a PID file under the humming
  * home dir.
  *
  * CLI-only: the library (`src/`) never consumes these. The design goal is a
@@ -22,13 +22,13 @@ import process from "node:process";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
 /** Used only in user-facing hint text; kept local to avoid coupling to the CLI. */
-const APP_NAME = "lark-acp";
+const APP_NAME = "humming";
 
 const PID_FILE = "bridge.pid";
 const LOG_FILE = "bridge.log";
 const RESTART_MARKER_FILE = "bridge.restart";
 const CONTROL_SOCKET_FILE = "control.sock";
-const SYSTEMD_UNIT_PREFIX = "lark-acp-bridge";
+const SYSTEMD_UNIT_PREFIX = "humming-bridge";
 const SYSTEMD_UNIT_SUFFIX = ".service";
 
 /** Default number of trailing log lines shown by `logs` (without `-n`). */
@@ -75,7 +75,7 @@ export function bridgeRestartMarkerPath(homeDir: string): string {
   return path.join(homeDir, RESTART_MARKER_FILE);
 }
 
-/** Unix-domain socket used by `lark-acp control …` to query the live bridge. */
+/** Unix-domain socket used by `humming control …` to query the live bridge. */
 export function bridgeControlSocketPath(homeDir: string): string {
   return path.join(homeDir, CONTROL_SOCKET_FILE);
 }
@@ -483,7 +483,7 @@ function systemdEnvArgs(): string[] {
     "GEMINI_",
     "GITHUB_",
     "GOOGLE_",
-    "LARK_ACP_",
+    "HUMMING_",
     "NODE_",
     "NPM_",
   ];

@@ -1,100 +1,100 @@
-# lark-acp
+# Humming Agent
 
-[![npm version](https://img.shields.io/npm/v/lark-acp.svg)](https://www.npmjs.com/package/lark-acp)
-[![npm downloads](https://img.shields.io/npm/dm/lark-acp.svg)](https://www.npmjs.com/package/lark-acp)
-[![node version](https://img.shields.io/node/v/lark-acp.svg)](https://www.npmjs.com/package/lark-acp)
-[![license](https://img.shields.io/npm/l/lark-acp.svg)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/humming-agent.svg)](https://www.npmjs.com/package/humming-agent)
+[![npm downloads](https://img.shields.io/npm/dm/humming-agent.svg)](https://www.npmjs.com/package/humming-agent)
+[![node version](https://img.shields.io/node/v/humming-agent.svg)](https://www.npmjs.com/package/humming-agent)
+[![license](https://img.shields.io/npm/l/humming-agent.svg)](./LICENSE)
 
 > 💖 觉得本项目有帮助、或者只是看着有点意思？动动发财的小手在右上角点个 ⭐ Star 吧——这是对作者最直接的鼓励。
 
 > ⚠️ **WIP**：仍在迭代中，1.0 之前 CLI 选项与配置字段可能继续调整。
 
-把 [飞书/Lark](https://open.larksuite.com/) 机器人接到任何符合 [ACP（Agent Client Protocol）](https://agentcommunicationprotocol.dev/) 的 AI Agent 上：用户在飞书里发消息，agent 在你的机器上跑，过程和结果都以一张可交互的飞书卡片呈现，工具调用授权、中断、跨进程恢复会话都在卡片里完成。
+**Humming Agent** 是一个轻量、文件驱动的 relay agent。它自己不发送 LLM request，而是通过 ACP 把飞书/Lark 聊天请求委托给本机第三方 agent（Claude Code、Codex、Copilot、Gemini、OpenCode 等），并通过 `settings.json` / `sessions.json` 管理路由、repo binding、topic session 和 session controls。
+
+用户在飞书里发消息，agent 在你的机器上跑，过程和结果都以一张可交互的飞书卡片呈现，工具调用授权、中断、跨进程恢复会话都在卡片里完成。
 
 实际使用强烈建议配合[飞书cli](https://github.com/larksuite/cli)与其skill一起使用，本桥阶层会把会话信息注入上下文，通过飞书cli可以衔接各种飞书操作。
 
 <p align="center">
-  <img src="docs/mock-example.png" alt="lark-acp 在飞书里的演示卡片" width="640">
+  <img src="docs/mock-example.png" alt="humming 在飞书里的演示卡片" width="640">
 </p>
 
 ---
 
-## CLI: `lark-acp`
+## CLI: `humming`
 
 ### 安装与运行
 
 ```bash
 # 方式一：npx，从 GitHub 免安装直接跑
-npx -y "github:wangmingliang-ms/lark-acp" --help
+npx -y "github:wangmingliang-ms/humming" --help
 
 # 方式二：从 GitHub 安装（推荐，见下方「从 GitHub 安装」）
-#   注意：npm 上的 lark-acp 名称已被无关的包占用，`npm i -g lark-acp` 会装错东西。
-lark-acp --help
+humming --help
 
 # 方式三：在仓库内本地构建（开发 / 想用未发布的改动）
 bun install          # 或 npm install
 bun run build        # 或 npm run build
-node dist/bin/lark-acp.js --help
+node dist/bin/humming.js --help
 ```
 
-> **本地开发建议 `npm link`**：在仓库根执行一次 `npm link`，就把全局 `lark-acp`
+> **本地开发建议 `npm link`**：在仓库根执行一次 `npm link`，就把全局 `humming`
 > 软链到本仓库的 `dist/`。之后改了代码只需 `npm run build`（无需重新 link）即可
-> 生效，配合下文的 `lark-acp restart` 快速迭代。撤销：`npm rm -g lark-acp`。
+> 生效，配合下文的 `humming restart` 快速迭代。撤销：`npm rm -g humming-agent`。
 
 ### 从 GitHub 安装
 
-npm 官方仓库上的 `lark-acp` 名称已被无关的包占用，直接 `npm i -g lark-acp` 会装错东西。
 推荐用下面的脚本直接从本仓库安装（脚本会克隆到临时目录、`npm install` 并 `npm run build`，再
-`npm install -g --install-links` 安装成全局命令，随后执行 `lark-acp init` 初始化 `~/.lark-acp` 模板，最后清理临时目录）：
+`npm install -g --install-links` 安装成全局命令，随后执行 `humming init` 初始化 `~/.humming` 模板，最后清理临时目录）：
 
 **Linux / macOS / WSL：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/humming/main/install.sh | sh
 ```
 
 **Windows PowerShell：**
 
 ```powershell
-irm https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/wangmingliang-ms/humming/main/install.ps1 | iex
 ```
 
 可用环境变量覆盖来源仓库与分支/标签：
 
 ```bash
-LARK_ACP_REF=v0.2.0 sh install.sh          # 装某个 tag
-LARK_ACP_REPO=4t145/lark-acp sh install.sh # 装上游仓库
+HUMMING_REF=v0.2.0 sh install.sh          # 装某个 tag
+HUMMING_REPO=your-org/humming sh install.sh # 装上游仓库
 ```
 
 卸载：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/uninstall.sh | sh
-# Windows：irm https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/uninstall.ps1 | iex
-# 或直接：npm rm -g lark-acp
+curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/humming/main/uninstall.sh | sh
+# Windows：irm https://raw.githubusercontent.com/wangmingliang-ms/humming/main/uninstall.ps1 | iex
+# 或直接：npm rm -g humming-agent
 ```
 
 ### 命令格式
 
 ```
-lark-acp [global-options] proxy [--agent <preset>] [-- <extra-args>...]
-lark-acp [global-options] proxy -- <agent-cmd> [agent-args...]
-lark-acp [global-options] init                       # 初始化 ~/.lark-acp 模板
-lark-acp [global-options] start [--agent <preset>]   # 后台运行 proxy
-lark-acp [global-options] stop | restart | status
-lark-acp logs [-f] [-n <lines>]
-lark-acp [global-options] control capabilities --chat-id <id> [--thread-id <id>] [--json]
-lark-acp [global-options] sessions list [--chat-id <id>] [--thread-id <id>] [--agent <preset>] [--cwd <dir>] [--json]
-lark-acp [global-options] sessions bind --chat-id <id> [--thread-id <id>] [--agent <preset>] --session-id <id>
-lark-acp [global-options] sessions set-control --chat-id <id> [--thread-id <id>] --json '<controls>'
-lark-acp agents
-lark-acp help
-lark-acp version
+humming [global-options] proxy [--agent <preset>] [-- <extra-args>...]
+humming [global-options] proxy -- <agent-cmd> [agent-args...]
+humming [global-options] init                       # 初始化 ~/.humming 模板
+humming [global-options] start [--agent <preset>]   # 后台运行 proxy
+humming [global-options] stop | restart | status
+humming logs [-f] [-n <lines>]
+humming [global-options] control capabilities --chat-id <id> [--thread-id <id>] [--json]
+humming [global-options] sessions list [--chat-id <id>] [--thread-id <id>] [--agent <preset>] [--cwd <dir>] [--json]
+humming [global-options] sessions bind --chat-id <id> [--thread-id <id>] [--agent <preset>] --session-id <id>
+humming [global-options] sessions set-control --chat-id <id> [--thread-id <id>] --json '<controls>'
+humming agents
+humming help
+humming version
 ```
 
 两种启动方式：
 
-- **`--agent <preset>`** —— 使用内置预设，最常用。运行 `lark-acp agents` 查看完整列表。
+- **`--agent <preset>`** —— 使用内置预设，最常用。运行 `humming agents` 查看完整列表。
 - **`-- <agent-cmd>`** —— 自定义命令，`--` 后的所有参数原样转发给 agent。
 
 两种方式可以组合：`proxy --agent claude -- --debug` 会在预设末尾追加 `--debug` 再启动。
@@ -117,7 +117,7 @@ lark-acp version
 不在预设里的 agent，用 raw command：
 
 ```bash
-lark-acp proxy -- node ./my-acp-server.js --port 9000
+humming proxy -- node ./my-acp-server.js --port 9000
 ```
 
 也可以在配置文件的 `agents` 字段里固化自己的预设（详见下文「配置文件」一节）。
@@ -146,18 +146,18 @@ lark-acp proxy -- node ./my-acp-server.js --port 9000
 子进程：
 
 ```bash
-lark-acp start --agent claude    # 后台启动（选项与 proxy 完全一致）
-lark-acp status                  # 是否在跑？PID + 运行时长
-lark-acp logs                    # 打印日志末尾（默认 40 行）
-lark-acp logs -f                 # 实时跟踪（Ctrl-C 退出）
-lark-acp logs -n 100             # 末尾 100 行
-lark-acp restart --agent claude  # 停掉再以相同选项重启（改了代码后常用）
-lark-acp stop                    # 停止后台 bridge
+humming start --agent claude    # 后台启动（选项与 proxy 完全一致）
+humming status                  # 是否在跑？PID + 运行时长
+humming logs                    # 打印日志末尾（默认 40 行）
+humming logs -f                 # 实时跟踪（Ctrl-C 退出）
+humming logs -n 100             # 末尾 100 行
+humming restart --agent claude  # 停掉再以相同选项重启（改了代码后常用）
+humming stop                    # 停止后台 bridge
 ```
 
 > **`--agent` 是可选的**：不带时，默认 agent 按 `--agent` → settings.json 的
 > `runtime.agent` → 内置 `claude` 依次回退。所以在一台干净机器上，只要
-> settings.json 里填好凭据，直接 `lark-acp start` 就能起（用 claude）；想换默认
+> settings.json 里填好凭据，直接 `humming start` 就能起（用 claude）；想换默认
 > agent，在 settings.json 写 `"runtime": { "agent": "codex" }` 即可，无需每次都敲
 > `--agent`。
 
@@ -171,12 +171,12 @@ lark-acp stop                    # 停止后台 bridge
 
 要点：
 
-- **状态文件都在 home 目录下**（`~/.lark-acp/`，可用 `--home` / `$LARK_ACP_HOME` 覆盖）：
+- **状态文件都在 home 目录下**（`~/.humming/`，可用 `--home` / `$HUMMING_HOME` 覆盖）：
   `bridge.pid`、`bridge.log`。`start` / `restart` 会把你传的全局 / proxy 选项、以及
   `-- <agent-cmd>` 透传部分**原样**转发给后台进程。
 - **Lifecycle / binding 通知**：在 settings.json 写 `"runtime": { "lifecycleNotifyChatIds": ["oc_..."] }` 后，
   bridge 启动完成会给这些会话发「已启动」，`stop` 时发「正在停止」，`restart` 时发「正在重启」和「已重启」。通知是 best-effort，发送失败只记日志，不阻塞进程管理。每次 repo 绑定成功也会发「已绑定 repo」通知并列出修改明细；通过 CLI 绑定 topic session 成功时会发「已绑定 session」通知，包含 session title 和修改明细。
-- **初始化模板**：执行 `lark-acp init` 会创建/刷新 `~/.lark-acp/AGENTS.md`、`~/.lark-acp/CLAUDE.md`，并创建 `~/.lark-acp/settings.back.json`、`~/.lark-acp/sessions.back.json` 作为可复制参考模板。官方 install 脚本会在全局命令安装完成后自动执行一次 `lark-acp init`；手动安装或换 home 时也可以单独运行。`settings.json` / `sessions.json` 仍只在真实配置或会话产生时创建；`.back.json` 不含真实凭据。
+- **初始化模板**：执行 `humming init` 会创建/刷新 `~/.humming/AGENTS.md`、`~/.humming/CLAUDE.md`，并创建 `~/.humming/settings.back.json`、`~/.humming/sessions.back.json` 作为可复制参考模板。官方 install 脚本会在全局命令安装完成后自动执行一次 `humming init`；手动安装或换 home 时也可以单独运行。`settings.json` / `sessions.json` 仍只在真实配置或会话产生时创建；`.back.json` 不含真实凭据。
 - **Linux / WSL 上是真后台托管**：如果 `systemctl --user` 可用，`start` 会用
   `systemd-run --user` 启动一个 transient service（unit 名会显示在 `status` 里），bridge
   不再挂在当前 terminal 下面；关闭终端不会停。没有 systemd 的平台才回退到普通 detached
@@ -188,36 +188,36 @@ lark-acp stop                    # 停止后台 bridge
 - **优雅停止仅限 POSIX**：Linux 上 `stop` 走 `SIGTERM` 优雅关闭；Windows 上 `process.kill`
   是硬终止。
 - **崩溃自愈 / 开机自启不在此范围**：交给平台原生托管（Linux systemd unit、Windows 计划
-  任务），由它们调用 `lark-acp start`（见下文「systemd 托管」）。
+  任务），由它们调用 `humming start`（见下文「systemd 托管」）。
 
 ### Session controls / live capabilities
 
-运行中的 bridge 会在 home 目录下打开本地 control socket（默认 `~/.lark-acp/control.sock`），供本机 CLI 查询当前 ACP session 的 live capabilities，并受控写入 `sessions.json`。
+运行中的 bridge 会在 home 目录下打开本地 control socket（默认 `~/.humming/control.sock`），供本机 CLI 查询当前 ACP session 的 live capabilities，并受控写入 `sessions.json`。
 
 #### 绑定 topic 到已有 agent session
 
-`lark-acp sessions list` 用于列出 agent 已有 sessions。默认 cwd 解析顺序是 `--cwd` → 当前 chat binding → `runtime.cwd`；因此在普通项目 chat 里不用指定 cwd，在 host/reception chat 里也可以显式查询某个 repo：
+`humming sessions list` 用于列出 agent 已有 sessions。默认 cwd 解析顺序是 `--cwd` → 当前 chat binding → `runtime.cwd`；因此在普通项目 chat 里不用指定 cwd，在 host/reception chat 里也可以显式查询某个 repo：
 
 ```bash
 # 当前 chat 绑定 repo 内的 Claude sessions
-lark-acp sessions list \
-  --chat-id "$LARK_ACP_CHAT_ID" \
-  --thread-id "$LARK_ACP_THREAD_ID" \
+humming sessions list \
+  --chat-id "$HUMMING_CHAT_ID" \
+  --thread-id "$HUMMING_THREAD_ID" \
   --agent claude \
   --json
 
 # 只查询某个 repo，不绑定
-lark-acp sessions list --agent codex --cwd /absolute/path/to/repo --json
+humming sessions list --agent codex --cwd /absolute/path/to/repo --json
 ```
 
-`lark-acp sessions bind` 把**当前 topic** 绑定到一个已有 session。它故意不接受 `--cwd`：只能绑定当前 chat repo 内的 session，不会修改 chat binding，也不支持 topic 跨 repo 绑定。绑定前 CLI 会用 `session/list` 验证 session 属于当前 repo；绑定后 bridge 会停止当前 topic runtime、更新 `sessions.json`，并回复一张包含 session title 与修改明细的「已绑定 session」通知卡片。下一条 topic 消息会 resume 这个 session。
+`humming sessions bind` 把**当前 topic** 绑定到一个已有 session。它故意不接受 `--cwd`：只能绑定当前 chat repo 内的 session，不会修改 chat binding，也不支持 topic 跨 repo 绑定。绑定前 CLI 会用 `session/list` 验证 session 属于当前 repo；绑定后 bridge 会停止当前 topic runtime、更新 `sessions.json`，并回复一张包含 session title 与修改明细的「已绑定 session」通知卡片。下一条 topic 消息会 resume 这个 session。
 
 如果目标 session 已经绑定到另一个 chat/thread，本次 bind 会被拒绝，并发送「Session 已被绑定」冲突通知；不要通过手改 `sessions.json` 绕过，应先在原 thread `/new` 重置或确认原绑定不再需要。
 
 ```bash
-lark-acp sessions bind \
-  --chat-id "$LARK_ACP_CHAT_ID" \
-  --thread-id "$LARK_ACP_THREAD_ID" \
+humming sessions bind \
+  --chat-id "$HUMMING_CHAT_ID" \
+  --thread-id "$HUMMING_THREAD_ID" \
   --agent claude \
   --session-id "<sessions.list[].sessionId>"
 ```
@@ -229,7 +229,7 @@ lark-acp sessions bind \
 查询当前会话可用的 ACP 原生能力：
 
 ```bash
-lark-acp control capabilities --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --json
+humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json
 ```
 
 返回会尽量保持 ACP 原生结构：
@@ -237,14 +237,14 @@ lark-acp control capabilities --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_A
 - `models`: ACP `SessionModelState`，包含 `currentModelId` / `availableModels`。
 - `modes`: ACP `SessionModeState`，包含 `currentModeId` / `availableModes`。
 - `configOptions`: ACP `SessionConfigOption[]`。
-- `bridgePermissionModes` / `bridgePermissionMode`: lark-acp 自己的 permission-card 策略，不是 ACP 原生字段。
+- `bridgePermissionModes` / `bridgePermissionMode`: humming 自己的 permission-card 策略，不是 ACP 原生字段。
 
 设置 session controls 时传一个完整 JSON payload；CLI 会写入 `sessions.json`，如果对应 runtime 正在运行，会立刻拆成 ACP 单项调用：
 
 ```bash
-lark-acp sessions set-control \
-  --chat-id "$LARK_ACP_CHAT_ID" \
-  --thread-id "$LARK_ACP_THREAD_ID" \
+humming sessions set-control \
+  --chat-id "$HUMMING_CHAT_ID" \
+  --thread-id "$HUMMING_THREAD_ID" \
   --json '{
     "modelId": "<models.availableModels[].id>",
     "modeId": "<modes.availableModes[].id>",
@@ -261,15 +261,15 @@ lark-acp sessions set-control \
 - `modelId` → ACP `session/set_model`（unstable）。
 - `modeId` → ACP `session/set_mode`。
 - `config[configId]` → ACP `session/set_config_option`；select 类型按 ACP request shape 只需要 `{ "value": "..." }`。
-- `bridgePermissionMode` → lark-acp 本地处理 ACP `requestPermission` 的策略：`alwaysAsk` / `alwaysAllow` / `alwaysDeny`。
+- `bridgePermissionMode` → humming 本地处理 ACP `requestPermission` 的策略：`alwaysAsk` / `alwaysAllow` / `alwaysDeny`。
 
 注意：ACP 没有统一的全局 permission mode。Claude Code / Copilot 等 agent 可能把“plan / edit automatically / bypass permission”暴露成 mode，也可能暴露成 config option；以 `control capabilities` 的 live 返回为准，不要硬编码。
 
-为了避免每轮 prompt 携带大段知识，bridge 会在 `~/.lark-acp/AGENTS.md` 和 `~/.lark-acp/CLAUDE.md` 写入完整操作指引；会话内只注入一句短提示，让 agent 在需要修改 settings 或 session controls 时先读这些文件。
+为了避免每轮 prompt 携带大段知识，bridge 会在 `~/.humming/AGENTS.md` 和 `~/.humming/CLAUDE.md` 写入完整操作指引；会话内只注入一句短提示，让 agent 在需要修改 settings 或 session controls 时先读这些文件。
 
 ### 配置文件
 
-CLI 读取一份配置文件（默认 `~/.lark-acp/settings.json`；旧的 `~/.config/lark-acp/config.json` 只会在默认 home 首次启动时迁移一次），里面包含凭据和运行时默认值。优先级：CLI flag > 环境变量 > 配置文件 > 内置默认。
+CLI 读取一份配置文件（默认 `~/.humming/settings.json`；旧的 `~/.config/humming/config.json` 只会在默认 home 首次启动时迁移一次），里面包含凭据和运行时默认值。优先级：CLI flag > 环境变量 > 配置文件 > 内置默认。
 
 完整字段（都可选）：
 
@@ -279,7 +279,7 @@ CLI 读取一份配置文件（默认 `~/.lark-acp/settings.json`；旧的 `~/.c
     "appId": "cli_xxxxxxxxxxxxxxxx",
     "appSecret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   },
-  "dataDir": "./var/lark-acp",
+  "dataDir": "./var/humming",
   "runtime": {
     "cwd": "/work/project",
     "agent": "claude",
@@ -308,9 +308,9 @@ CLI 读取一份配置文件（默认 `~/.lark-acp/settings.json`；旧的 `~/.c
 }
 ```
 
-凭据可以用环境变量代替文件：`LARK_ACP_APP_ID` / `LARK_ACP_APP_SECRET`。
+凭据可以用环境变量代替文件：`HUMMING_APP_ID` / `HUMMING_APP_SECRET`。
 
-`lark-acp agents` 会列出当前配置下所有可用的预设，并标出来源（`[built-in]` / `[user]` / `[overridden]`）。
+`humming agents` 会列出当前配置下所有可用的预设，并标出来源（`[built-in]` / `[user]` / `[overridden]`）。
 
 > 在飞书开放平台 [开发者后台](https://open.larksuite.com/app) 创建一个"自建应用"，从「凭证与基础信息」页拿 `App ID` / `App Secret`；在「事件与回调」里把订阅模式切到 **长连接 (WebSocket)**。具体步骤见下文「飞书开发者后台配置」。
 
@@ -380,10 +380,10 @@ CLI 读取一份配置文件（默认 `~/.lark-acp/settings.json`；旧的 `~/.c
 
 #### 5. 启用
 
-把 `App ID` / `App Secret` 填到 `config.json`（或环境变量 `LARK_ACP_APP_ID` / `LARK_ACP_APP_SECRET`），运行：
+把 `App ID` / `App Secret` 填到 `config.json`（或环境变量 `HUMMING_APP_ID` / `HUMMING_APP_SECRET`），运行：
 
 ```bash
-lark-acp proxy --agent claude
+humming proxy --agent claude
 ```
 
 然后在飞书里搜到这个机器人、单聊或拉到群里直接发消息即可。
@@ -394,10 +394,10 @@ lark-acp proxy --agent claude
 
 ```bash
 # 1. 准备目录（首次使用时一次性执行）
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp"
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/humming"
 
 # 2. 写入凭据
-cat > "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp/config.json" <<'EOF'
+cat > "${XDG_CONFIG_HOME:-$HOME/.config}/humming/config.json" <<'EOF'
 {
   "credentials": {
     "appId":     "cli_a1b2c3d4e5f60001",
@@ -405,10 +405,10 @@ cat > "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp/config.json" <<'EOF'
   }
 }
 EOF
-chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/lark-acp/config.json"
+chmod 600 "${XDG_CONFIG_HOME:-$HOME/.config}/humming/config.json"
 
 # 3. 启动桥接
-lark-acp proxy --agent claude
+humming proxy --agent claude
 ```
 
 #### 完整配置（凭据 + 运行时默认值）
@@ -431,7 +431,7 @@ lark-acp proxy --agent claude
 ```
 
 ```bash
-lark-acp proxy --agent claude
+humming proxy --agent claude
 ```
 
 CLI flag 会临时覆盖文件里的同名项。
@@ -443,43 +443,43 @@ CLI flag 会临时覆盖文件里的同名项。
 
 ```ini
 [Service]
-Environment=LARK_ACP_APP_ID=cli_a1b2c3d4e5f60001
-Environment=LARK_ACP_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-ExecStart=/usr/local/bin/lark-acp --cwd /srv/projects/main proxy --agent claude
+Environment=HUMMING_APP_ID=cli_a1b2c3d4e5f60001
+Environment=HUMMING_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ExecStart=/usr/local/bin/humming --cwd /srv/projects/main proxy --agent claude
 Restart=on-failure
 ```
 
 反之，如果只是想在自己机器上**手动**方便地启停、又不想开着终端，用内置的
-`lark-acp start` / `stop` / `restart`（见上文「后台运行与进程管理」）即可，无需 systemd。
+`humming start` / `stop` / `restart`（见上文「后台运行与进程管理」）即可，无需 systemd。
 
 ### 快速示例
 
 ```bash
 # 1. 接 Claude Code（最常用）
 #    会话自动持久化，重启不丢上下文。
-lark-acp proxy --agent claude
+humming proxy --agent claude
 
 # 2. 接 OpenCode，工作目录指向具体项目
-lark-acp --cwd /work/project proxy --agent opencode
+humming --cwd /work/project proxy --agent opencode
 
 # 3. 接 GitHub Copilot CLI，关掉思考输出
-lark-acp --hide-thoughts proxy --agent copilot
+humming --hide-thoughts proxy --agent copilot
 
 # 4. 自研 ACP server
-lark-acp proxy -- node ./my-acp-server.js --port 9000
+humming proxy -- node ./my-acp-server.js --port 9000
 
 # 5. 后台运行 + 管理（不占终端）
-lark-acp start --agent claude
-lark-acp status
-lark-acp logs -f
-lark-acp restart --agent claude
-lark-acp stop
+humming start --agent claude
+humming status
+humming logs -f
+humming restart --agent claude
+humming stop
 ```
 
 ## 类似的项目
 
 1. golang 版本，实现也很齐全，https://github.com/ri-char/Lark-ACP
-2. 另一个node版本，本项目由此重构而来 https://github.com/JiaqiZhang-Dev/lark-acp
+2. 另一个node版本，本项目由此重构而来 https://github.com/JiaqiZhang-Dev/humming
 
 ### 本实现的不同
 

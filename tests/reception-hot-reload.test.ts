@@ -98,7 +98,7 @@ function makeBridge(opts?: { unboundCwd?: string | null }): LarkBridge {
 }
 
 beforeEach(async () => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-recv-"));
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "humming-recv-"));
   home = path.join(root, "home");
   repoA = path.join(root, "repo-a");
   fs.mkdirSync(home, { recursive: true });
@@ -170,10 +170,10 @@ describe("reception area", () => {
     await bridge.start();
 
     expect(fs.readFileSync(path.join(home, "AGENTS.md"), "utf-8")).toContain(
-      "lark-acp operating guide",
+      "humming operating guide",
     );
     expect(fs.readFileSync(path.join(home, "CLAUDE.md"), "utf-8")).toContain(
-      "lark-acp operating guide",
+      "humming operating guide",
     );
     expect(
       JSON.parse(fs.readFileSync(path.join(home, "settings.back.json"), "utf-8")),

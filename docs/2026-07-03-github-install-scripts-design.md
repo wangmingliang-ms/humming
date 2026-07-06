@@ -17,17 +17,17 @@ Date: 2026-07-03
 
 ## Problem
 
-Users want a one-liner to install the `lark-acp` CLI directly from the GitHub
+Users want a one-liner to install the `humming` CLI directly from the GitHub
 repository, on both Unix-like systems (sh) and Windows (PowerShell).
 
-The unscoped npm name `lark-acp` is **already taken on the public registry by an
-unrelated package** (npm shows `lark-acp@1.0.1`, which is not this project). So
-`npm i -g lark-acp` installs the wrong package. Installing straight from the
+The unscoped npm name `humming` is **already taken on the public registry by an
+unrelated package** (npm shows `humming@1.0.1`, which is not this project). So
+`npm i -g humming-agent` installs the wrong package. Installing straight from the
 GitHub repo bypasses the registry and is the correct distribution path for now.
 
 npm's `prepare` lifecycle script (already present in `package.json` as
 `npm run build`) runs automatically when installing from a git URL, so the
-TypeScript sources compile and the `lark-acp` bin is linked with no extra steps.
+TypeScript sources compile and the `humming` bin is linked with no extra steps.
 
 ## Goals
 
@@ -48,13 +48,13 @@ TypeScript sources compile and the `lark-acp` bin is linked with no extra steps.
 
 Defaults baked to the fork, overridable via environment variables:
 
-| Variable        | Default                     | Meaning                        |
-| --------------- | --------------------------- | ------------------------------ |
-| `LARK_ACP_REPO` | `wangmingliang-ms/lark-acp` | GitHub `owner/repo` to install |
-| `LARK_ACP_REF`  | `main`                      | git branch or tag to install   |
+| Variable       | Default                    | Meaning                        |
+| -------------- | -------------------------- | ------------------------------ |
+| `HUMMING_REPO` | `wangmingliang-ms/humming` | GitHub `owner/repo` to install |
+| `HUMMING_REF`  | `main`                     | git branch or tag to install   |
 
 Install target URL:
-`git+https://github.com/${LARK_ACP_REPO}.git#${LARK_ACP_REF}`
+`git+https://github.com/${HUMMING_REPO}.git#${HUMMING_REF}`
 
 ## Deliverables
 
@@ -73,10 +73,10 @@ Plus a short "Install from GitHub" subsection added to `README.md`.
 2. Preflight checks (each failure explains what is missing and how to fix it):
    - `git`, `node`, `npm` present on PATH.
    - Node major version `>= 20` (matches `engines.node` in `package.json`).
-3. Resolve `LARK_ACP_REPO` / `LARK_ACP_REF` from env, applying defaults.
+3. Resolve `HUMMING_REPO` / `HUMMING_REF` from env, applying defaults.
 4. Run `npm install -g "git+https://github.com/${REPO}.git#${REF}"`.
 5. Post-install verification:
-   - If `lark-acp` resolves on PATH, print a success line.
+   - If `humming` resolves on PATH, print a success line.
    - Otherwise, print the npm global bin dir (`npm bin -g` / `npm prefix -g`)
      and a hint to add it to PATH.
 
@@ -85,7 +85,7 @@ Plus a short "Install from GitHub" subsection added to `README.md`.
 Mirror of `install.sh`:
 
 - `$ErrorActionPreference = 'Stop'`.
-- Reads `$env:LARK_ACP_REPO` / `$env:LARK_ACP_REF` with the same defaults.
+- Reads `$env:HUMMING_REPO` / `$env:HUMMING_REF` with the same defaults.
 - Same preflight checks via `Get-Command`.
 - Same `npm install -g …` invocation.
 - Same PATH-hint fallback using the Windows npm global bin location.
@@ -94,18 +94,18 @@ Mirror of `install.sh`:
 
 Both run the preflight for `npm`, print a one-line notice, then:
 
-`npm rm -g lark-acp`
+`npm rm -g humming-agent`
 
 ## Invocation
 
 Remote:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/wangmingliang-ms/humming/main/install.sh | sh
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/wangmingliang-ms/lark-acp/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/wangmingliang-ms/humming/main/install.ps1 | iex
 ```
 
 Local (from a checkout):
@@ -121,8 +121,8 @@ Local (from a checkout):
 Override examples:
 
 ```sh
-LARK_ACP_REF=v0.2.0 sh install.sh
-LARK_ACP_REPO=4t145/lark-acp sh install.sh
+HUMMING_REF=v0.2.0 sh install.sh
+HUMMING_REPO=your-org/humming sh install.sh
 ```
 
 ## Error handling
@@ -138,5 +138,5 @@ Manual, since these are environment scripts:
 
 - `sh -n install.sh` / `sh -n uninstall.sh` for syntax.
 - `pwsh -NoProfile -Command "..."` parse check for the `.ps1` files.
-- End-to-end on this machine: run `install.sh`, confirm `lark-acp --help`
+- End-to-end on this machine: run `install.sh`, confirm `humming --help`
   works, then `uninstall.sh` and confirm the command is gone.

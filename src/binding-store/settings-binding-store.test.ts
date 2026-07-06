@@ -16,7 +16,7 @@ const resolver: BindingAgentResolver = (sel) => {
 };
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-settings-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-settings-"));
   settingsPath = path.join(dir, "settings.json");
 });
 

@@ -200,7 +200,7 @@ export class FileSessionStore implements SessionStore {
         // Best-effort background durability. A transient FS error here must
         // not crash the bridge process — surface it and keep running; the
         // next save()/delete() reschedules a flush. Not silent (§12).
-        process.stderr.write(`[lark-acp] session store flush failed: ${String(err)}\n`);
+        process.stderr.write(`[humming] session store flush failed: ${String(err)}\n`);
       }
     });
   }

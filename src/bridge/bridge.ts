@@ -16,7 +16,7 @@ import {
   type LarkCommand,
 } from "../interpreter/lark-interpreter.js";
 import { ChatRuntime, type PendingMessage } from "./chat-runtime.js";
-import type { PermissionMode } from "../acp/lark-acp-client.js";
+import type { PermissionMode } from "../acp/humming-client.js";
 import { AgentAuthError } from "../acp/agent-process.js";
 import { SessionAlreadyBoundError } from "../session-store/file-session-store.js";
 import type { NoticeCardSpec } from "../presenter/presenter.js";
@@ -215,7 +215,7 @@ export interface LarkBridgeSessionOptions {
 export interface LarkBridgeLifecycleOptions {
   /** Chats that receive bridge lifecycle notices. Empty/absent disables them. */
   notificationChatIds?: readonly string[];
-  /** File created by `lark-acp restart`; when present, stop/start render restart wording. */
+  /** File created by `humming restart`; when present, stop/start render restart wording. */
   restartMarkerPath?: string | null;
   /** Per-chat send timeout for best-effort lifecycle notices. */
   noticeTimeoutMs?: number;
@@ -251,12 +251,12 @@ export interface LarkBridgeOptions {
   /**
    * Absolute path to settings.json. Used for (a) hot-reloading bindings when
    * the file changes (e.g. the agent edits it), and (b) telling the agent
-   * where to write bindings via the `LARK_ACP_SETTINGS` env var. When unset,
+   * where to write bindings via the `HUMMING_SETTINGS` env var. When unset,
    * hot-reload is disabled.
    */
   settingsPath?: string | null;
 
-  /** Unix-domain socket for local `lark-acp control …` requests. */
+  /** Unix-domain socket for local `humming control …` requests. */
   controlSocketPath?: string | null;
 
   sessionStore: SessionStore;
@@ -837,8 +837,8 @@ export class LarkBridge {
       ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`
       : `[上下文: 用户 ${userName} (${userId}) 的私聊消息]`;
 
-    // Keep the prompt small: durable lark-acp operating instructions live in
-    // ~/.lark-acp/AGENTS.md and ~/.lark-acp/CLAUDE.md, not inline every turn.
+    // Keep the prompt small: durable humming operating instructions live in
+    // ~/.humming/AGENTS.md and ~/.humming/CLAUDE.md, not inline every turn.
     prompt.unshift({ type: "text", text: renderInlineControlHint(chatId, threadId) });
 
     prompt.unshift({ type: "text", text: context });
@@ -958,7 +958,7 @@ export class LarkBridge {
 
   /**
    * Compose the agent subprocess env: the binding's own env (if any) plus
-   * `LARK_ACP_CHAT_ID` and `LARK_ACP_SETTINGS` so the agent knows which chat
+   * `HUMMING_CHAT_ID` and `HUMMING_SETTINGS` so the agent knows which chat
    * it serves and where to persist a binding.
    */
   private buildAgentEnv(
@@ -967,10 +967,10 @@ export class LarkBridge {
     binding: EffectiveBinding,
   ): Record<string, string> | undefined {
     const base: Record<string, string> = { ...(binding.env ?? {}) };
-    base["LARK_ACP_CHAT_ID"] = chatId;
-    base["LARK_ACP_THREAD_ID"] = threadId ?? "";
-    if (this.settingsPath) base["LARK_ACP_SETTINGS"] = this.settingsPath;
-    if (this.controlSocketPath) base["LARK_ACP_CONTROL_SOCKET"] = this.controlSocketPath;
+    base["HUMMING_CHAT_ID"] = chatId;
+    base["HUMMING_THREAD_ID"] = threadId ?? "";
+    if (this.settingsPath) base["HUMMING_SETTINGS"] = this.settingsPath;
+    if (this.controlSocketPath) base["HUMMING_CONTROL_SOCKET"] = this.controlSocketPath;
     return Object.keys(base).length > 0 ? base : undefined;
   }
 
@@ -1004,7 +1004,7 @@ export class LarkBridge {
         overwriteDocs: true,
       });
     } catch (err) {
-      this.logger.warn({ err, homeDir }, "failed to install lark-acp home templates");
+      this.logger.warn({ err, homeDir }, "failed to install humming home templates");
     }
   }
 
@@ -1268,7 +1268,7 @@ export class LarkBridge {
 }
 
 function renderInlineControlHint(chatId: string, threadId: string | null): string {
-  return `[lark-acp: 若用户要求绑定/改绑仓库、把当前 topic 绑定到已有 agent session，或切换当前 session 的 model/mode/config/permission control，请先阅读 ~/.lark-acp/AGENTS.md（或 CLAUDE.md）中的 lark-acp 指引；本会话 chatId=${chatId}, threadId=${threadId ?? "<main>"}。其它请求忽略本提示。]`;
+  return `[humming: 若用户要求绑定/改绑仓库、把当前 topic 绑定到已有 agent session，或切换当前 session 的 model/mode/config/permission control，请先阅读 ~/.humming/AGENTS.md（或 CLAUDE.md）中的 humming 指引；本会话 chatId=${chatId}, threadId=${threadId ?? "<main>"}。其它请求忽略本提示。]`;
 }
 
 function buildSessionBoundNotice(
@@ -1374,9 +1374,9 @@ function renderBindInstructions(
   socketPath: string | null,
 ): string {
   return [
-    "# lark-acp — how to bind this chat to a repository",
+    "# humming — how to bind this chat to a repository",
     "",
-    "You are running as a lark-acp agent for a Feishu/Lark chat. This chat is",
+    "You are running as a humming agent for a Feishu/Lark chat. This chat is",
     "**not yet bound** to a project directory, so you are running in a reception",
     "area. When the user asks to work on / bind to a specific repository, do the",
     "following:",
@@ -1399,18 +1399,18 @@ function renderBindInstructions(
     "```",
     "",
     `This chat's id is: ${chatId}`,
-    "(also available in the env var LARK_ACP_CHAT_ID; the settings file path is",
-    "in LARK_ACP_SETTINGS.)",
+    "(also available in the env var HUMMING_CHAT_ID; the settings file path is",
+    "in HUMMING_SETTINGS.)",
     "",
-    "After you save the file, lark-acp detects the change and re-routes this chat",
+    "After you save the file, humming detects the change and re-routes this chat",
     "to the bound repository automatically — the user's next message will run",
     "there. Tell the user the binding is done and which repo + agent you set.",
     "",
     "Do not delete other chats' bindings or other top-level keys (credentials,",
     "runtime, agents).",
     "",
-    "For model/mode/config/permission session controls, read ~/.lark-acp/AGENTS.md",
-    "or ~/.lark-acp/CLAUDE.md and use the lark-acp control/sessions CLI. Do not",
+    "For model/mode/config/permission session controls, read ~/.humming/AGENTS.md",
+    "or ~/.humming/CLAUDE.md and use the humming control/sessions CLI. Do not",
     "guess model/mode/config ids; query live capabilities first.",
     ...(socketPath ? ["", `Control socket: ${socketPath}`] : []),
     "",

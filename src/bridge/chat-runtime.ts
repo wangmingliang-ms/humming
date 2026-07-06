@@ -1,7 +1,7 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type { AgentStatus, LarkPresenter, SessionCardMeta } from "../presenter/presenter.js";
-import { LarkAcpClient, PERMISSION_MODES, type PermissionMode } from "../acp/lark-acp-client.js";
+import { HummingClient, PERMISSION_MODES, type PermissionMode } from "../acp/humming-client.js";
 import {
   spawnAgent,
   spawnAndResumeAgent,
@@ -48,7 +48,7 @@ export interface ChatRuntimeOptions {
 }
 
 interface ChatRuntimeState {
-  client: LarkAcpClient;
+  client: HummingClient;
   agent: AgentProcess;
   sessionCapabilities: SessionCapabilitiesSnapshot;
   sessionTitle?: string;
@@ -61,7 +61,7 @@ interface ChatRuntimeState {
 }
 
 /**
- * Per-chat ACP runtime: owns one agent subprocess, one `LarkAcpClient`,
+ * Per-chat ACP runtime: owns one agent subprocess, one `HummingClient`,
  * and a FIFO queue of pending Lark messages.
  *
  * Constructed lazily by {@link LarkBridge} on the first message for a
@@ -226,7 +226,7 @@ export class ChatRuntime {
 
     const latest = await this.opts.sessionStore.getLatest(this.opts.chatId, this.opts.threadId);
     let stateRef: ChatRuntimeState | null = null;
-    let currentClient: LarkAcpClient;
+    let currentClient: HummingClient;
     const metaProvider = (): SessionCardMeta =>
       stateRef
         ? sessionMetaFromSnapshot({
@@ -244,7 +244,7 @@ export class ChatRuntime {
             model: "—",
             permission: bridgePermissionLabel(currentClient.getPermissionMode()),
           };
-    const client = new LarkAcpClient({
+    const client = new HummingClient({
       presenter: this.opts.presenter,
       logger: this.logger,
       showThoughts: this.opts.showThoughts,
@@ -318,7 +318,7 @@ export class ChatRuntime {
 
   private buildCapabilitiesSnapshot(
     agent: AgentProcess,
-    client: LarkAcpClient,
+    client: HummingClient,
   ): SessionCapabilitiesSnapshot {
     return {
       session: {

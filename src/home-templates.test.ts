@@ -7,7 +7,7 @@ import { installHomeTemplates } from "./home-templates.js";
 let dir: string;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-home-templates-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-home-templates-"));
 });
 
 afterEach(() => {
@@ -33,7 +33,7 @@ describe("installHomeTemplates", () => {
     expect(agents).toContain(sessionsPath);
     expect(agents).toContain(path.join(dir, "control.sock"));
     expect(agents).toContain("before/after details");
-    expect(agents).toContain("lark-acp commands");
+    expect(agents).toContain("humming commands");
 
     expect(fs.existsSync(settingsPath)).toBe(false);
     expect(fs.existsSync(sessionsPath)).toBe(false);
@@ -79,6 +79,6 @@ describe("installHomeTemplates", () => {
       controlSocketPath: null,
       overwriteDocs: true,
     });
-    expect(fs.readFileSync(agentsPath, "utf-8")).toContain("lark-acp operating guide");
+    expect(fs.readFileSync(agentsPath, "utf-8")).toContain("humming operating guide");
   });
 });

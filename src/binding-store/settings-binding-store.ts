@@ -23,7 +23,7 @@ interface StoredBinding {
 
 /**
  * {@link BindingStore} backed by the `bindings` block of a single
- * `settings.json`. This keeps every piece of lark-acp state in one file
+ * `settings.json`. This keeps every piece of humming state in one file
  * (Miller's decision) and is the file the agent edits for natural-language
  * binding — the bridge watches it and hot-reloads (phase 2).
  *

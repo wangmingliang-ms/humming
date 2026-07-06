@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type * as acp from "@agentclientprotocol/sdk";
 import { ChatRuntime } from "./chat-runtime.js";
-import { LarkAcpClient } from "../acp/lark-acp-client.js";
+import { HummingClient } from "../acp/humming-client.js";
 import type { ChatRuntimeOptions } from "./chat-runtime.js";
 import { createPinoLogger } from "../logger/logger.js";
 import type { LarkPresenter, UnifiedCardState } from "../presenter/presenter.js";
@@ -478,7 +478,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       bridgePermissionMode: "alwaysAsk",
     });
 
-    const spawnOpts = spawnAgentMock.mock.calls[0]?.[0] as { client: LarkAcpClient };
+    const spawnOpts = spawnAgentMock.mock.calls[0]?.[0] as { client: HummingClient };
     await spawnOpts.client.sessionUpdate({
       sessionId: "sess_fake",
       update: {

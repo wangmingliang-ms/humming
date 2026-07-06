@@ -93,7 +93,7 @@ export class FileBindingStore implements BindingStore {
         // Best-effort background durability. A transient FS error here must
         // not crash the bridge process — surface it and keep running; the
         // next set()/delete() reschedules a flush. Not silent (§12).
-        process.stderr.write(`[lark-acp] binding store flush failed: ${String(err)}\n`);
+        process.stderr.write(`[humming] binding store flush failed: ${String(err)}\n`);
       }
     });
   }

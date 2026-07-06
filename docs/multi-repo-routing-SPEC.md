@@ -1,7 +1,7 @@
 # SPEC: Per-Chat Repo Routing (one Lark App, one group = one repo)
 
 Status: DRAFT — awaiting Miller's confirmation before implementation.
-Owner: Miller (wangmingliang-ms/lark-acp fork)
+Owner: Miller (wangmingliang-ms/humming fork)
 
 ## 1. Goal
 
@@ -94,7 +94,7 @@ args}`; if none, return null and let caller send the "please /bind" card.
      CLI layer `bin/agents.ts`). Pass the resolved registry (or a resolver fn)
      into `LarkBridge` so it can map an agent id → `{command, args, env}` at
      spawn time.
-4. **CLI** — `bin/lark-acp.ts`: parse `bindings` / `defaultAgent` / `defaultCwd`
+4. **CLI** — `bin/humming.ts`: parse `bindings` / `defaultAgent` / `defaultCwd`
    from config; build the registry and hand it (plus binding store) to the
    bridge. `--cwd` / `--agent` become the _default_ binding, not a global lock.
 

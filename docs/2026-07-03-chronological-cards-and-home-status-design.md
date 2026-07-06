@@ -6,7 +6,7 @@
 ## 1. 背景与问题
 
 当前一次 prompt 对应**一张"统一卡片"（unified card）**，在整轮对话期间被反复原地
-`patch`（见 `src/acp/lark-acp-client.ts` 的 `renderCard` / `updateUnifiedCard`）。所有文本、
+`patch`（见 `src/acp/humming-client.ts` 的 `renderCard` / `updateUnifiedCard`）。所有文本、
 思考、工具调用都累积进 `timeline` 数组，塞进这**同一张卡**，直到 `finalize()` 才重置。
 
 由此产生两个体验问题：
@@ -72,7 +72,7 @@ G2 只能靠 ③ 实现；① / ② 都到不了主页列表。
 话题内，故 reply 它的所有卡片（C1/A1/C2）都自动落在**同一话题线程**。`threadId` 已透传进
 按钮 payload 用于路由回对应 runtime。方案 A 不改变这一点，天然兼容话题模式。
 
-### 5.3 新增 `LarkAcpClient.sealCard()`
+### 5.3 新增 `HummingClient.sealCard()`
 
 在 `requestPermission()` 发送审批卡**之前** `await this.sealCard(params)`。逻辑仿照现有
 `finalize()`：
@@ -142,7 +142,7 @@ summary 必为新值，故风险很低；仅"进行中 → 已完成"这种纯 p
     cancelled/failed→对应；其余→处理中）。
   - `buildV2Card` / `buildUnifiedCard`：在 `config` 注入 `summary.content`。审批卡
     （`buildPermissionCard`）也注入 `summary.content = "⏳ 等待确认"`。
-- `src/acp/lark-acp-client.ts`
+- `src/acp/humming-client.ts`
   - 新增 `sealCard(params)`：封存 + 移除待批工具 + 暂存 title/kind + 重置状态。
   - `requestPermission()`：发审批卡前 `await this.sealCard(params)`。
   - 暂存待批工具 title/kind 的字段 + `upsertTool` 回填逻辑。

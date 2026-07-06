@@ -1,6 +1,6 @@
 # PLAN.md
 
-`lark-acp` 的内部设计速览 + 待办路线。和 `CHANGELOG.md` 不同，这里只记录「当下还没做完」或「外部读者需要知道但读 README 看不到」的东西。
+`humming` 的内部设计速览 + 待办路线。和 `CHANGELOG.md` 不同，这里只记录「当下还没做完」或「外部读者需要知道但读 README 看不到」的东西。
 
 ---
 
@@ -11,14 +11,14 @@
 ```
 src/
   bridge/         顶层编排：LarkBridge / ChatRuntime
-  acp/            ACP 客户端实现：spawn agent、LarkAcpClient (acp.Client)
+  acp/            ACP 客户端实现：spawn agent、HummingClient (acp.Client)
   interpreter/    入站方向：飞书消息 → ACP ContentBlock[]
   presenter/      出站方向：ACP 状态 → 飞书互动卡片 / post 富文本
   lark/           飞书 SDK 薄封装：HTTP（lark-http）+ WebSocket（lark-ws）
   session-store/  chat → sessionId 持久化（文件）
   logger/         pino 封装
 bin/
-  lark-acp.ts     CLI 入口
+  humming.ts     CLI 入口
   agents.ts       内置 agent 预设 + 用户配置合并（CLI-only，库不暴露）
   mock-agent.ts   本地端到端调试用的脚本化 ACP agent
 ```
@@ -64,7 +64,7 @@ bin/
 
 ### Unified Card：一张卡片承载整轮对话
 
-为避免每次 thought / text / tool 切换都新发一张卡片刷屏，桥接层在 `LarkAcpClient` 内部维护一条**结构化时间线**（`TimelineEntry[]`），每次 ACP 流事件追加 / 更新条目，再 debounce 后整体渲染成一张飞书互动卡片：
+为避免每次 thought / text / tool 切换都新发一张卡片刷屏，桥接层在 `HummingClient` 内部维护一条**结构化时间线**（`TimelineEntry[]`），每次 ACP 流事件追加 / 更新条目，再 debounce 后整体渲染成一张飞书互动卡片：
 
 ```ts
 type TimelineEntry =
@@ -107,7 +107,7 @@ Agent 收到 cancel 后 `prompt()` 以 `stopReason: "cancelled"` 返回，`final
 agent.requestPermission(params)
         │
         ▼
-LarkAcpClient.requestPermission
+HummingClient.requestPermission
   ├─ requestId = uuid()
   ├─ pendingPermissions.set(requestId, { resolve, timer, cardMessageId })
   ├─ 起 permissionTimeoutMs 超时（默认 5 分钟）
@@ -171,11 +171,11 @@ ACP agent 可以在 session 启动时（或运行中）通过 `availableCommands
 
 桥接层目前只识别硬编码的 `/cancel` / `/new`，需要：
 
-- 在 `LarkAcpClient` 里捕获 `availableCommands_update` 事件，按 chatId 维护当前可用命令列表；
+- 在 `HummingClient` 里捕获 `availableCommands_update` 事件，按 chatId 维护当前可用命令列表；
 - 把 agent 暴露的命令转成飞书侧入口——候选方案：
   - 在 unified card 顶部 / 底部加一组按钮，点击后桥接层把命令名拼成 prompt 发给 agent；
   - 用户输入 `/foo` 时，先匹配桥接层硬编码命令，再回退到 agent 的 availableCommands；
-  - `lark-acp commands` 子命令在终端列出当前 chat 可用的斜杠命令（调试用）。
+  - `humming commands` 子命令在终端列出当前 chat 可用的斜杠命令（调试用）。
 - 对带 `input` schema 的命令（要参数），考虑用飞书互动卡片的 input 元素收集再提交。
 
 #### Session list（`session/list`）
@@ -194,7 +194,7 @@ ACP 的 session mode 是 agent 自定义的运行档位（如 Claude Code 的 `d
 
 需要：
 
-- 在 `LarkAcpClient` 监听 `current_mode_update`，把当前 mode + 可选 modes 列表挂到 runtime state；
+- 在 `HummingClient` 监听 `current_mode_update`，把当前 mode + 可选 modes 列表挂到 runtime state；
 - 卡片头部或底部展示当前 mode（小 tag），并提供切换入口（按钮 / 选择器）；
 - 卡片按钮 callback 触发 `connection.setSessionMode({ sessionId, modeId })`。
 - 这个能力和「permission mode」语义有重叠——前者是 agent 内部档位，后者是桥接层对 `requestPermission` 的兜底策略。两者互不替代，UI 上要分清。

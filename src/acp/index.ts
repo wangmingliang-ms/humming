@@ -1,5 +1,5 @@
-export { LarkAcpClient, PERMISSION_MODES } from "./lark-acp-client.js";
-export type { LarkAcpClientOptions, PermissionMode } from "./lark-acp-client.js";
+export { HummingClient, PERMISSION_MODES } from "./humming-client.js";
+export type { HummingClientOptions, PermissionMode } from "./humming-client.js";
 export {
   spawnAgent,
   spawnAndResumeAgent,

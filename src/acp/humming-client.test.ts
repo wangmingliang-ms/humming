@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as acp from "@agentclientprotocol/sdk";
-import { LarkAcpClient } from "./lark-acp-client.js";
+import { HummingClient } from "./humming-client.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkPresenter, UnifiedCardState } from "../presenter/presenter.js";
 
@@ -48,8 +48,8 @@ function recordingPresenter(ops: RenderOp[]): LarkPresenter {
   };
 }
 
-function makeClient(ops: RenderOp[]): LarkAcpClient {
-  const client = new LarkAcpClient({
+function makeClient(ops: RenderOp[]): HummingClient {
+  const client = new HummingClient({
     presenter: recordingPresenter(ops),
     logger,
     showThoughts: true,
@@ -94,7 +94,7 @@ async function waitForFlush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 160));
 }
 
-describe("LarkAcpClient card-v2 conversation rendering", () => {
+describe("HummingClient card-v2 conversation rendering", () => {
   it("keeps assistant messages and tool calls in the same conversation card", async () => {
     const ops: RenderOp[] = [];
     const client = makeClient(ops);

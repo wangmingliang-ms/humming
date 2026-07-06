@@ -9,11 +9,11 @@ concrete design so context survives.
 ```
 unbound chat sends a message
    → bridge has no binding for this chatId
-   → NEW: spawn the default agent in the "reception area" (unboundCwd, default ~/.lark-acp)
+   → NEW: spawn the default agent in the "reception area" (unboundCwd, default ~/.humming)
      instead of replying "please /bind"
    → agent can converse normally; on spawn we injected:
-       env  LARK_ACP_CHAT_ID   = <chatId>
-       env  LARK_ACP_SETTINGS  = <abs path to settings.json>
+       env  HUMMING_CHAT_ID   = <chatId>
+       env  HUMMING_SETTINGS  = <abs path to settings.json>
        file <cwd>/AGENTS.md + <cwd>/CLAUDE.md  = how-to-bind instructions
    → user: "把这个 chat 绑到 copilot-intellij，用 claude"
    → agent edits settings.json: bindings[<chatId>] = { cwd: "...", agent: "claude" }
@@ -44,7 +44,7 @@ built in task 1) — agent label → command/args.
 2. **chatId + settings injection** — `ChatRuntimeOptions` gains optional
    `agentEnvExtra` (or bridge builds env). Simpler: bridge passes the extra
    env in the `agentEnv` it already threads through. Add
-   `LARK_ACP_CHAT_ID`, `LARK_ACP_SETTINGS`. Write instruction files into the
+   `HUMMING_CHAT_ID`, `HUMMING_SETTINGS`. Write instruction files into the
    reception cwd once per spawn (idempotent).
 
 3. **Hot-reload** — bridge owns an `fs.watch(settingsPath)` started in

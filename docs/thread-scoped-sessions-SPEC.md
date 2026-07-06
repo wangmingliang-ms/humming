@@ -2,7 +2,7 @@
 
 Status: IMPLEMENTED — code + unit tests green (`npm run build`, `npm test` →
 61 passed). Awaiting live validation in a real topic (see §9).
-Owner: Miller (wangmingliang-ms/lark-acp fork)
+Owner: Miller (wangmingliang-ms/humming fork)
 
 This is the deferred "thread-level routing" foreshadowed in
 `multi-repo-routing-SPEC.md` §7 ("Routing key is factored as `routeKey(event)`
@@ -90,7 +90,7 @@ string | null`; new `listByThread(chatId, threadId)`;
   thread-scoped `teardownThread` / `clearThreadSessions` (for `/new`) vs
   chat-scoped `teardownChat` / `clearChatSessions` (for bind/unbind/rebind, now
   iterating all of a chat's keys); eviction logs `runtime.chatId` / `.threadId`.
-- **`src/acp/lark-acp-client.ts`** — tracks `currentThreadId`;
+- **`src/acp/humming-client.ts`** — tracks `currentThreadId`;
   `setContext(messageId, chatId, threadId)`; feeds `threadId` into the interrupt
   card + `UnifiedCardState`.
 - **`src/presenter/presenter.ts`** — `UnifiedCardState.threadId`;
@@ -133,7 +133,7 @@ chatId`).
 ## 9. Live validation (pending hand-off)
 
 `handleMessage` still contains a `TEMP(thread-probe)` block that appends every
-raw inbound event to `/tmp/lark-acp-thread-probe.jsonl`. Plan:
+raw inbound event to `/tmp/humming-thread-probe.jsonl`. Plan:
 
 1. Restart the bridge.
 2. Post a message **inside a Feishu topic** (and one outside) in the bound chat.

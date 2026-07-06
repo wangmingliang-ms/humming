@@ -1,7 +1,7 @@
 {
-  "name": "lark-acp",
+  "name": "humming-agent",
   "version": "0.2.0",
-  "description": "Bridge Feishu/Lark to any ACP-compatible AI agent",
+  "description": "Humming Agent: a lightweight, file-driven relay agent for delegating chat requests to local ACP agents",
   "type": "module",
   "files": [
     "dist/",
@@ -13,8 +13,8 @@
     "access": "public"
   },
   "bin": {
-    "lark-acp": "./dist/bin/lark-acp.js",
-    "lark-acp-mock": "./dist/bin/mock-agent.js"
+    "humming": "./dist/bin/humming.js",
+    "humming-mock": "./dist/bin/mock-agent.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -27,7 +27,7 @@
   "scripts": {
     "build": "tsc && node scripts/chmod-bins.mjs",
     "prepare": "npm run build",
-    "start": "node dist/bin/lark-acp.js",
+    "start": "node dist/bin/humming.js",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -52,15 +52,18 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/4t145/lark-acp.git"
+    "url": "git+https://github.com/wangmingliang-ms/humming.git"
   },
   "license": "MIT",
   "keywords": [
+    "humming-agent",
+    "humming",
     "feishu",
     "lark",
     "acp",
     "agent-client-protocol",
     "ai-agent",
-    "bridge"
+    "relay",
+    "delegate"
   ]
 }

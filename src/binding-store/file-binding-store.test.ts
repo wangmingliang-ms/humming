@@ -16,7 +16,7 @@ function newStore(): FileBindingStore {
 }
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-binding-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-binding-"));
   openStores.length = 0;
 });
 

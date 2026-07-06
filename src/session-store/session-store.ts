@@ -43,7 +43,7 @@ export interface SessionControls {
   modelId?: string;
   /** ACP `session/set_mode` payload field. */
   modeId?: string;
-  /** lark-acp client-side permission policy, not an ACP-native field. */
+  /** humming client-side permission policy, not an ACP-native field. */
   bridgePermissionMode?: PermissionMode;
   /** ACP `session/set_config_option` values, keyed by configId. */
   config?: Readonly<Record<string, SessionConfigControlValue>>;

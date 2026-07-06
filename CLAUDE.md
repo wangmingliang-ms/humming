@@ -20,32 +20,32 @@ npm test           # vitest run（单元 src/**、bin/**；集成 tests/**）
 
 ## 运行 / 管理 bridge
 
-CLI 入口是 `bin/lark-acp.ts`（构建到 `dist/bin/lark-acp.js`）。日常用内置子命令管理，
-状态文件都在 `~/.lark-acp/`（`bridge.pid`、`bridge.log`、`settings.json`、`sessions.json`）：
+CLI 入口是 `bin/humming.ts`（构建到 `dist/bin/humming.js`）。日常用内置子命令管理，
+状态文件都在 `~/.humming/`（`bridge.pid`、`bridge.log`、`settings.json`、`sessions.json`）：
 
 ```bash
-lark-acp start --agent claude    # 后台启动
-lark-acp status                  # 是否在跑 + PID + 运行时长
-lark-acp logs -f                 # 实时日志
-lark-acp restart --agent claude  # 改代码后重启
-lark-acp stop                    # 停止
-lark-acp proxy --agent claude    # 前台运行（占终端，Ctrl-C 停）
+humming start --agent claude    # 后台启动
+humming status                  # 是否在跑 + PID + 运行时长
+humming logs -f                 # 实时日志
+humming restart --agent claude  # 改代码后重启
+humming stop                    # 停止
+humming proxy --agent claude    # 前台运行（占终端，Ctrl-C 停）
 ```
 
-- **开发工作流**：仓库根 `npm link` 一次，让全局 `lark-acp` 软链到本地 `dist/`；此后
-  改代码只需 `npm run build && lark-acp restart --agent claude` 即可生效。
+- **开发工作流**：仓库根 `npm link` 一次，让全局 `humming` 软链到本地 `dist/`；此后
+  改代码只需 `npm run build && humming restart --agent claude` 即可生效。
 - **进程管理实现**在 `bin/process-control.ts`（跨平台：`process.kill(pid,0)` 探活、
   detached spawn、PID 文件）；`start`/`restart` 通过替换 argv 里的子命令 token 复用
   `proxy`，把所有选项原样转发。崩溃自愈 / 开机自启不在此层，交给 systemd / 计划任务。
 - **改动 CLI 行为后**务必手动 E2E（`start`→`status`→`restart`→`stop`），并确认
   `logs` 里出现 `WebSocket connected`；单元测试只覆盖纯函数（`bin/process-control.test.ts`）。
 
-## lark-acp 自身操作指南
+## humming 自身操作指南
 
-- 当用户要求列出某个 agent 的 settings / session settings / capabilities / existing sessions 时，必须使用 lark-acp 提供的 CLI/control 命令，不要去 Claude/Codex/Gemini/OpenCode 的缓存目录或项目目录里猜状态。
-  - Agent preset 列表：`lark-acp agents`
-  - 当前 live session settings/capabilities：`lark-acp control capabilities --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --json`
-  - 某 agent 的已有 ACP sessions：`lark-acp sessions list --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --agent <agent> --json`
+- 当用户要求列出某个 agent 的 settings / session settings / capabilities / existing sessions 时，必须使用 humming 提供的 CLI/control 命令，不要去 Claude/Codex/Gemini/OpenCode 的缓存目录或项目目录里猜状态。
+  - Agent preset 列表：`humming agents`
+  - 当前 live session settings/capabilities：`humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json`
+  - 某 agent 的已有 ACP sessions：`humming sessions list --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent <agent> --json`
 - `sessions bind` 只能绑定当前 chat repo 内的 session；如果该 session 已经绑定到另一个 chat/thread，必须拒绝并提示用户先重置原 thread，不要通过手改 `sessions.json` 绕过。
 
 # TypeScript 工程准则（TypeScript 5.x / Strict Mode）

@@ -9,7 +9,7 @@ let dir: string;
 let server: BridgeControlServer | null;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-control-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-control-"));
   server = null;
 });
 

@@ -20,7 +20,7 @@ import {
 let dir: string;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-pc-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-pc-"));
 });
 
 afterEach(() => {
@@ -35,7 +35,7 @@ describe("path helpers", () => {
   });
 
   it("derives a stable per-home systemd unit name", () => {
-    expect(bridgeUnitName(dir)).toMatch(/^lark-acp-bridge-[a-f0-9]{10}\.service$/);
+    expect(bridgeUnitName(dir)).toMatch(/^humming-bridge-[a-f0-9]{10}\.service$/);
     expect(bridgeUnitName(dir)).toBe(bridgeUnitName(dir));
     expect(bridgeUnitName(path.join(dir, "other"))).not.toBe(bridgeUnitName(dir));
   });

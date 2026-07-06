@@ -45,7 +45,7 @@ export interface LarkSdkLogger {
 }
 
 /**
- * Minimal structured logger interface used throughout `lark-acp`.
+ * Minimal structured logger interface used throughout `humming`.
  *
  * Compatible with pino but intentionally narrower so callers can plug in
  * any structured logger (winston, bunyan, custom) without dragging in

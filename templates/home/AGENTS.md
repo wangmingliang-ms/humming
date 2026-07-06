@@ -1,8 +1,8 @@
-# lark-acp operating guide
+# humming operating guide
 
-This file is installed by lark-acp so agents have durable operating instructions even before the bridge has handled its first message.
+This file is installed by humming so agents have durable operating instructions even before the bridge has handled its first message.
 
-When a user asks to change lark-acp settings, bind a chat to a repository, bind the current topic to an existing agent session, or change the current session's model/mode/config/permission controls, read this guide first and follow it exactly.
+When a user asks to change humming settings, bind a chat to a repository, bind the current topic to an existing agent session, or change the current session's model/mode/config/permission controls, read this guide first and follow it exactly.
 
 ## Files
 
@@ -16,7 +16,7 @@ Do not print or copy secrets. Treat App IDs, chat IDs, session IDs, tokens, API 
 
 ## Settings / bindings
 
-Use `settings.json` for global config, credentials, runtime defaults, agent presets, and chat bindings. Preserve unrelated keys. After a repo bind/rebind succeeds, lark-acp sends a notice card into the chat with the before/after details.
+Use `settings.json` for global config, credentials, runtime defaults, agent presets, and chat bindings. Preserve unrelated keys. After a repo bind/rebind succeeds, humming sends a notice card into the chat with the before/after details.
 
 To bind or rebind a chat, update the top-level `bindings` object:
 
@@ -31,22 +31,22 @@ To bind or rebind a chat, update the top-level `bindings` object:
 }
 ```
 
-Valid built-in agent names normally include `claude`, `codex`, `copilot`, `gemini`, `opencode`, and `claude-agent`; confirm with `lark-acp agents` when unsure.
+Valid built-in agent names normally include `claude`, `codex`, `copilot`, `gemini`, `opencode`, and `claude-agent`; confirm with `humming agents` when unsure.
 
 ## Session controls
 
-Session-specific controls live in `sessions.json` and should normally be changed through the lark-acp CLI, not by hand-editing JSON.
+Session-specific controls live in `sessions.json` and should normally be changed through the humming CLI, not by hand-editing JSON.
 
-When the user asks to list/show an agent's "settings", "session settings", available models/modes/config, or existing sessions, use lark-acp commands. Do **not** inspect Claude/Codex/Gemini/OpenCode cache directories or search random project folders for agent state.
+When the user asks to list/show an agent's "settings", "session settings", available models/modes/config, or existing sessions, use humming commands. Do **not** inspect Claude/Codex/Gemini/OpenCode cache directories or search random project folders for agent state.
 
-- Built-in/user agent presets: `lark-acp agents`
-- Current live session settings/capabilities: `lark-acp control capabilities --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --json`
-- Existing ACP sessions for an agent: `lark-acp sessions list --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --agent <agent> --json`
+- Built-in/user agent presets: `humming agents`
+- Current live session settings/capabilities: `humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json`
+- Existing ACP sessions for an agent: `humming sessions list --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent <agent> --json`
 
 Before changing model/mode/config/permission controls, always query live capabilities for the current chat/thread. Do not guess ids or values from memory.
 
 ```bash
-lark-acp control capabilities --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --json
+humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json
 ```
 
 The response keeps ACP-native fields as-is where possible:
@@ -54,14 +54,14 @@ The response keeps ACP-native fields as-is where possible:
 - `models`: ACP `SessionModelState`, with `currentModelId` and `availableModels`
 - `modes`: ACP `SessionModeState`, with `currentModeId` and `availableModes`
 - `configOptions`: ACP `SessionConfigOption[]`
-- `bridgePermissionModes` / `bridgePermissionMode`: lark-acp client-side policy, not ACP-native
+- `bridgePermissionModes` / `bridgePermissionMode`: humming client-side policy, not ACP-native
 
 Only choose ids/values that appear in the live response. If the requested target does not exist, tell the user and do not write controls.
 
 Set controls with one JSON payload:
 
 ```bash
-lark-acp sessions set-control --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --json '{
+humming sessions set-control --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json '{
   "modelId": "<one models.availableModels[].modelId>",
   "modeId": "<one modes.availableModes[].id>",
   "config": {
@@ -74,40 +74,40 @@ lark-acp sessions set-control --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_A
 
 All fields are optional; include only the controls the user asked to change. ACP select config requests use `{ "value": "<valueId>" }` with no `type` field.
 
-If set-control fails, lark-acp should surface a clear error notice to the user and keep the live runtime plus `sessions.json` unchanged. Ask the agent to query capabilities again and retry with valid ids/values.
+If set-control fails, humming should surface a clear error notice to the user and keep the live runtime plus `sessions.json` unchanged. Ask the agent to query capabilities again and retry with valid ids/values.
 
 ## Binding the current topic to an existing agent session
 
-When the user asks to continue a desktop Claude Code / Codex / other ACP session from the current Feishu topic, do **not** hand-edit `sessions.json`. Use the lark-acp CLI.
+When the user asks to continue a desktop Claude Code / Codex / other ACP session from the current Feishu topic, do **not** hand-edit `sessions.json`. Use the humming CLI.
 
 Rules:
 
 - `sessions list` may use `--cwd` when the user explicitly asks to inspect another repo from a host/reception chat.
 - `sessions bind` intentionally does **not** accept `--cwd`. It can only bind the current topic to a session in the current chat's bound repo. It never changes chat binding and never binds a topic across repos.
-- If the chosen session is already bound to another chat/thread, lark-acp rejects the bind and sends a conflict notice. Do not work around this by hand-editing `sessions.json`; ask the user to reset the original thread first.
+- If the chosen session is already bound to another chat/thread, humming rejects the bind and sends a conflict notice. Do not work around this by hand-editing `sessions.json`; ask the user to reset the original thread first.
 - Do not print full session IDs in a group chat. It is OK to use the full ID in local CLI commands.
 - If multiple sessions match the user's description, show a short candidate list with title / updated time / repo and ask the user to choose.
 
 List sessions for the current chat repo:
 
 ```bash
-lark-acp sessions list --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --agent claude --json
+humming sessions list --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent claude --json
 ```
 
 List sessions for an explicitly requested repo (query only, not bind):
 
 ```bash
-lark-acp sessions list --agent codex --cwd /absolute/path/to/repo --json
+humming sessions list --agent codex --cwd /absolute/path/to/repo --json
 ```
 
 Bind the current topic to the selected session in the current chat repo:
 
 ```bash
-lark-acp sessions bind --chat-id "$LARK_ACP_CHAT_ID" --thread-id "$LARK_ACP_THREAD_ID" --agent claude --session-id "<selected-session-id>"
+humming sessions bind --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent claude --session-id "<selected-session-id>"
 ```
 
-On success lark-acp sends a notice card naming the bound session title and showing the change details. The next user message in this topic resumes that session.
+On success humming sends a notice card naming the bound session title and showing the change details. The next user message in this topic resumes that session.
 
 ## Permission terminology
 
-ACP has per-tool `requestPermission` approvals, but no standard global permission mode. If an agent exposes Plan/Edit/Bypass as modes, set `modeId`. If it exposes approval/bypass as a config option, set `config`. Only use `bridgePermissionMode` for lark-acp's own approval-card policy.
+ACP has per-tool `requestPermission` approvals, but no standard global permission mode. If an agent exposes Plan/Edit/Bypass as modes, set `modeId`. If it exposes approval/bypass as a config option, set `config`. Only use `bridgePermissionMode` for humming's own approval-card policy.

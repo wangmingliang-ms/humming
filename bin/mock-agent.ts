@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `lark-acp-mock` — minimal ACP agent that always returns the same scripted
+ * `humming-mock` — minimal ACP agent that always returns the same scripted
  * turn. Useful for end-to-end testing the Lark <-> ACP bridge UI without
  * spending real model tokens.
  *

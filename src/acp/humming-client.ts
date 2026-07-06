@@ -181,7 +181,7 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
   "alwaysDeny",
 ] as const;
 
-export interface LarkAcpClientOptions {
+export interface HummingClientOptions {
   presenter: LarkPresenter;
   logger: LarkLogger;
   /** Include `agent_thought_chunk` updates in the unified card. */
@@ -215,7 +215,7 @@ export interface LarkAcpClientOptions {
  * One instance per chat — it holds per-prompt state (current message id,
  * timeline entries, unified card id, pending permissions).
  */
-export class LarkAcpClient implements acp.Client {
+export class HummingClient implements acp.Client {
   private readonly presenter: LarkPresenter;
   private readonly logger: LarkLogger;
   private readonly showThoughts: boolean;
@@ -244,7 +244,7 @@ export class LarkAcpClient implements acp.Client {
   private flushing = false;
   private permissionBoundaryThisPrompt = false;
 
-  constructor(opts: LarkAcpClientOptions) {
+  constructor(opts: HummingClientOptions) {
     this.presenter = opts.presenter;
     this.logger = opts.logger.child({ name: "acp-client" });
     this.showThoughts = opts.showThoughts;

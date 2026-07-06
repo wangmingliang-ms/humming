@@ -1,6 +1,6 @@
 /**
  * CLI-layer unit tests for the default-agent resolution that makes a bare
- * `lark-acp start` / `lark-acp proxy` work on a fresh machine.
+ * `humming start` / `humming proxy` work on a fresh machine.
  *
  * Regression guard for the bug where `start` (no `--agent`) spawned a
  * background `proxy` that immediately died with "proxy requires either
@@ -26,7 +26,7 @@ import {
   runInit,
   DEFAULT_AGENT,
   type ParsedArgs,
-} from "./lark-acp.js";
+} from "./humming.js";
 import { buildRegistry } from "./agents.js";
 
 const registry = buildRegistry();
@@ -60,9 +60,9 @@ describe("parseArgs — bare subcommands need no --agent", () => {
   });
 
   it("accepts explicit init without spawning the bridge", () => {
-    const args = parseArgs(["--home", "/tmp/lark-acp-home", "init"]);
+    const args = parseArgs(["--home", "/tmp/humming-home", "init"]);
     expect(args.command).toBe("init");
-    expect(args.home).toBe("/tmp/lark-acp-home");
+    expect(args.home).toBe("/tmp/humming-home");
   });
 
   it("still parses an explicit --agent preset", () => {
@@ -207,7 +207,7 @@ describe("runInit", () => {
   let stdoutSpy: ReturnType<typeof viSpyWrite>;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-init-"));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-init-"));
     stdoutSpy = viSpyWrite();
   });
 
@@ -234,7 +234,7 @@ describe("runInit", () => {
     });
     expect(fs.existsSync(path.join(home, "settings.json"))).toBe(false);
     expect(fs.existsSync(path.join(home, "sessions.json"))).toBe(false);
-    expect(stdoutSpy.output()).toContain("initialized lark-acp home templates");
+    expect(stdoutSpy.output()).toContain("initialized humming home templates");
   });
 });
 
@@ -308,7 +308,7 @@ describe("resolveDefaultAgent — precedence chain", () => {
 describe("readConfigFile — runtime.agent round-trip", () => {
   let dir: string;
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-cfg-"));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-cfg-"));
   });
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -356,7 +356,7 @@ describe("legacy migration isolation", () => {
   const oldXdgData = process.env["XDG_DATA_HOME"];
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-migrate-"));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-migrate-"));
   });
   afterEach(() => {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -366,7 +366,7 @@ describe("legacy migration isolation", () => {
 
   it("does not import legacy XDG config into an explicit --home", () => {
     const xdgConfig = path.join(dir, "xdg-config");
-    const legacyDir = path.join(xdgConfig, "lark-acp");
+    const legacyDir = path.join(xdgConfig, "humming");
     fs.mkdirSync(legacyDir, { recursive: true });
     fs.writeFileSync(
       path.join(legacyDir, "config.json"),

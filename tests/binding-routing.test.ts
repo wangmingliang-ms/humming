@@ -110,7 +110,7 @@ function makeBridge(defaults?: {
 }
 
 beforeEach(async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-e2e-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "humming-e2e-"));
   dataDir = path.join(root, "data");
   repoA = path.join(root, "repo-a");
   repoB = path.join(root, "repo-b");

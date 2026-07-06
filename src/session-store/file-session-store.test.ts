@@ -30,7 +30,7 @@ function record(
 }
 
 beforeEach(async () => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-acp-sess-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-sess-"));
   store = new FileSessionStore(dir);
   await store.init();
 });

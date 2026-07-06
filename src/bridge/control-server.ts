@@ -8,6 +8,13 @@ import type {
   SessionRecord,
 } from "../session-store/session-store.js";
 
+export interface AgentProbeFailureTarget {
+  readonly label?: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+}
+
 export type ControlRequest =
   | {
       readonly id?: string | number;
@@ -32,6 +39,17 @@ export type ControlRequest =
       readonly id?: string | number;
       readonly method: "setAgent";
       readonly params: { readonly record: SessionRecord; readonly noticeMessageId?: string | null };
+    }
+  | {
+      readonly id?: string | number;
+      readonly method: "agentProbeFailed";
+      readonly params: {
+        readonly chatId: string;
+        readonly threadId?: string | null;
+        readonly agent: AgentProbeFailureTarget;
+        readonly error: string;
+        readonly noticeMessageId?: string | null;
+      };
     };
 
 export type ControlResponse =
@@ -43,6 +61,13 @@ export interface BridgeControlHandlers {
   setControls(chatId: string, threadId: string | null, controls: SessionControls): Promise<unknown>;
   bindSession(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
   setAgent(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
+  agentProbeFailed(
+    chatId: string,
+    threadId: string | null,
+    agent: AgentProbeFailureTarget,
+    error: string,
+    noticeMessageId?: string | null,
+  ): Promise<unknown>;
 }
 
 export interface BridgeControlServerOptions {
@@ -148,6 +173,18 @@ export class BridgeControlServer {
               parsed.params.noticeMessageId ?? null,
             ),
           };
+        case "agentProbeFailed":
+          return {
+            ok: true,
+            id: parsed.id,
+            result: await this.handlers.agentProbeFailed(
+              parsed.params.chatId,
+              parsed.params.threadId ?? null,
+              parsed.params.agent,
+              parsed.params.error,
+              parsed.params.noticeMessageId ?? null,
+            ),
+          };
         default:
           return assertNever(parsed);
       }
@@ -201,7 +238,27 @@ function isControlRequest(value: unknown): value is ControlRequest {
     const params = value["params"];
     return isRecord(params) && isSessionRecord(params["record"]);
   }
+  if (value["method"] === "agentProbeFailed") {
+    const params = value["params"];
+    return (
+      isRecord(params) &&
+      typeof params["chatId"] === "string" &&
+      isAgentProbeFailureTarget(params["agent"]) &&
+      typeof params["error"] === "string"
+    );
+  }
   return false;
+}
+
+function isAgentProbeFailureTarget(value: unknown): value is AgentProbeFailureTarget {
+  return (
+    isRecord(value) &&
+    (value["label"] === undefined || typeof value["label"] === "string") &&
+    typeof value["command"] === "string" &&
+    Array.isArray(value["args"]) &&
+    value["args"].every((item) => typeof item === "string") &&
+    typeof value["cwd"] === "string"
+  );
 }
 
 function isSessionRecord(value: unknown): value is SessionRecord {

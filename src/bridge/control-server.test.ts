@@ -51,6 +51,14 @@ describe("BridgeControlServer", () => {
           record,
           noticeMessageId,
         }),
+        agentProbeFailed: async (chatId, threadId, agent, error, noticeMessageId) => ({
+          notified: true,
+          chatId,
+          threadId,
+          agent,
+          error,
+          noticeMessageId,
+        }),
       },
     });
     await server.start();
@@ -136,6 +144,33 @@ describe("BridgeControlServer", () => {
         switched: true,
         noticeMessageId: "om_notice",
         record: { sessionId: "profile:1", profileOnly: true, agentLabel: "copilot" },
+      },
+    });
+
+    const probeFailed = await sendControlRequest(socketPath, {
+      method: "agentProbeFailed",
+      params: {
+        chatId: "oc_A",
+        threadId: "th_1",
+        agent: {
+          label: "copilot",
+          command: "npx",
+          args: ["-y", "@zed-industries/copilot-acp"],
+          cwd: "/repo",
+        },
+        error: "Authentication required",
+        noticeMessageId: "om_notice",
+      },
+    });
+    expect(probeFailed).toMatchObject({
+      ok: true,
+      result: {
+        notified: true,
+        chatId: "oc_A",
+        threadId: "th_1",
+        agent: { label: "copilot", cwd: "/repo" },
+        error: "Authentication required",
+        noticeMessageId: "om_notice",
       },
     });
   });

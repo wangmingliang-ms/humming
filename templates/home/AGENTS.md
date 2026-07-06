@@ -64,6 +64,8 @@ If the user asks about another Agent's model/mode/config options before switchin
 humming control agent-capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent copilot --json
 ```
 
+If the probe fails and a chat id is available, humming sends a `目标 Agent 不可用` notification to the user. Treat that as a hard blocker: do not switch Agent or write controls until the target Agent is installed/authenticated and the probe succeeds.
+
 Set controls with one JSON payload:
 
 ```bash
@@ -100,6 +102,7 @@ Semantics:
 - Humming drops the old topic session binding and writes a profile-only record for the new Agent.
 - The next message in this topic starts a fresh ACP session with the new Agent.
 - Old Agent conversation history is not migrated automatically.
+- Humming probes the target Agent before switching. If the target Agent cannot start or cannot create a session, the switch is aborted and the old topic session stays active.
 - Claude/Codex/Copilot/etc. model, mode, and config ids are Agent-specific. Do not carry old controls across the switch. After switching, query the new Agent's capabilities and then call `sessions set-control` with ids from the new response if the user asks for specific controls.
 
 On success humming sends an `Agent 已切换` notice showing Agent / Repo / Mode / Model / Permission / Controls changes. It intentionally does not print full session/chat/thread ids.

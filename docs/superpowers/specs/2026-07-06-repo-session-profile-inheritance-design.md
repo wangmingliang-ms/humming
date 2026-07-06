@@ -242,11 +242,13 @@ humming sessions set-agent --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_TH
 
 实现细节：
 
-1. 当前 topic runtime 若正在运行，先 supersede/shutdown，并从 runtime map 删除。
-2. 清掉当前 `(chatId, threadId)` 的旧 session records。
-3. 写入一个 `profileOnly: true` 的 `SessionRecord`，只保存新 Agent invocation + repo，不保存旧 controls。
-4. 下条消息 acquire runtime 时看到 `profileOnly` record，会使用该 record 的 Agent，但不会 resume 这个 pseudo `sessionId`，而是创建全新的 ACP session。
-5. 新 session 创建成功后，真实 session record 会替换 profile-only record。
+1. 先对目标 Agent 执行 capabilities probe，确认它能启动并创建 ACP session。
+2. 如果 probe 失败，发送 `目标 Agent 不可用` notice，并保持当前 topic 的旧 runtime/session record 不变。
+3. probe 成功后，当前 topic runtime 若正在运行，先 supersede/shutdown，并从 runtime map 删除。
+4. 清掉当前 `(chatId, threadId)` 的旧 session records。
+5. 写入一个 `profileOnly: true` 的 `SessionRecord`，只保存新 Agent invocation + repo，不保存旧 controls。
+6. 下条消息 acquire runtime 时看到 `profileOnly` record，会使用该 record 的 Agent，但不会 resume 这个 pseudo `sessionId`，而是创建全新的 ACP session。
+7. 新 session 创建成功后，真实 session record 会替换 profile-only record。
 
 通知要求：
 
@@ -272,6 +274,7 @@ humming control agent-capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HU
 - 创建 throwaway ACP session，读取 `session/new` 返回的 capabilities。
 - 立即停止 Agent 进程。
 - 不修改 `sessions.json`，不替换当前 topic runtime。
+- 如果 probe 失败且请求里有 chat id，通知用户 `目标 Agent 不可用`。
 
 这个命令解决“当前 topic 仍在 Claude session 上，但用户想看 Copilot 可用 model/mode/config”的问题；`humming control capabilities` 仍然只查询当前 live runtime。
 

@@ -46,7 +46,7 @@ import type {
   ResolvedAgentInvocation,
   SessionRecord,
 } from "../src/index.js";
-import { sendControlRequest } from "../src/bridge/control-server.js";
+import { sendControlRequest, type AgentProbeFailureTarget } from "../src/bridge/control-server.js";
 import {
   buildRegistry,
   resolveAgent,
@@ -1525,13 +1525,19 @@ async function runControl(args: ParsedArgs): Promise<void> {
 
 async function runAgentCapabilities(args: ParsedArgs): Promise<void> {
   const target = resolveSessionTargetContext(args);
-  const result = await probeAgentSessionCapabilities({
-    command: target.invocation.command,
-    args: [...target.invocation.args],
-    cwd: target.cwd,
-    env: target.invocation.env ? { ...target.invocation.env } : undefined,
-    logger: SILENT_LOGGER,
-  });
+  let result: Awaited<ReturnType<typeof probeAgentSessionCapabilities>>;
+  try {
+    result = await probeAgentSessionCapabilities({
+      command: target.invocation.command,
+      args: [...target.invocation.args],
+      cwd: target.cwd,
+      env: target.invocation.env ? { ...target.invocation.env } : undefined,
+      logger: SILENT_LOGGER,
+    });
+  } catch (err) {
+    await notifyAgentProbeFailure(target, err);
+    throw err;
+  }
   const payload = {
     session: {
       ...(target.chatId !== undefined ? { chatId: target.chatId } : {}),
@@ -1562,7 +1568,7 @@ function resolveStateDir(args: ParsedArgs, file: FileConfig, homeDir: string): s
   return path.resolve(rawDataDir);
 }
 
-function resolveSessionTargetContext(args: ParsedArgs): {
+interface SessionTargetContext {
   readonly homeDir: string;
   readonly dataDir: string;
   readonly configPath: string;
@@ -1572,7 +1578,9 @@ function resolveSessionTargetContext(args: ParsedArgs): {
   readonly threadId: string | null;
   readonly cwd: string;
   readonly invocation: ResolvedAgentInvocation;
-} {
+}
+
+function resolveSessionTargetContext(args: ParsedArgs): SessionTargetContext {
   const homeDir = resolveHomeDir(args.home);
   const configPath = resolveSettingsPath(args.configPath, homeDir);
   const file = readConfigFile(configPath);
@@ -1594,6 +1602,30 @@ function resolveSessionTargetContext(args: ParsedArgs): {
   const selection = args.targetAgent ?? file.runtime.agent ?? DEFAULT_AGENT;
   const invocation = makeAgentResolver(registry)(selection);
   return { homeDir, dataDir, configPath, file, registry, chatId, threadId, cwd, invocation };
+}
+
+async function notifyAgentProbeFailure(target: SessionTargetContext, err: unknown): Promise<void> {
+  const chatId = target.chatId;
+  if (!chatId) return;
+  const agent: AgentProbeFailureTarget = {
+    label: target.invocation.label,
+    command: target.invocation.command,
+    args: [...target.invocation.args],
+    cwd: target.cwd,
+  };
+  try {
+    await sendControlRequest(bridgeControlSocketPath(target.homeDir), {
+      method: "agentProbeFailed",
+      params: {
+        chatId,
+        threadId: target.threadId,
+        agent,
+        error: formatError(err),
+      },
+    });
+  } catch (notifyErr) {
+    SILENT_LOGGER.debug({ err: notifyErr }, "agent probe failure notice could not be delivered");
+  }
 }
 
 async function runSessionList(args: ParsedArgs): Promise<void> {
@@ -1694,6 +1726,20 @@ async function runSessionSetAgent(args: ParsedArgs): Promise<void> {
   if (!args.targetAgent) throw new CliError("sessions set-agent requires --agent <preset>");
   const target = resolveSessionTargetContext(args);
   if (!target.chatId) throw new CliError("sessions set-agent requires --chat-id <id>");
+  try {
+    await probeAgentSessionCapabilities({
+      command: target.invocation.command,
+      args: [...target.invocation.args],
+      cwd: target.cwd,
+      env: target.invocation.env ? { ...target.invocation.env } : undefined,
+      logger: SILENT_LOGGER,
+    });
+  } catch (err) {
+    await notifyAgentProbeFailure(target, err);
+    throw new CliError(
+      `target agent probe failed; current topic Agent was not switched: ${formatError(err)}`,
+    );
+  }
   const now = Date.now();
   const record: SessionRecord = {
     chatId: target.chatId,

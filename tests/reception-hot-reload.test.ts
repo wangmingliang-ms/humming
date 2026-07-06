@@ -69,6 +69,13 @@ interface BridgeInternals {
   ): Promise<void>;
   controlBindSession(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
   controlSetAgent(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
+  controlAgentProbeFailed(
+    chatId: string,
+    threadId: string | null,
+    agent: { label?: string; command: string; args: readonly string[]; cwd: string },
+    error: string,
+    noticeMessageId?: string | null,
+  ): Promise<unknown>;
   readonly activeChatCount: number;
 }
 function asInternals(bridge: LarkBridge): BridgeInternals {
@@ -410,6 +417,48 @@ describe("session bind conflicts", () => {
     expect(notice?.body).toContain("Controls：acceptEdits: on → —");
     expect(notice?.body).not.toContain("s_claude_old");
     expect(notice?.body).not.toContain("profile:copilot");
+  });
+
+  it("notifies when a target Agent probe fails before switching", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+    await sessionStore.save({
+      chatId: "oc_x",
+      threadId: "th_topic",
+      sessionId: "s_claude_old",
+      agentCommand: CLAUDE.command,
+      agentArgs: [...CLAUDE.args],
+      agentLabel: CLAUDE.label,
+      cwd: repoA,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    await expect(
+      b.controlAgentProbeFailed(
+        "oc_x",
+        "th_topic",
+        {
+          label: "copilot",
+          command: "npx",
+          args: ["-y", "@zed-industries/copilot-acp"],
+          cwd: repoA,
+        },
+        "Authentication required",
+        "om_notice",
+      ),
+    ).resolves.toMatchObject({ notified: true });
+
+    const notice = presenter.notices.at(-1);
+    expect(notice).toMatchObject({ title: "⚠️ 目标 Agent 不可用", template: "red" });
+    expect(notice?.body).toContain("当前 topic 的 Agent 没有切换");
+    expect(notice?.body).toContain("Agent：copilot");
+    expect(notice?.body).toContain("Authentication required");
+    expect(notice?.body).not.toContain("s_claude_old");
+    expect(await sessionStore.getLatest("oc_x", "th_topic")).toMatchObject({
+      sessionId: "s_claude_old",
+      agentLabel: "claude",
+    });
   });
 
   it("uses consistent Title/Agent/Repo order in session bind notices", async () => {

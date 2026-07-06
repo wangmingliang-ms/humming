@@ -244,6 +244,7 @@ humming sessions set-agent \
 - 清掉当前 topic 的旧 session binding。
 - 写入新 Agent 的 profile-only record；下一条消息会启动全新的 ACP session。
 - 不自动迁移旧 Agent 的内部对话历史。
+- 切换前先 probe 目标 Agent。目标 Agent 无法启动或无法创建 session 时，切换中止，旧 topic session 保持不变，并发送「目标 Agent 不可用」通知。
 - 不复制旧 Agent 的 model/mode/config controls。Claude 的 `opus` / `default` / `acceptEdits` 等 id 对 Copilot 不一定有效；切换后应按新 Agent 的 live capabilities 再设置 controls。
 
 如果只是想查看某个 Agent 支持哪些 model/mode/config，而不改变当前 topic，可以启动一次短暂 probe session：
@@ -256,7 +257,7 @@ humming control agent-capabilities \
   --json
 ```
 
-这个命令会启动所选 Agent、创建 throwaway ACP session 读取 capabilities，然后立即停止；不会修改 `sessions.json` 或当前 topic runtime。
+这个命令会启动所选 Agent、创建 throwaway ACP session 读取 capabilities，然后立即停止；不会修改 `sessions.json` 或当前 topic runtime。如果 probe 失败且提供了 chat id，Humming 会发送「目标 Agent 不可用」通知；这也正好充当切换前的可用性检查。
 
 #### Live capabilities / controls
 

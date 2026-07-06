@@ -9,7 +9,7 @@ import { LarkWsConnection } from "../lark/lark-ws.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import { installHomeTemplates } from "../home-templates.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
-import { BridgeControlServer } from "./control-server.js";
+import { BridgeControlServer, type AgentProbeFailureTarget } from "./control-server.js";
 import {
   interpretLarkMessage,
   type InterpretedMessage,
@@ -511,6 +511,8 @@ export class LarkBridge {
           this.controlSetControls(chatId, threadId, controls),
         bindSession: (record, noticeMessageId) => this.controlBindSession(record, noticeMessageId),
         setAgent: (record, noticeMessageId) => this.controlSetAgent(record, noticeMessageId),
+        agentProbeFailed: (chatId, threadId, agent, error, noticeMessageId) =>
+          this.controlAgentProbeFailed(chatId, threadId, agent, error, noticeMessageId),
       },
     });
     await this.controlServer.start();
@@ -542,6 +544,28 @@ export class LarkBridge {
       .sendNoticeCard(chatId, buildStoredControlUpdatedNotice(before, record, controls))
       .catch((err) => this.logger.warn({ err, chatId, threadId }, "stored control notice failed"));
     return { applied: false, recordSessionId: record.sessionId };
+  }
+
+  private async controlAgentProbeFailed(
+    chatId: string,
+    threadId: string | null,
+    agent: AgentProbeFailureTarget,
+    error: string,
+    noticeMessageId?: string | null,
+  ): Promise<{ readonly notified: true }> {
+    const runtime = this.chats.get(runtimeKey(chatId, threadId));
+    const replyTo = noticeMessageId ?? runtime?.lastMessageId ?? null;
+    const notice = buildAgentProbeFailedNotice(agent, error);
+    if (replyTo) {
+      await this.presenter
+        .replyNoticeCard(replyTo, notice)
+        .catch((err) => this.logger.warn({ err }, "agent probe failure notice failed"));
+    } else {
+      await this.presenter
+        .sendNoticeCard(chatId, notice)
+        .catch((err) => this.logger.warn({ err }, "agent probe failure notice failed"));
+    }
+    return { notified: true };
   }
 
   private async controlSetAgent(
@@ -1579,6 +1603,29 @@ function storedControlChangeLines(
 function displayStoredConfigValue(controls: SessionControls | undefined, configId: string): string {
   const value = controls?.config?.[configId];
   return value ? displayControlConfigValue(value) : "—";
+}
+
+function buildAgentProbeFailedNotice(
+  agent: AgentProbeFailureTarget,
+  error: string,
+): NoticeCardSpec {
+  const lines = [
+    "目标 Agent 启动 / capabilities probe 失败，当前 topic 的 Agent 没有切换。",
+    "",
+    "**目标 Agent**",
+    `• Agent：${agent.label ?? agent.command}`,
+    `• Repo：${agent.cwd}`,
+    "",
+    "**失败原因**",
+    error,
+    "",
+    "请先确认该 Agent 已安装并完成登录/认证，再重新切换。",
+  ];
+  return {
+    title: "⚠️ 目标 Agent 不可用",
+    body: lines.join("\n"),
+    template: "red",
+  };
 }
 
 function buildSessionAgentSwitchedNotice(

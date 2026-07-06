@@ -6,7 +6,7 @@ Date: 2026-07-06
 
 Today the install scripts (`install.sh` / `install.ps1`) clone the repo into a
 **temp dir**, `npm install`, `npm run build`, `npm install -g --install-links .`
-(a *copy*, not a symlink), then delete the temp dir. That works for a one-shot
+(a _copy_, not a symlink), then delete the temp dir. That works for a one-shot
 install, but there is no persistent checkout on the machine, so **upgrading means
 re-running the whole install one-liner**. There is no `humming update`.
 
@@ -101,7 +101,7 @@ Flow:
    `checkout -f` guarantees we land on the target branch even if the checkout was
    left detached or the worktree was dirtied, matching the "always hard-synced,
    machine-owned artifact" invariant.
-3. **Reinstall + rebuild:** `npm install` then `npm run build`, run *in* the
+3. **Reinstall + rebuild:** `npm install` then `npm run build`, run _in_ the
    checkout dir.
 4. **Refresh global command:** `npm link` (idempotent — ensures the global bin
    still points at this checkout).
@@ -120,7 +120,7 @@ succeed, so a failed update leaves the old bridge untouched.
 ## Preserving launch arguments: `bridge.launch.json`
 
 **Problem:** `runRestart` currently rebuilds `spawnArgv` from the argv the user
-typed *on the restart command* (`rawArgv` + `subcommandIndex` →
+typed _on the restart command_ (`rawArgv` + `subcommandIndex` →
 `rewriteSubcommand(... "proxy")`). An `update`-triggered restart has no such
 argv, so `--agent` and other flags would be lost.
 
@@ -131,7 +131,7 @@ argv, so `--agent` and other flags would be lost.
 {
   "spawnArgv": ["proxy", "--agent", "codex"],
   "workingDirectory": "/home/user/some/repo",
-  "savedAt": "2026-07-06T12:34:56.000Z"
+  "savedAt": "2026-07-06T12:34:56.000Z",
 }
 ```
 
@@ -145,13 +145,13 @@ the same read path; the write already happens on every `start`/`restart`.
 
 ## Components touched
 
-| File                     | Change                                                                                                |
-| ------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `bin/humming.ts`         | `command` union + dispatch add `"update"`; `runUpdate()`; help text; persist launch argv on start/restart; read it in restart/update. |
+| File                     | Change                                                                                                                                                                              |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bin/humming.ts`         | `command` union + dispatch add `"update"`; `runUpdate()`; help text; persist launch argv on start/restart; read it in restart/update.                                               |
 | `bin/process-control.ts` | `managedCheckoutDir(home)`, `bridgeLaunchPath(home)`, `persistLaunchArgv()`, `readLaunchArgv()`, and `runGit`/`runNpm` spawn helpers with a typed `ProcessControlError` on failure. |
-| `install.sh`             | Temp-dir → persistent `<home>/humming-project`; `npm link`.                                            |
-| `install.ps1`            | Same, in PowerShell.                                                                                   |
-| `README.md`              | Document `humming update` and the managed checkout.                                                    |
+| `install.sh`             | Temp-dir → persistent `<home>/humming-project`; `npm link`.                                                                                                                         |
+| `install.ps1`            | Same, in PowerShell.                                                                                                                                                                |
+| `README.md`              | Document `humming update` and the managed checkout.                                                                                                                                 |
 
 ## Error handling
 

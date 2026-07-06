@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type * as acp from "@agentclientprotocol/sdk";
-import { HummingClient } from "./humming-client.js";
+import {
+  CARD_MARKDOWN_ELEMENT_CHAR_LIMIT,
+  CARD_MARKDOWN_SOFT_CHAR_LIMIT,
+  HummingClient,
+} from "./humming-client.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkPresenter, UnifiedCardState } from "../presenter/presenter.js";
 
 type RenderOp =
   | { readonly kind: "sendUnified"; readonly state: UnifiedCardState }
   | { readonly kind: "updateUnified"; readonly cardId: string; readonly state: UnifiedCardState }
+  | {
+      readonly kind: "notice";
+      readonly title: string;
+      readonly body: string;
+      readonly template: string;
+    }
   | {
       readonly kind: "permission";
       readonly requestId: string;
@@ -25,7 +35,10 @@ function cloneState(state: UnifiedCardState): UnifiedCardState {
   return structuredClone(state) as UnifiedCardState;
 }
 
-function recordingPresenter(ops: RenderOp[]): LarkPresenter {
+function recordingPresenter(
+  ops: RenderOp[],
+  options: { failUpdates?: boolean } = {},
+): LarkPresenter {
   let cardSeq = 0;
   return {
     replyText: async () => {},
@@ -35,7 +48,14 @@ function recordingPresenter(ops: RenderOp[]): LarkPresenter {
     },
     updatePermissionCard: async () => {},
     expirePermissionCard: async () => {},
-    replyNoticeCard: async () => {},
+    replyNoticeCard: async (_messageId, notice) => {
+      ops.push({
+        kind: "notice",
+        title: notice.title,
+        body: notice.body,
+        template: notice.template,
+      });
+    },
     sendNoticeCard: async () => null,
     sendUnifiedCard: async (_replyToMessageId, state) => {
       ops.push({ kind: "sendUnified", state: cloneState(state) });
@@ -44,13 +64,14 @@ function recordingPresenter(ops: RenderOp[]): LarkPresenter {
     },
     updateUnifiedCard: async (cardId, state) => {
       ops.push({ kind: "updateUnified", cardId, state: cloneState(state) });
+      return !options.failUpdates;
     },
   };
 }
 
-function makeClient(ops: RenderOp[]): HummingClient {
+function makeClient(ops: RenderOp[], options: { failUpdates?: boolean } = {}): HummingClient {
   const client = new HummingClient({
-    presenter: recordingPresenter(ops),
+    presenter: recordingPresenter(ops, options),
     logger,
     showThoughts: true,
     showTools: true,
@@ -355,6 +376,152 @@ describe("HummingClient card-v2 conversation rendering", () => {
     expect(tool).toMatchObject({
       kind: "tool",
       detail: "```bash\ndeploy --token --dry-run\n```",
+    });
+  });
+
+  it("folds long prose at the next tool call boundary", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+    const longText = "A".repeat(CARD_MARKDOWN_SOFT_CHAR_LIMIT + 10);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: longText },
+      },
+    });
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_read",
+        title: "Read README",
+        kind: "read",
+        status: "pending",
+        locations: [{ path: "/tmp/README.md" }],
+      },
+    });
+    await waitForFlush();
+
+    const send = ops.find(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    expect(send?.state.entries).toEqual([
+      expect.objectContaining({
+        kind: "text",
+        text: expect.stringContaining("已在安全边界折叠"),
+      }),
+      {
+        kind: "tool",
+        toolCallId: "tool_read",
+        title: "README.md",
+        toolKind: "read",
+        status: "pending",
+      },
+    ]);
+    expect(
+      send?.state.entries.map((entry) => (entry.kind === "text" ? entry.text : "")).join(""),
+    ).not.toContain(longText);
+  });
+
+  it("folds long final output even when no later tool call arrives", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+    const longText = "B".repeat(CARD_MARKDOWN_SOFT_CHAR_LIMIT + 10);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: longText },
+      },
+    });
+    await waitForFlush();
+    await client.finalize("complete");
+
+    const finalPatch = ops.findLast(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(finalPatch?.state.status).toBe("complete");
+    expect(finalPatch?.state.entries).toEqual([
+      expect.objectContaining({
+        kind: "text",
+        text: expect.stringContaining("任务结束前折叠"),
+      }),
+    ]);
+  });
+
+  it("uses a render-only emergency fold before sending an over-limit running card", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+    const hugeText = "C".repeat(CARD_MARKDOWN_ELEMENT_CHAR_LIMIT + 10);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: hugeText },
+      },
+    });
+    await waitForFlush();
+
+    const send = ops.find(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    expect(send?.state.entries).toEqual([
+      expect.objectContaining({
+        kind: "text",
+        text: expect.stringContaining("发送卡片前折叠"),
+      }),
+    ]);
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_later",
+        title: "Later",
+        kind: "read",
+        status: "pending",
+      },
+    });
+    await waitForFlush();
+    const patch = ops.findLast(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(patch?.state.entries.at(0)).toMatchObject({
+      kind: "text",
+      text: expect.stringContaining("下一次 tool call 开始前折叠"),
+    });
+  });
+
+  it("sends a fallback notice when patching the unified card fails", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops, { failUpdates: true });
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "hello" },
+      },
+    });
+    await waitForFlush();
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: " world" },
+      },
+    });
+    await waitForFlush();
+
+    const notice = ops.find(
+      (op): op is Extract<RenderOp, { kind: "notice" }> => op.kind === "notice",
+    );
+    expect(notice).toMatchObject({
+      title: "⚠️ Humming 卡片暂时无法更新",
+      template: "grey",
     });
   });
 });

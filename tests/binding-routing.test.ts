@@ -50,7 +50,9 @@ class RecordingPresenter implements LarkPresenter {
   async sendUnifiedCard(): Promise<string | null> {
     return null;
   }
-  async updateUnifiedCard(): Promise<void> {}
+  async updateUnifiedCard(): Promise<boolean> {
+    return true;
+  }
 }
 
 /** Minimal view of the private methods this test drives. */

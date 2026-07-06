@@ -55,6 +55,30 @@ function buildV2Card(
   };
 }
 
+function conciseError(err: unknown): {
+  message: string;
+  name?: string;
+  code?: string;
+  status?: number;
+} {
+  if (!(err instanceof Error)) return { message: String(err) };
+  const maybe = err as Error & {
+    code?: unknown;
+    status?: unknown;
+    response?: { status?: unknown };
+  };
+  return {
+    message: err.message,
+    name: err.name,
+    ...(typeof maybe.code === "string" ? { code: maybe.code } : {}),
+    ...(typeof maybe.status === "number"
+      ? { status: maybe.status }
+      : typeof maybe.response?.status === "number"
+        ? { status: maybe.response.status }
+        : {}),
+  };
+}
+
 function buttonTypeForKind(kind: string): "primary" | "danger" | "default" {
   if (kind === "allow_always") return "primary";
   if (kind === "reject_once" || kind === "reject_always") return "danger";
@@ -378,11 +402,13 @@ export class LarkCardPresenter implements LarkPresenter {
     }
   }
 
-  async updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<void> {
+  async updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<boolean> {
     try {
       await this.http.patchCard(cardMessageId, buildUnifiedCard(state));
+      return true;
     } catch (err) {
-      this.logger.warn({ err, cardMessageId }, "updateUnifiedCard failed");
+      this.logger.warn({ err: conciseError(err), cardMessageId }, "updateUnifiedCard failed");
+      return false;
     }
   }
 }

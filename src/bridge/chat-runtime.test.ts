@@ -113,6 +113,7 @@ function recordingPresenter(
     },
     updateUnifiedCard: async (_id, state) => {
       states.push(structuredClone(state));
+      return true;
     },
   };
 }

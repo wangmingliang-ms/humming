@@ -12,6 +12,19 @@ import type {
 } from "../presenter/presenter.js";
 
 const CARD_FLUSH_DEBOUNCE_MS = 100;
+// Feishu's own SDK documents the per markdown element ceiling as 30,000
+// characters for streaming card content; above that card updates fail with
+// code 230099 / ErrCode 11310 "element exceeds the limit".
+export const CARD_MARKDOWN_ELEMENT_CHAR_LIMIT = 30_000;
+// Prefer readability over maximum density. Once the card reaches 50% of the
+// element limit, wait for a safe structural boundary (the next tool call) and
+// fold earlier prose instead of cutting markdown in the middle.
+export const CARD_MARKDOWN_SOFT_CHAR_LIMIT = Math.floor(CARD_MARKDOWN_ELEMENT_CHAR_LIMIT * 0.5);
+
+const CARD_COMPACTION_NOTICE_PREFIX = "_前面内容较长，已在安全边界折叠_";
+
+type CardUpdateFailurePhase = "running" | "terminal";
+type CardCompactionReason = "tool" | "final" | "emergency";
 
 const PERMISSION_TIMEOUT_REASON = "用户未在规定时间内响应，已自动取消";
 const PERMISSION_SHUTDOWN_REASON = "会话已结束，本次确认已失效";
@@ -51,6 +64,50 @@ type ToolEntry = Extract<TimelineEntry, { kind: "tool" }>;
 interface ToolDisplay {
   readonly title: string;
   readonly detail?: string;
+}
+
+function entryTextLength(entry: TimelineEntry): number {
+  switch (entry.kind) {
+    case "text":
+    case "thought":
+      return entry.text.length;
+    case "tool":
+      return entry.title.length + entry.toolKind.length + (entry.detail?.length ?? 0);
+    default:
+      return assertNeverEntry(entry);
+  }
+}
+
+function timelineTextLength(entries: readonly TimelineEntry[]): number {
+  return entries.reduce((sum, entry) => sum + entryTextLength(entry), 0);
+}
+
+function compactionNoticeReason(reason: CardCompactionReason): string {
+  switch (reason) {
+    case "tool":
+      return "下一次 tool call 开始前";
+    case "final":
+      return "任务结束前";
+    case "emergency":
+      return "发送卡片前";
+    default:
+      return assertNeverReason(reason);
+  }
+}
+
+function compactedEntry(removedChars: number, reason: CardCompactionReason): TimelineEntry {
+  return {
+    kind: "text",
+    text: `${CARD_COMPACTION_NOTICE_PREFIX}：${compactionNoticeReason(reason)}折叠约 ${removedChars.toLocaleString("en-US")} 个字符。完整内容请查看 Agent 本地会话记录或日志。`,
+  };
+}
+
+function assertNeverEntry(x: never): never {
+  throw new Error(`unexpected timeline entry: ${String(x)}`);
+}
+
+function assertNeverReason(x: never): never {
+  throw new Error(`unexpected compaction reason: ${String(x)}`);
 }
 
 function formatToolDisplay(
@@ -243,6 +300,8 @@ export class HummingClient implements acp.Client {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushing = false;
   private permissionBoundaryThisPrompt = false;
+  private needsBoundaryCompaction = false;
+  private readonly cardFailureNoticePhases = new Set<CardUpdateFailurePhase>();
 
   constructor(opts: HummingClientOptions) {
     this.presenter = opts.presenter;
@@ -269,6 +328,7 @@ export class HummingClient implements acp.Client {
     this.currentMessageId = messageId;
     this.currentChatId = chatId;
     this.currentThreadId = threadId;
+    this.cardFailureNoticePhases.clear();
   }
 
   // ----- Permission flow --------------------------------------------------
@@ -437,6 +497,7 @@ export class HummingClient implements acp.Client {
       case "agent_message_chunk":
         if (u.content.type === "text") {
           this.appendText("text", u.content.text);
+          this.markCompactionNeededIfOverSoftLimit();
           this.status = "responding";
           this.scheduleFlush();
         }
@@ -445,13 +506,18 @@ export class HummingClient implements acp.Client {
       case "agent_thought_chunk":
         if (u.content.type === "text" && this.showThoughts) {
           this.appendText("thought", u.content.text);
+          this.markCompactionNeededIfOverSoftLimit();
           if (this.status !== "responding") this.status = "thinking";
           this.scheduleFlush();
         }
         return;
 
       case "tool_call": {
-        if (!this.showTools) return;
+        this.compactTimelineAtBoundary("tool");
+        if (!this.showTools) {
+          this.scheduleFlush();
+          return;
+        }
         const toolCallId = u.toolCallId;
         if (!toolCallId) return;
         this.status = "calling_tool";
@@ -542,12 +608,16 @@ export class HummingClient implements acp.Client {
     while (this.flushing) await new Promise<void>((r) => setTimeout(r, 10));
     const hasRenderableState = this.hasRenderableState();
     const shouldSkipEmptyFinalCard = !hasRenderableState && this.permissionBoundaryThisPrompt;
-    if (!shouldSkipEmptyFinalCard) await this.renderCard({ cancellable: false });
+    if (!shouldSkipEmptyFinalCard) {
+      this.compactTimelineForFinalCard();
+      await this.renderCard({ cancellable: false });
+    }
     this.timeline = [];
     this.sealedToolMeta.clear();
     this.cardId = null;
     this.cardCreating = null;
     this.permissionBoundaryThisPrompt = false;
+    this.needsBoundaryCompaction = false;
     this.status = "thinking";
   }
 
@@ -561,6 +631,69 @@ export class HummingClient implements acp.Client {
       return;
     }
     this.timeline.push({ kind, text });
+  }
+
+  private markCompactionNeededIfOverSoftLimit(): void {
+    if (this.needsBoundaryCompaction) return;
+    if (timelineTextLength(this.timeline) >= CARD_MARKDOWN_SOFT_CHAR_LIMIT) {
+      this.needsBoundaryCompaction = true;
+    }
+  }
+
+  private compactTimelineAtBoundary(reason: CardCompactionReason): void {
+    if (
+      !this.needsBoundaryCompaction &&
+      timelineTextLength(this.timeline) < CARD_MARKDOWN_SOFT_CHAR_LIMIT
+    ) {
+      return;
+    }
+    this.timeline = this.compactEntriesKeepingTail(
+      this.timeline,
+      reason,
+      CARD_MARKDOWN_SOFT_CHAR_LIMIT,
+    );
+    this.needsBoundaryCompaction = false;
+  }
+
+  private compactTimelineForFinalCard(): void {
+    if (timelineTextLength(this.timeline) >= CARD_MARKDOWN_SOFT_CHAR_LIMIT) {
+      this.timeline = this.compactEntriesKeepingTail(
+        this.timeline,
+        "final",
+        CARD_MARKDOWN_SOFT_CHAR_LIMIT,
+      );
+    }
+    if (timelineTextLength(this.timeline) >= CARD_MARKDOWN_ELEMENT_CHAR_LIMIT) {
+      this.timeline = this.compactEntriesKeepingTail(
+        this.timeline,
+        "emergency",
+        CARD_MARKDOWN_SOFT_CHAR_LIMIT,
+      );
+    }
+    this.needsBoundaryCompaction = false;
+  }
+
+  private compactEntriesKeepingTail(
+    entries: readonly TimelineEntry[],
+    reason: CardCompactionReason,
+    targetChars: number,
+  ): TimelineEntry[] {
+    let tailLength = 0;
+    const kept: TimelineEntry[] = [];
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i];
+      if (!entry) continue;
+      const nextLength = tailLength + entryTextLength(entry);
+      if (nextLength > targetChars) break;
+      kept.unshift(entry);
+      tailLength = nextLength;
+    }
+
+    if (kept.length === entries.length) return [...entries];
+    const keptCount = kept.length;
+    const removed = entries.slice(0, entries.length - keptCount);
+    const removedChars = timelineTextLength(removed);
+    return [compactedEntry(removedChars, reason), ...kept];
   }
 
   private upsertTool(
@@ -615,13 +748,37 @@ export class HummingClient implements acp.Client {
     }, CARD_FLUSH_DEBOUNCE_MS);
   }
 
+  private async notifyCardUpdateFailure(phase: CardUpdateFailurePhase): Promise<void> {
+    if (!this.currentMessageId || this.cardFailureNoticePhases.has(phase)) return;
+    this.cardFailureNoticePhases.add(phase);
+    const terminal = phase === "terminal";
+    await this.presenter
+      .replyNoticeCard(this.currentMessageId, {
+        title: terminal ? "⚠️ Humming 卡片更新失败" : "⚠️ Humming 卡片暂时无法更新",
+        body: terminal
+          ? "Agent 任务已经结束，但飞书拒绝更新原始进度卡片。Humming 已写入日志；原卡片可能仍显示旧状态。"
+          : "Agent 任务仍在继续，但飞书拒绝更新当前进度卡片。Humming 已写入日志，后续仍会尝试更新。",
+        template: terminal ? "orange" : "grey",
+      })
+      .catch((err) => this.logger.warn({ err, phase }, "card update failure notice failed"));
+  }
+
+  private previewEntriesForRender(): readonly TimelineEntry[] {
+    if (timelineTextLength(this.timeline) < CARD_MARKDOWN_ELEMENT_CHAR_LIMIT) return this.timeline;
+    return this.compactEntriesKeepingTail(
+      this.timeline,
+      "emergency",
+      CARD_MARKDOWN_SOFT_CHAR_LIMIT,
+    );
+  }
+
   private async renderCard(opts: { cancellable: boolean }): Promise<void> {
     if (!this.currentMessageId && !this.cardId) return;
     this.flushing = true;
     try {
       const state = {
         status: this.status,
-        entries: this.timeline,
+        entries: this.previewEntriesForRender(),
         cancellable: opts.cancellable && this.showCancelButton,
         chatId: this.currentChatId,
         threadId: this.currentThreadId,
@@ -629,14 +786,17 @@ export class HummingClient implements acp.Client {
       };
 
       if (this.cardId) {
-        await this.presenter.updateUnifiedCard(this.cardId, state);
+        const updated = await this.presenter.updateUnifiedCard(this.cardId, state);
+        if (!updated) await this.notifyCardUpdateFailure(opts.cancellable ? "running" : "terminal");
         return;
       }
       if (this.cardCreating) {
         const id = await this.cardCreating;
         if (id) {
           this.cardId = id;
-          await this.presenter.updateUnifiedCard(id, state);
+          const updated = await this.presenter.updateUnifiedCard(id, state);
+          if (!updated)
+            await this.notifyCardUpdateFailure(opts.cancellable ? "running" : "terminal");
         }
         return;
       }

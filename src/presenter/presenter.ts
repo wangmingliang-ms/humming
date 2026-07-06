@@ -128,6 +128,6 @@ export interface LarkPresenter {
    */
   sendUnifiedCard(replyToMessageId: string, state: UnifiedCardState): Promise<string | null>;
 
-  /** Patch an existing unified card with a new state. */
-  updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<void>;
+  /** Patch an existing unified card with a new state. Returns false when the transport rejects. */
+  updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<boolean>;
 }

@@ -66,6 +66,13 @@ import {
   markBridgeRestart,
   clearBridgeRestartMarker,
   rewriteSubcommand,
+  persistLaunchArgv,
+  readLaunchArgv,
+  managedCheckoutDir,
+  bridgeLaunchPath,
+  isBridgeRunning,
+  runGit,
+  runNpm,
   ProcessControlError,
   DEFAULT_LOG_LINES,
 } from "./process-control.js";
@@ -104,6 +111,8 @@ const ENV_CONFIG = "HUMMING_CONFIG";
 const ENV_DATA_DIR = "HUMMING_DATA_DIR";
 const ENV_HOME = "HUMMING_HOME";
 const ENV_PERMISSION_MODE = "HUMMING_PERMISSION_MODE";
+/** Branch `humming update` hard-syncs the managed checkout to (override of {@link DEFAULT_UPDATE_REF}). */
+const ENV_UPDATE_REF = "HUMMING_REF";
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
@@ -114,6 +123,12 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
  * fresh machine (claude authenticates via the local `claude` CLI, no API key).
  */
 const DEFAULT_AGENT = "claude";
+
+/** Branch the managed checkout is hard-synced to by `update` unless `$HUMMING_REF` overrides it. */
+const DEFAULT_UPDATE_REF = "main";
+
+/** `owner/repo` used only to build the re-install hint when the managed checkout is missing. */
+const DEFAULT_UPDATE_REPO = "wangmingliang-ms/humming";
 
 // ---------- paths ---------------------------------------------------------
 
@@ -574,7 +589,8 @@ type ParsedArgs = {
     | "logs"
     | "control"
     | "sessions"
-    | "init";
+    | "init"
+    | "update";
   /** Preset id (`--agent <id>`); resolved against the registry in {@link runProxy}. */
   readonly agentPreset?: string;
   /** Raw command from `proxy -- <cmd>`; mutually exclusive with `agentPreset`. */
@@ -675,6 +691,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     if (token === "agents") return finalize("agents");
     if (token === "init") return finalize("init");
+    if (token === "update") return finalize("update");
     if (token === "help") return finalize("help");
     if (token === "version") return finalize("version");
     // Process-management subcommands. `start`/`restart` capture the full argv +
@@ -1236,6 +1253,7 @@ function printHelp(): void {
     `  ${APP_NAME} [global-options] start [--agent <preset>]   (run proxy in background)`,
     `  ${APP_NAME} [global-options] init                       (seed home templates)`,
     `  ${APP_NAME} [global-options] stop | restart | status`,
+    `  ${APP_NAME} update                                      (sync + rebuild managed checkout)`,
     `  ${APP_NAME} logs [-f] [-n <lines>]`,
     `  ${APP_NAME} control capabilities --chat-id <id> [--thread-id <id>] [--json]`,
     `  ${APP_NAME} control agent-capabilities [--chat-id <id>] [--thread-id <id>] [--agent <preset>] [--cwd <dir>] [--json]`,
@@ -1297,6 +1315,10 @@ function printHelp(): void {
     `  status                 Show whether the bridge is running (PID + uptime).`,
     `  logs [-f] [-n <lines>] Print the tail of bridge.log; -f follows output,`,
     `                         -n sets how many trailing lines (default ${DEFAULT_LOG_LINES}).`,
+    `  update                 Hard-sync the managed checkout (<home>/humming-project)`,
+    `                         to origin/${DEFAULT_UPDATE_REF} (override via $HUMMING_REF), rebuild, refresh`,
+    `                         the global command, and restart a running bridge with`,
+    `                         its original launch arguments.`,
     ``,
     `Session controls (live bridge required):`,
     `  control capabilities --chat-id <id> [--thread-id <id>] [--json]`,
@@ -2062,31 +2084,67 @@ async function runProxy(args: ParsedArgs): Promise<void> {
  */
 async function runStart(args: ParsedArgs): Promise<void> {
   const spawnArgv = buildProxyArgv(args);
+  const homeDir = resolveHomeDir(args.home);
+  const workingDirectory = process.cwd();
+  persistLaunchArgv(homeDir, spawnArgv, workingDirectory);
   await startBridge({
-    homeDir: resolveHomeDir(args.home),
+    homeDir,
     selfPath: fileURLToPath(import.meta.url),
     spawnArgv,
-    workingDirectory: process.cwd(),
+    workingDirectory,
   });
 }
 
 /** The `restart` handler: stop any running bridge, then start with the same argv. */
 async function runRestart(args: ParsedArgs): Promise<void> {
-  const spawnArgv = buildProxyArgv(args);
   const homeDir = resolveHomeDir(args.home);
+  const launch = resolveRestartLaunch(args, homeDir);
+  persistLaunchArgv(homeDir, launch.spawnArgv, launch.workingDirectory);
   markBridgeRestart(homeDir);
   try {
     await stopBridge({ homeDir });
     await startBridge({
       homeDir,
       selfPath: fileURLToPath(import.meta.url),
-      spawnArgv,
-      workingDirectory: process.cwd(),
+      spawnArgv: launch.spawnArgv,
+      workingDirectory: launch.workingDirectory,
     });
   } catch (err) {
     clearBridgeRestartMarker(homeDir);
     throw err;
   }
+}
+
+/**
+ * Resolve the argv + working dir for a `restart`. A restart WITH options
+ * (`restart --agent codex`) rebuilds from the typed argv; a bare `restart`
+ * falls back to the persisted launch descriptor so it doesn't forget flags
+ * from the original `start`. When neither is available, the argv is rebuilt
+ * from the bare `restart` token (yielding a default `proxy`).
+ */
+function resolveRestartLaunch(
+  args: ParsedArgs,
+  homeDir: string,
+): { readonly spawnArgv: readonly string[]; readonly workingDirectory: string } {
+  if (restartHasExplicitOptions(args)) {
+    return { spawnArgv: buildProxyArgv(args), workingDirectory: process.cwd() };
+  }
+  const persisted = readLaunchArgv(homeDir);
+  if (persisted !== null) {
+    return { spawnArgv: persisted.spawnArgv, workingDirectory: persisted.workingDirectory };
+  }
+  return { spawnArgv: buildProxyArgv(args), workingDirectory: process.cwd() };
+}
+
+/**
+ * Whether a `restart` carried its own proxy options (so we should honor them
+ * rather than the persisted descriptor). True when any proxy-affecting flag was
+ * typed after the `restart` token — i.e. the rewritten argv is more than the
+ * lone `proxy` token.
+ */
+function restartHasExplicitOptions(args: ParsedArgs): boolean {
+  if (args.rawArgv === undefined || args.subcommandIndex === undefined) return false;
+  return args.rawArgv.length > args.subcommandIndex + 1;
 }
 
 async function runInit(args: ParsedArgs): Promise<void> {
@@ -2126,6 +2184,103 @@ function buildProxyArgv(args: ParsedArgs): string[] {
   return rewriteSubcommand(args.rawArgv, args.subcommandIndex, "proxy");
 }
 
+/**
+ * The `update` handler: hard-sync the machine-managed checkout to
+ * `origin/<ref>`, reinstall + rebuild, refresh the global `npm link`, then
+ * restart a running bridge with its original launch arguments.
+ *
+ * Ordering is deliberate: every fallible git/npm step runs BEFORE the bridge is
+ * touched, so a failed update leaves a running bridge untouched. A missing
+ * managed checkout is a hard error (no clone, no self-heal) — the machine was
+ * installed with an old temp-dir script and must re-run the installer.
+ *
+ * @throws {ProcessControlError} when the checkout is missing, a git/npm step
+ *         fails, or a running bridge has no readable launch descriptor.
+ */
+async function runUpdate(args: ParsedArgs): Promise<void> {
+  const homeDir = resolveHomeDir(args.home);
+  const checkoutDir = managedCheckoutDir(homeDir);
+  if (!isDirectory(checkoutDir)) {
+    throw new ProcessControlError(
+      `no managed checkout at ${checkoutDir}. ` +
+        `Re-run the install script to create it:\n` +
+        `  curl -fsSL https://raw.githubusercontent.com/${DEFAULT_UPDATE_REPO}/main/install.sh | sh`,
+    );
+  }
+
+  const ref = resolveUpdateRef();
+  process.stdout.write(`humming update: syncing ${checkoutDir} to origin/${ref} ...\n`);
+  runGit(["fetch", "origin"], checkoutDir);
+  runGit(["checkout", "-f", ref], checkoutDir);
+  runGit(["reset", "--hard", `origin/${ref}`], checkoutDir);
+
+  process.stdout.write("humming update: installing dependencies ...\n");
+  runNpm(["install", "--no-audit", "--no-fund"], checkoutDir);
+  process.stdout.write("humming update: building ...\n");
+  runNpm(["run", "build"], checkoutDir);
+  process.stdout.write("humming update: refreshing global command ...\n");
+  runNpm(["link"], checkoutDir);
+
+  await restartBridgeAfterUpdate(homeDir);
+}
+
+/**
+ * After a successful build, restart the bridge iff one is running, reusing the
+ * persisted launch argv. When nothing is running, print a start hint instead.
+ * A running bridge with no readable launch descriptor is a hard error rather
+ * than a guess — the user is told to restart manually.
+ *
+ * @throws {ProcessControlError} when a bridge is running but its launch
+ *         descriptor is missing/unreadable.
+ */
+async function restartBridgeAfterUpdate(homeDir: string): Promise<void> {
+  if (!isBridgeRunning(homeDir)) {
+    process.stdout.write(
+      `humming update: done. Bridge is not running — start it with \`${APP_NAME} start\`.\n`,
+    );
+    return;
+  }
+
+  const launch = readLaunchArgv(homeDir);
+  if (launch === null) {
+    throw new ProcessControlError(
+      `update rebuilt the checkout, but the running bridge has no launch record at ` +
+        `${bridgeLaunchPath(homeDir)}. Restart it manually with \`${APP_NAME} restart\` ` +
+        `(add \`--agent <preset>\` if needed).`,
+    );
+  }
+
+  process.stdout.write("humming update: restarting bridge with its original arguments ...\n");
+  markBridgeRestart(homeDir);
+  try {
+    await stopBridge({ homeDir });
+    await startBridge({
+      homeDir,
+      selfPath: fileURLToPath(import.meta.url),
+      spawnArgv: launch.spawnArgv,
+      workingDirectory: launch.workingDirectory,
+    });
+  } catch (err) {
+    clearBridgeRestartMarker(homeDir);
+    throw err;
+  }
+}
+
+/** The branch `update` hard-syncs to: `$HUMMING_REF` if set and non-empty, else `main`. */
+function resolveUpdateRef(): string {
+  const fromEnv = process.env[ENV_UPDATE_REF];
+  return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : DEFAULT_UPDATE_REF;
+}
+
+/** Whether `candidate` exists and is a directory. Swallows stat errors as `false`. */
+function isDirectory(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   let args: ParsedArgs;
   try {
@@ -2155,6 +2310,9 @@ async function main(): Promise<void> {
     }
     case "init":
       await runInit(args);
+      return;
+    case "update":
+      await runUpdate(args);
       return;
     case "proxy":
       await runProxy(args);
@@ -2236,6 +2394,8 @@ export {
   parseControlJson,
   runProxy,
   runInit,
+  resolveUpdateRef,
+  restartHasExplicitOptions,
   DEFAULT_AGENT,
 };
 export type { ParsedArgs };

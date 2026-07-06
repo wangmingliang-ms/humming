@@ -24,6 +24,8 @@ import {
   resolveHomeDir,
   parseControlJson,
   runInit,
+  resolveUpdateRef,
+  restartHasExplicitOptions,
   DEFAULT_AGENT,
   type ParsedArgs,
 } from "./humming.js";
@@ -74,6 +76,70 @@ describe("parseArgs — bare subcommands need no --agent", () => {
     const args = parseArgs(["proxy", "--", "node", "./my-acp.js", "--flag"]);
     expect(args.agentRawCommand).toBe("node");
     expect(args.agentExtraArgs).toEqual(["./my-acp.js", "--flag"]);
+  });
+});
+
+describe("parseArgs — update subcommand", () => {
+  it("accepts a bare `update`", () => {
+    const args = parseArgs(["update"]);
+    expect(args.command).toBe("update");
+    expect(args.agentPreset).toBeUndefined();
+    // update does not background a proxy, so it captures no argv/index.
+    expect(args.rawArgv).toBeUndefined();
+    expect(args.subcommandIndex).toBeUndefined();
+  });
+
+  it("honors a --home global option before update", () => {
+    const args = parseArgs(["--home", "/tmp/humming-home", "update"]);
+    expect(args.command).toBe("update");
+    expect(args.home).toBe("/tmp/humming-home");
+  });
+
+  it("ignores trailing tokens after update, like other terminal subcommands", () => {
+    // `update` returns as soon as its token is matched (same as status/stop/
+    // init/agents), so trailing tokens are dropped rather than rejected. update
+    // takes no options of its own — its only knob is the $HUMMING_REF env var.
+    const args = parseArgs(["update", "extra", "tokens"]);
+    expect(args.command).toBe("update");
+  });
+});
+
+describe("resolveUpdateRef — $HUMMING_REF override", () => {
+  const original = process.env["HUMMING_REF"];
+  afterEach(() => {
+    restoreEnv("HUMMING_REF", original);
+  });
+
+  it("defaults to main when unset", () => {
+    delete process.env["HUMMING_REF"];
+    expect(resolveUpdateRef()).toBe("main");
+  });
+
+  it("defaults to main when set to an empty string", () => {
+    process.env["HUMMING_REF"] = "";
+    expect(resolveUpdateRef()).toBe("main");
+  });
+
+  it("uses a non-empty $HUMMING_REF verbatim", () => {
+    process.env["HUMMING_REF"] = "release-1.2";
+    expect(resolveUpdateRef()).toBe("release-1.2");
+  });
+});
+
+describe("restartHasExplicitOptions — bare restart vs. restart with flags", () => {
+  it("is false for a bare restart (falls back to the persisted launch argv)", () => {
+    expect(restartHasExplicitOptions(parseArgs(["restart"]))).toBe(false);
+  });
+
+  it("is true when the restart carries a proxy option", () => {
+    expect(restartHasExplicitOptions(parseArgs(["restart", "--agent", "codex"]))).toBe(true);
+  });
+
+  it("is true when a global option precedes restart with trailing proxy flags", () => {
+    // `--home <dir> restart --agent codex`: subcommand token is at index 2, and
+    // argv extends past it, so the typed options win over the persisted file.
+    const args = parseArgs(["--home", "/tmp/h", "restart", "--agent", "codex"]);
+    expect(restartHasExplicitOptions(args)).toBe(true);
   });
 });
 

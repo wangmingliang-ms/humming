@@ -28,6 +28,8 @@ const PID_FILE = "bridge.pid";
 const LOG_FILE = "bridge.log";
 const RESTART_MARKER_FILE = "bridge.restart";
 const CONTROL_SOCKET_FILE = "control.sock";
+const LAUNCH_FILE = "bridge.launch.json";
+const MANAGED_CHECKOUT_DIR = "humming-project";
 const SYSTEMD_UNIT_PREFIX = "humming-bridge";
 const SYSTEMD_UNIT_SUFFIX = ".service";
 
@@ -78,6 +80,24 @@ export function bridgeRestartMarkerPath(homeDir: string): string {
 /** Unix-domain socket used by `humming control …` to query the live bridge. */
 export function bridgeControlSocketPath(homeDir: string): string {
   return path.join(homeDir, CONTROL_SOCKET_FILE);
+}
+
+/**
+ * Absolute path of the machine-managed git checkout under a home dir. The
+ * install scripts clone humming here and `npm link` it; `humming update`
+ * hard-syncs it to `origin/<ref>` and rebuilds in place.
+ */
+export function managedCheckoutDir(homeDir: string): string {
+  return path.join(homeDir, MANAGED_CHECKOUT_DIR);
+}
+
+/**
+ * Absolute path of the persisted launch descriptor under a home dir. `start` /
+ * `restart` write the resolved spawn argv here so an `update`-triggered restart
+ * (or a bare `restart`) can relaunch with the exact original arguments.
+ */
+export function bridgeLaunchPath(homeDir: string): string {
+  return path.join(homeDir, LAUNCH_FILE);
 }
 
 /** Mark the next managed shutdown/start as a restart, not a plain stop/start. */
@@ -159,6 +179,137 @@ export function rewriteSubcommand(
   const out = [...rawArgv];
   out[index] = replacement;
   return out;
+}
+
+/**
+ * Persisted description of how the bridge was last launched. Written on every
+ * `start`/`restart` so a later `update`-triggered restart (or a bare
+ * `restart`) can relaunch with the exact original argv instead of guessing.
+ */
+export interface LaunchDescriptor {
+  /** The `proxy …` argv handed to {@link startBridge} (already rewritten). */
+  readonly spawnArgv: readonly string[];
+  /** Directory the bridge was started from. */
+  readonly workingDirectory: string;
+  /** ISO-8601 timestamp of when this descriptor was written (informational). */
+  readonly savedAt: string;
+}
+
+/**
+ * Persist the resolved launch argv to `<home>/bridge.launch.json`. Overwrites
+ * any previous descriptor; the file always reflects the most recent launch.
+ */
+export function persistLaunchArgv(
+  homeDir: string,
+  spawnArgv: readonly string[],
+  workingDirectory: string,
+): void {
+  fs.mkdirSync(homeDir, { recursive: true });
+  const descriptor: LaunchDescriptor = {
+    spawnArgv: [...spawnArgv],
+    workingDirectory,
+    savedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(bridgeLaunchPath(homeDir), `${JSON.stringify(descriptor, null, 2)}\n`, "utf-8");
+}
+
+/**
+ * Read the persisted launch descriptor, or `null` when the file is absent.
+ * The JSON is shape-checked (not blindly cast); a present-but-malformed file is
+ * a hard error rather than a silent fallback, so a corrupt launch file surfaces
+ * loudly instead of relaunching with wrong arguments.
+ *
+ * @throws {ProcessControlError} on an unexpected read error, invalid JSON, or a
+ *         payload that does not match {@link LaunchDescriptor}.
+ */
+export function readLaunchArgv(homeDir: string): LaunchDescriptor | null {
+  const launchPath = bridgeLaunchPath(homeDir);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(launchPath, "utf-8");
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return null;
+    throw new ProcessControlError(`failed to read launch file ${launchPath}: ${formatErr(err)}`, {
+      cause: err,
+    });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new ProcessControlError(`malformed launch file ${launchPath}: ${formatErr(err)}`, {
+      cause: err,
+    });
+  }
+  if (!isLaunchDescriptor(parsed)) {
+    throw new ProcessControlError(`launch file ${launchPath} has an unexpected shape`);
+  }
+  return parsed;
+}
+
+function isLaunchDescriptor(value: unknown): value is LaunchDescriptor {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("spawnArgv" in value) || !("workingDirectory" in value) || !("savedAt" in value)) {
+    return false;
+  }
+  const { spawnArgv, workingDirectory, savedAt } = value;
+  return (
+    Array.isArray(spawnArgv) &&
+    spawnArgv.every((item) => typeof item === "string") &&
+    typeof workingDirectory === "string" &&
+    typeof savedAt === "string"
+  );
+}
+
+/**
+ * Run a `git` subcommand in `cwd`, streaming its output to the user's terminal
+ * (inherited stdio). Used by `humming update` to sync the managed checkout.
+ *
+ * @throws {ProcessControlError} when git is missing from PATH or exits non-zero.
+ */
+export function runGit(args: readonly string[], cwd: string): void {
+  runTool("git", args, cwd);
+}
+
+/**
+ * Run an `npm` subcommand in `cwd`, streaming its output to the user's terminal
+ * (inherited stdio). Used by `humming update` to reinstall/rebuild/relink.
+ *
+ * @throws {ProcessControlError} when npm is missing from PATH or exits non-zero.
+ */
+export function runNpm(args: readonly string[], cwd: string): void {
+  runTool("npm", args, cwd);
+}
+
+/**
+ * Spawn an external build tool with inherited stdio so the user sees live
+ * progress. On Windows the tool is resolved through the shell so `npm` finds
+ * `npm.cmd`; the args are fixed literals (no untrusted input), so this is safe.
+ *
+ * @throws {ProcessControlError} when the tool is not on PATH (ENOENT) or the
+ *         process exits with a non-zero status / terminating signal.
+ */
+function runTool(command: string, args: readonly string[], cwd: string): void {
+  const result = spawnSync(command, [...args], {
+    cwd,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (result.error !== undefined) {
+    const hint =
+      errnoCode(result.error) === "ENOENT" ? ` (is \`${command}\` installed and on PATH?)` : "";
+    throw new ProcessControlError(
+      `\`${command} ${args.join(" ")}\` failed to run${hint}: ${formatErr(result.error)}`,
+      { cause: result.error },
+    );
+  }
+  if (result.status !== 0) {
+    const reason =
+      result.status === null
+        ? `terminated by signal ${result.signal ?? "unknown"}`
+        : `exit ${result.status}`;
+    throw new ProcessControlError(`\`${command} ${args.join(" ")}\` failed (${reason})`);
+  }
 }
 
 // ---------- actions -------------------------------------------------------
@@ -372,6 +523,19 @@ export async function stopBridge(opts: StopOptions): Promise<boolean> {
 
 export interface StatusOptions {
   readonly homeDir: string;
+}
+
+/**
+ * Whether a managed bridge is currently running, checking the systemd unit's
+ * MainPID (when user-systemd drives it) first, then the PID file. A read-only
+ * probe with no side effects — used by `update` to decide whether to restart.
+ */
+export function isBridgeRunning(homeDir: string): boolean {
+  const unitName = bridgeUnitName(homeDir);
+  const unitPid = isUserSystemdAvailable() ? systemdMainPid(unitName) : null;
+  if (unitPid !== null && isAlive(unitPid)) return true;
+  const pid = readPid(bridgePidPath(homeDir));
+  return pid !== null && isAlive(pid);
 }
 
 /**

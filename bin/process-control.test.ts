@@ -4,14 +4,18 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   bridgeControlSocketPath,
+  bridgeLaunchPath,
   bridgeLogPath,
   bridgePidPath,
   bridgeRestartMarkerPath,
   bridgeUnitName,
   clearBridgeRestartMarker,
   isAlive,
+  managedCheckoutDir,
   markBridgeRestart,
   parseProcessElapsedSeconds,
+  persistLaunchArgv,
+  readLaunchArgv,
   readPid,
   rewriteSubcommand,
   ProcessControlError,
@@ -34,10 +38,65 @@ describe("path helpers", () => {
     expect(bridgeRestartMarkerPath(dir)).toBe(path.join(dir, "bridge.restart"));
   });
 
+  it("composes the managed checkout and launch-file paths under the home dir", () => {
+    expect(managedCheckoutDir(dir)).toBe(path.join(dir, "humming-project"));
+    expect(bridgeLaunchPath(dir)).toBe(path.join(dir, "bridge.launch.json"));
+    expect(bridgeControlSocketPath(dir)).toBe(path.join(dir, "control.sock"));
+  });
+
   it("derives a stable per-home systemd unit name", () => {
     expect(bridgeUnitName(dir)).toMatch(/^humming-bridge-[a-f0-9]{10}\.service$/);
     expect(bridgeUnitName(dir)).toBe(bridgeUnitName(dir));
     expect(bridgeUnitName(path.join(dir, "other"))).not.toBe(bridgeUnitName(dir));
+  });
+});
+
+describe("launch descriptor round-trip", () => {
+  it("returns null when no launch file exists", () => {
+    expect(readLaunchArgv(dir)).toBeNull();
+  });
+
+  it("persists and reads back the spawn argv and working directory", () => {
+    persistLaunchArgv(dir, ["proxy", "--agent", "codex"], "/home/user/repo");
+    const restored = readLaunchArgv(dir);
+    expect(restored).not.toBeNull();
+    expect(restored?.spawnArgv).toEqual(["proxy", "--agent", "codex"]);
+    expect(restored?.workingDirectory).toBe("/home/user/repo");
+    // savedAt is an ISO-8601 timestamp string (informational).
+    expect(typeof restored?.savedAt).toBe("string");
+    expect(Number.isNaN(Date.parse(restored?.savedAt ?? ""))).toBe(false);
+  });
+
+  it("overwrites a previous descriptor on re-persist", () => {
+    persistLaunchArgv(dir, ["proxy", "--agent", "claude"], "/a");
+    persistLaunchArgv(dir, ["proxy", "--agent", "codex"], "/b");
+    const restored = readLaunchArgv(dir);
+    expect(restored?.spawnArgv).toEqual(["proxy", "--agent", "codex"]);
+    expect(restored?.workingDirectory).toBe("/b");
+  });
+
+  it("creates the home dir if missing before writing", () => {
+    const nested = path.join(dir, "does", "not", "exist");
+    persistLaunchArgv(nested, ["proxy"], "/repo");
+    expect(readLaunchArgv(nested)?.spawnArgv).toEqual(["proxy"]);
+  });
+
+  it("throws a typed error for malformed JSON rather than throwing through", () => {
+    fs.writeFileSync(bridgeLaunchPath(dir), "{ not json");
+    expect(() => readLaunchArgv(dir)).toThrow(ProcessControlError);
+  });
+
+  it("throws a typed error for a well-formed JSON of the wrong shape", () => {
+    fs.writeFileSync(bridgeLaunchPath(dir), JSON.stringify({ spawnArgv: "not-an-array" }));
+    expect(() => readLaunchArgv(dir)).toThrow(ProcessControlError);
+  });
+
+  it("rejects a spawnArgv array containing non-string entries", () => {
+    fs.writeFileSync(
+      bridgeLaunchPath(dir),
+      JSON.stringify({ spawnArgv: ["proxy", 42], workingDirectory: "/x", savedAt: "now" }),
+    );
+    expect(() => readLaunchArgv(dir)).toThrow(ProcessControlError);
   });
 });
 

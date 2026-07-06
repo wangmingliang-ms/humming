@@ -6,6 +6,12 @@
   Overrides via environment variables:
     HUMMING_REPO   GitHub owner/repo   (default: wangmingliang-ms/humming)
     HUMMING_REF    git branch or tag   (default: main)
+    HUMMING_HOME   humming home dir    (default: ~/.humming)
+
+  What it does: clone (or fast-forward) a persistent checkout at
+  <home>/humming-project, build it, and `npm link` so the global `humming`
+  symlinks into that checkout's dist/. `humming update` then rebuilds the same
+  checkout in place, so upgrades need no reinstall.
 
   Why clone+build instead of `npm i -g git+https://...`:
     npm's git-dependency prepare sandbox runs this package's `prepare` build
@@ -48,48 +54,54 @@ if ($nodeMajor -lt $minNodeMajor) {
   Fail "Node.js >= $minNodeMajor required, found $(node --version)."
 }
 
-# Clone into a temp dir, build there, install a real copy globally, then clean up.
-$workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("humming-install-" + [System.IO.Path]::GetRandomFileName())
-$repoDir = Join-Path $workDir 'humming'
+# Persistent managed checkout under the humming home dir. Cloning here (rather
+# than a temp dir) gives `humming update` a real repo to fast-forward, and
+# `npm link` (below) points the global bin at this checkout's dist/ so a rebuild
+# is reflected immediately — no reinstall. NOTE: the home dir is resolved the
+# same way the CLI does EXCEPT `--home` (a CLI-only flag): $HUMMING_HOME, else
+# ~/.humming. Set HUMMING_HOME to install into a non-default home.
+$homeDir = if ($env:HUMMING_HOME) { $env:HUMMING_HOME } else { Join-Path $HOME '.humming' }
+$checkoutDir = Join-Path $homeDir 'humming-project'
 $cloneUrl = "https://github.com/$repo.git"
 
-try {
-  New-Item -ItemType Directory -Path $workDir -Force | Out-Null
-
-  Write-Host "humming install: cloning $cloneUrl (ref: $ref) ..."
-  git clone --depth 1 --branch $ref $cloneUrl $repoDir
+if (Test-Path (Join-Path $checkoutDir '.git')) {
+  Write-Host "humming install: updating existing checkout $checkoutDir (ref: $ref) ..."
+  git -C $checkoutDir fetch origin
+  if ($LASTEXITCODE -ne 0) { Fail "git fetch failed in $checkoutDir." }
+  git -C $checkoutDir checkout -f $ref
+  if ($LASTEXITCODE -ne 0) { Fail "git checkout $ref failed." }
+  git -C $checkoutDir reset --hard "origin/$ref"
+  if ($LASTEXITCODE -ne 0) { Fail "git reset --hard origin/$ref failed." }
+}
+else {
+  Write-Host "humming install: cloning $cloneUrl (ref: $ref) into $checkoutDir ..."
+  New-Item -ItemType Directory -Path $homeDir -Force | Out-Null
+  git clone --branch $ref $cloneUrl $checkoutDir
   if ($LASTEXITCODE -ne 0) { Fail "git clone failed for $cloneUrl (ref: $ref)." }
+}
 
-  Push-Location $repoDir
-  try {
-    Write-Host "humming install: installing dependencies ..."
-    npm install --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { Fail "npm install failed." }
+Push-Location $checkoutDir
+try {
+  Write-Host "humming install: installing dependencies ..."
+  npm install --no-audit --no-fund
+  if ($LASTEXITCODE -ne 0) { Fail "npm install failed." }
 
-    Write-Host "humming install: building ..."
-    npm run build
-    if ($LASTEXITCODE -ne 0) { Fail "build failed." }
+  Write-Host "humming install: building ..."
+  npm run build
+  if ($LASTEXITCODE -ne 0) { Fail "build failed." }
 
-    # --install-links forces npm to copy the package instead of symlinking it
-    # into the temp dir (which the finally block removes). Without it the global
-    # bin would dangle the moment this script finishes.
-    Write-Host "humming install: installing globally ..."
-    npm install -g --install-links .
-    if ($LASTEXITCODE -ne 0) { Fail "global install failed." }
+  # `npm link` symlinks the global `humming` bin into this checkout's dist/, so
+  # `humming update` (which rebuilds in place) takes effect without a reinstall.
+  Write-Host "humming install: linking global command ..."
+  npm link
+  if ($LASTEXITCODE -ne 0) { Fail "npm link failed." }
 
-    Write-Host "humming install: initializing ~/.humming templates ..."
-    node dist/bin/humming.js init
-    if ($LASTEXITCODE -ne 0) { Fail "humming init failed." }
-  }
-  finally {
-    Pop-Location
-  }
+  Write-Host "humming install: initializing $homeDir templates ..."
+  node dist/bin/humming.js init
+  if ($LASTEXITCODE -ne 0) { Fail "humming init failed." }
 }
 finally {
-  # -ErrorAction SilentlyContinue so a delete failure (e.g. a deep node_modules
-  # path exceeding MAX_PATH on Windows PowerShell 5.1) cannot mask the original
-  # error or abort a successful install; a leftover temp dir is harmless.
-  if (Test-Path $workDir) { Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue }
+  Pop-Location
 }
 
 if (Get-Command humming -ErrorAction SilentlyContinue) {

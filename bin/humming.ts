@@ -32,7 +32,9 @@ import {
   LarkBridge,
   FileSessionStore,
   SettingsBindingStore,
+  LarkHttpClient,
   createPinoLogger,
+  sendLifecycleNotice,
   PERMISSION_MODES,
   listAgentSessions,
   probeAgentSessionCapabilities,
@@ -1896,6 +1898,55 @@ function resolveDefaultAgent(
   };
 }
 
+interface CrashHandlerInstallOptions {
+  readonly appId: string;
+  readonly appSecret: string;
+  readonly chatIds: readonly string[];
+  readonly logger: LarkLogger;
+}
+
+function installCrashHandlers(opts: CrashHandlerInstallOptions): { dispose(): void } {
+  let handling = false;
+  const crashLogger = opts.logger.child({ name: "crash" });
+  const notify = async (kind: "uncaughtException" | "unhandledRejection", err: unknown) => {
+    if (handling) return;
+    handling = true;
+    crashLogger.error({ err, kind }, "fatal unhandled bridge error");
+    if (opts.chatIds.length > 0) {
+      try {
+        const http = new LarkHttpClient({
+          appId: opts.appId,
+          appSecret: opts.appSecret,
+          logger: opts.logger,
+        });
+        await sendLifecycleNotice({
+          http,
+          chatIds: opts.chatIds,
+          kind: "crashed",
+          logger: opts.logger,
+        });
+      } catch (notifyErr) {
+        crashLogger.error({ err: notifyErr }, "crash notification failed");
+      }
+    }
+    process.exit(1);
+  };
+  const onUncaught = (err: Error) => {
+    void notify("uncaughtException", err);
+  };
+  const onUnhandled = (reason: unknown) => {
+    void notify("unhandledRejection", reason);
+  };
+  process.on("uncaughtException", onUncaught);
+  process.on("unhandledRejection", onUnhandled);
+  return {
+    dispose(): void {
+      process.off("uncaughtException", onUncaught);
+      process.off("unhandledRejection", onUnhandled);
+    },
+  };
+}
+
 async function runProxy(args: ParsedArgs): Promise<void> {
   const homeDir = resolveHomeDir(args.home);
   fs.mkdirSync(homeDir, { recursive: true });
@@ -1944,6 +1995,12 @@ async function runProxy(args: ParsedArgs): Promise<void> {
 
   const sessionStore = new FileSessionStore(cfg.dataDir);
   const bindingStore = new SettingsBindingStore(configPath);
+  const notifyCrash = installCrashHandlers({
+    appId: cfg.appId,
+    appSecret: cfg.appSecret,
+    chatIds: cfg.lifecycleNotifyChatIds,
+    logger: rootLogger,
+  });
 
   const bridge = new LarkBridge({
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },
@@ -1982,6 +2039,8 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       await bridge.stop();
     } catch (err) {
       cliLogger.error({ err: formatError(err) }, "error during shutdown");
+    } finally {
+      notifyCrash.dispose();
     }
     process.exit(0);
   };

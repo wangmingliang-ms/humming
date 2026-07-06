@@ -32,6 +32,7 @@ describe("buildLifecycleNoticeCard", () => {
     ["stopping", "⛔ Humming 正在停止"],
     ["restarting", "🔄 Humming 正在重启"],
     ["restarted", "✅ Humming 已重启"],
+    ["crashed", "⚠️ Humming 发生未捕获错误"],
   ] satisfies readonly [LifecycleNoticeKind, string][])("renders %s", (kind, title) => {
     const card = buildLifecycleNoticeCard(kind, {
       pid: 123,

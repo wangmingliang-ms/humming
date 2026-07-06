@@ -246,14 +246,15 @@ humming sessions set-agent --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_TH
 2. 如果 probe 失败，发送 `目标 Agent 不可用` notice，并保持当前 topic 的旧 runtime/session record 不变。
 3. probe 成功后，当前 topic runtime 若正在运行，先 supersede/shutdown，并从 runtime map 删除。
 4. 清掉当前 `(chatId, threadId)` 的旧 session records。
-5. 写入一个 `profileOnly: true` 的 `SessionRecord`，只保存新 Agent invocation + repo，不保存旧 controls。
+5. 写入一个 `profileOnly: true` 的 `SessionRecord`，保存新 Agent invocation + repo；如当前 chat 里存在同一目标 Agent 的最近 session，则复制其 model/mode/permission/config controls。
 6. 下条消息 acquire runtime 时看到 `profileOnly` record，会使用该 record 的 Agent，但不会 resume 这个 pseudo `sessionId`，而是创建全新的 ACP session。
 7. 新 session 创建成功后，真实 session record 会替换 profile-only record。
 
 通知要求：
 
 - 成功发送 `Agent 已切换` notice。
-- 展示 Agent / Repo / Mode / Model / Permission / Controls before/after。
+- 展示 Agent / Repo / Mode / Model / Permission / Controls 当前切换结果。
+- 如果继承了目标 Agent 最近 session 的 controls，说明这是 metadata-only inheritance，不继承 history/sessionId。
 - 明确提示旧 Agent 内部历史不会自动迁移。
 - 不显示完整 session/chat/thread/app id。
 

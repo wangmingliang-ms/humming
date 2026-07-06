@@ -123,6 +123,9 @@ export class BridgeControlServer {
         resolve();
       });
     });
+    this.server.on("error", (err) => {
+      this.logger.error({ err }, "control server error");
+    });
     this.logger.info({ socketPath: this.socketPath }, "control socket listening");
   }
 

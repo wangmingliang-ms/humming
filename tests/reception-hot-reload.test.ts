@@ -372,6 +372,24 @@ describe("session bind conflicts", () => {
       updatedAt: 1,
     });
 
+    await sessionStore.save({
+      chatId: "oc_x",
+      threadId: "th_recent_codex",
+      sessionId: "s_codex_recent",
+      agentCommand: CODEX.command,
+      agentArgs: [...CODEX.args],
+      agentLabel: CODEX.label,
+      cwd: repoA,
+      controls: {
+        modelId: "gpt-5",
+        modeId: "agent",
+        bridgePermissionMode: "alwaysAllow",
+        config: { autoEdit: { type: "boolean", value: true } },
+      },
+      createdAt: 2,
+      updatedAt: 2,
+    });
+
     await expect(
       b.controlSetAgent(
         {
@@ -383,8 +401,8 @@ describe("session bind conflicts", () => {
           agentArgs: [...CODEX.args],
           agentLabel: CODEX.label,
           cwd: repoA,
-          createdAt: 2,
-          updatedAt: 2,
+          createdAt: 3,
+          updatedAt: 3,
         },
         "om_notice",
       ),
@@ -395,8 +413,13 @@ describe("session bind conflicts", () => {
       sessionId: "profile:copilot",
       profileOnly: true,
       agentLabel: "codex",
+      controls: {
+        modelId: "gpt-5",
+        modeId: "agent",
+        bridgePermissionMode: "alwaysAllow",
+        config: { autoEdit: { type: "boolean", value: true } },
+      },
     });
-    expect(stored?.controls).toBeUndefined();
 
     const eff = await b.resolveBinding("oc_x");
     const runtime = await b.acquireRuntime("oc_x", "th_topic", eff!);
@@ -414,9 +437,11 @@ describe("session bind conflicts", () => {
     expect(notice?.body).toContain("**切换结果**");
     expect(notice?.body).toContain("Agent：claude → codex");
     expect(notice?.body).toContain(`Repo：${repoA}`);
-    expect(notice?.body).toContain("Model：—");
-    expect(notice?.body).toContain("Mode：—");
-    expect(notice?.body).toContain("Controls：—");
+    expect(notice?.body).toContain("Model：gpt-5");
+    expect(notice?.body).toContain("Mode：agent");
+    expect(notice?.body).toContain("Permission：Auto approve");
+    expect(notice?.body).toContain("Controls：autoEdit: on");
+    expect(notice?.body).toContain("Metadata：已从当前 chat 最近的 codex session 继承");
     expect(notice?.body).not.toContain("**修改明细**");
     expect(notice?.body).not.toContain("**切换后**");
     expect(notice?.body).not.toContain("s_claude_old");

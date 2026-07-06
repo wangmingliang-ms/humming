@@ -6,10 +6,16 @@ const CARD_SCHEMA_V2 = "2.0";
 const CARD_CONFIG_V2 = { width_mode: "fill", update_multi: true } as const;
 const DEFAULT_SEND_TIMEOUT_MS = 3_000;
 
-export const LIFECYCLE_NOTICE_KINDS = ["started", "stopping", "restarting", "restarted"] as const;
+export const LIFECYCLE_NOTICE_KINDS = [
+  "started",
+  "stopping",
+  "restarting",
+  "restarted",
+  "crashed",
+] as const;
 export type LifecycleNoticeKind = (typeof LIFECYCLE_NOTICE_KINDS)[number];
 
-type HeaderTemplate = "blue" | "green" | "grey" | "orange";
+type HeaderTemplate = "blue" | "green" | "grey" | "orange" | "red";
 
 type LifecycleNoticeSpec = {
   readonly title: string;
@@ -37,6 +43,11 @@ const LIFECYCLE_NOTICE_SPECS: Readonly<Record<LifecycleNoticeKind, LifecycleNoti
     title: "✅ Humming 已重启",
     body: "Bridge 进程已重启完成，可以继续使用。",
     template: "green",
+  },
+  crashed: {
+    title: "⚠️ Humming 发生未捕获错误",
+    body: "Bridge 捕获到未处理异常/Promise rejection，已写入日志。进程将退出，期间 bot 暂时不会响应消息。",
+    template: "red",
   },
 };
 

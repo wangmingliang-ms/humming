@@ -100,10 +100,11 @@ Semantics:
 
 - Humming stops the current topic runtime if it is running.
 - Humming drops the old topic session binding and writes a profile-only record for the new Agent.
+- Humming copies Model / Mode / Permission / Config controls from the most recent session in the current chat that used the target Agent. This is metadata-only inheritance; it does not copy history or sessionId.
 - The next message in this topic starts a fresh ACP session with the new Agent.
 - Old Agent conversation history is not migrated automatically.
 - Humming probes the target Agent before switching. If the target Agent cannot start or cannot create a session, the switch is aborted and the old topic session stays active.
-- Claude/Codex/Copilot/etc. model, mode, and config ids are Agent-specific. Do not carry old controls across the switch. After switching, query the new Agent's capabilities and then call `sessions set-control` with ids from the new response if the user asks for specific controls.
+- Claude/Codex/Copilot/etc. model, mode, and config ids are Agent-specific. Do not carry old controls across the switch. Humming only inherits controls from the target Agent's own recent sessions; if the user asks for specific controls, query the new Agent's capabilities and then call `sessions set-control` with ids from the new response.
 
 On success humming sends an `Agent 已切换` notice showing Agent / Repo / Mode / Model / Permission / Controls changes. It intentionally does not print full session/chat/thread ids.
 

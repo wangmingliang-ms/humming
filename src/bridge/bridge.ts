@@ -577,15 +577,20 @@ export class LarkBridge {
     const replyTo = noticeMessageId ?? runtime?.lastMessageId ?? null;
     const previous = await this.sessionStore.getLatest(record.chatId, record.threadId);
 
+    const inherited = await this.findRecentAgentSessionProfile(record);
+    const nextRecord: SessionRecord = inherited?.controls
+      ? { ...record, controls: inherited.controls }
+      : record;
+
     if (runtime) {
       runtime.supersede();
       this.chats.delete(key);
     }
 
     await this.sessionStore.clearThread(record.chatId, record.threadId);
-    await this.sessionStore.save(record);
+    await this.sessionStore.save(nextRecord);
 
-    const notice = buildSessionAgentSwitchedNotice(record, previous);
+    const notice = buildSessionAgentSwitchedNotice(nextRecord, previous, inherited);
     if (replyTo) {
       await this.presenter
         .replyNoticeCard(replyTo, notice)
@@ -670,9 +675,12 @@ export class LarkBridge {
       "message received",
     );
 
-    this.routeMessage(event, userId, messageId, chatId, threadId).catch((err) =>
-      this.logger.error({ err, chatId, threadId }, "routeMessage failed"),
-    );
+    this.routeMessage(event, userId, messageId, chatId, threadId).catch((err) => {
+      this.logger.error({ err, chatId, threadId }, "routeMessage failed");
+      this.presenter
+        .replyNoticeCard(messageId, buildRouteFailureNotice(err))
+        .catch((sendErr) => this.logger.warn({ err: sendErr }, "route failure notice failed"));
+    });
   }
 
   private async routeMessage(
@@ -1163,6 +1171,18 @@ export class LarkBridge {
     return null;
   }
 
+  private async findRecentAgentSessionProfile(
+    target: SessionRecord,
+  ): Promise<SessionRecord | null> {
+    const sessions = await this.sessionStore.listByChat(target.chatId);
+    for (const session of sessions) {
+      if (!sameAgentInvocationRecord(session, target)) continue;
+      if (!session.controls) continue;
+      return session;
+    }
+    return null;
+  }
+
   /**
    * Compose the agent subprocess env: the binding's own env (if any) plus
    * `HUMMING_CHAT_ID` and `HUMMING_SETTINGS` so the agent knows which chat
@@ -1243,6 +1263,11 @@ export class LarkBridge {
       this.settingsWatcher = fs.watch(dir, (_event, filename) => {
         if (filename && filename !== base) return;
         this.scheduleReload();
+      });
+      this.settingsWatcher.on("error", (err) => {
+        this.logger.warn({ err, settings: target }, "settings watcher error — hot-reload off");
+        this.settingsWatcher?.close();
+        this.settingsWatcher = null;
       });
       this.logger.info({ settings: target }, "watching settings.json for binding changes");
     } catch (err) {
@@ -1478,6 +1503,49 @@ function renderInlineControlHint(chatId: string, threadId: string | null): strin
   return `[humming: 若用户要求绑定/改绑仓库、把当前 topic 绑定到已有 agent session，或切换当前 session 的 model/mode/config/permission control，请先阅读 ~/.humming/AGENTS.md（或 CLAUDE.md）中的 humming 指引；本会话 chatId=${chatId}, threadId=${threadId ?? "<main>"}。其它请求忽略本提示。]`;
 }
 
+function buildRouteFailureNotice(err: unknown): NoticeCardSpec {
+  return {
+    title: "⚠️ Humming 处理消息失败",
+    body: `这条消息没有处理成功，错误已写入 bridge.log。\n\n原因：${formatUserFacingError(err)}`,
+    template: "red",
+  };
+}
+
+function formatUserFacingError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const obj = err as Record<string, unknown>;
+    if (typeof obj["message"] === "string") return obj["message"];
+  }
+  return String(err);
+}
+
+function sameAgentInvocationRecord(a: SessionRecord, b: SessionRecord): boolean {
+  return (
+    a.agentCommand === b.agentCommand &&
+    a.agentLabel === b.agentLabel &&
+    arrayEqual(a.agentArgs, b.agentArgs) &&
+    envEqual(a.agentEnv, b.agentEnv)
+  );
+}
+
+function arrayEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function envEqual(
+  a: Readonly<Record<string, string>> | undefined,
+  b: Readonly<Record<string, string>> | undefined,
+): boolean {
+  const left = a ?? {};
+  const right = b ?? {};
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (!arrayEqual(leftKeys, rightKeys)) return false;
+  return leftKeys.every((key) => left[key] === right[key]);
+}
+
 function buildSessionBoundNotice(
   record: SessionRecord,
   before?: SessionRecord | null,
@@ -1634,6 +1702,7 @@ function buildAgentProbeFailedNotice(
 function buildSessionAgentSwitchedNotice(
   record: SessionRecord,
   before?: SessionRecord | null,
+  inherited?: SessionRecord | null,
 ): NoticeCardSpec {
   const beforeAgent = before ? (before.agentLabel ?? before.agentCommand) : "未绑定";
   const currentAgent = record.agentLabel ?? record.agentCommand;
@@ -1648,6 +1717,11 @@ function buildSessionAgentSwitchedNotice(
     `• Permission：${displayControlPermission(record.controls)}`,
     `• Controls：${displayControlConfig(record.controls)}`,
   ];
+  if (inherited?.controls) {
+    lines.push(
+      `• Metadata：已从当前 chat 最近的 ${currentAgent} session 继承；未继承历史或 sessionId`,
+    );
+  }
   return {
     title: "✅ Agent 已切换",
     body: lines.join("\n"),

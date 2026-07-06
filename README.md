@@ -177,8 +177,8 @@ humming stop                    # 停止后台 bridge
   `bridge.pid`、`bridge.log`。`start` / `restart` 会把你传的全局 / proxy 选项、以及
   `-- <agent-cmd>` 透传部分**原样**转发给后台进程。
 - **Lifecycle / binding 通知**：在 settings.json 写 `"runtime": { "lifecycleNotifyChatIds": ["oc_..."] }` 后，
-  bridge 启动完成会给这些会话发「已启动」，`stop` 时发「正在停止」，`restart` 时发「正在重启」和「已重启」。通知是 best-effort，发送失败只记日志，不阻塞进程管理。每次 repo 绑定成功也会发「已绑定 repo」通知并列出修改明细；通过 CLI 绑定 topic session 成功时会发「已绑定 session」通知，包含 session title 和 Agent / Mode / Model / Permission / Controls 修改明细；`sessions set-control` 成功时会发「Session profile 已更新」通知，展示当前 Agent、Mode、Model、Permission 和 Config controls。
-- **Agent 切换通知**：`sessions set-agent` 会停止当前 topic runtime、清掉旧 session 绑定，并写入新 Agent 的 profile-only boundary。成功后发送「Agent 已切换」通知，说明旧 Agent 历史不会自动迁移；下一条消息会用新 Agent 创建全新 ACP session。
+  bridge 启动完成会给这些会话发「已启动」，`stop` 时发「正在停止」，`restart` 时发「正在重启」和「已重启」；若捕获到未处理异常 / Promise rejection，会写入 `bridge.log` 并发「Humming 发生未捕获错误」通知。通知是 best-effort，发送失败只记日志，不阻塞进程管理。每次 repo 绑定成功也会发「已绑定 repo」通知并列出修改明细；通过 CLI 绑定 topic session 成功时会发「已绑定 session」通知，包含 session title 和 Agent / Mode / Model / Permission / Controls 修改明细；`sessions set-control` 成功时会发「Session profile 已更新」通知，展示当前 Agent、Mode、Model、Permission 和 Config controls。
+- **Agent 切换通知**：`sessions set-agent` 会停止当前 topic runtime、清掉旧 session 绑定，并写入新 Agent 的 profile-only boundary。成功后发送「Agent 已切换」通知，说明旧 Agent 历史不会自动迁移；下一条消息会用新 Agent 创建全新 ACP session。切换时会从当前 chat 最近的目标 Agent session 继承 Mode / Model / Permission / Config controls（只继承 metadata，不继承 history/sessionId）。
 - **初始化模板**：执行 `humming init` 会创建/刷新 `~/.humming/AGENTS.md`、`~/.humming/CLAUDE.md`，并创建 `~/.humming/settings.back.json`、`~/.humming/sessions.back.json` 作为可复制参考模板。官方 install 脚本会在全局命令安装完成后自动执行一次 `humming init`；手动安装或换 home 时也可以单独运行。`settings.json` / `sessions.json` 仍只在真实配置或会话产生时创建；`.back.json` 不含真实凭据。
 - **Linux / WSL 上是真后台托管**：如果 `systemctl --user` 可用，`start` 会用
   `systemd-run --user` 启动一个 transient service（unit 名会显示在 `status` 里），bridge
@@ -243,9 +243,10 @@ humming sessions set-agent \
 - 停止当前 topic 的 live runtime（如果正在运行）。
 - 清掉当前 topic 的旧 session binding。
 - 写入新 Agent 的 profile-only record；下一条消息会启动全新的 ACP session。
+- 从当前 chat 最近的目标 Agent session 继承 model/mode/permission/config metadata（只继承 controls，不继承 history 或 sessionId）。
 - 不自动迁移旧 Agent 的内部对话历史。
 - 切换前先 probe 目标 Agent。目标 Agent 无法启动或无法创建 session 时，切换中止，旧 topic session 保持不变，并发送「目标 Agent 不可用」通知。
-- 不复制旧 Agent 的 model/mode/config controls。Claude 的 `opus` / `default` / `acceptEdits` 等 id 对 Copilot 不一定有效；切换后应按新 Agent 的 live capabilities 再设置 controls。
+- 不复制旧 Agent 的 model/mode/config controls。Claude 的 `opus` / `default` / `acceptEdits` 等 id 对 Copilot 不一定有效；只继承当前 chat 内目标 Agent 自己最近 session 的 controls；如需进一步修改，应按新 Agent 的 live capabilities 再设置 controls。
 
 如果只是想查看某个 Agent 支持哪些 model/mode/config，而不改变当前 topic，可以启动一次短暂 probe session：
 

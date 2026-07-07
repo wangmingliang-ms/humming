@@ -63,6 +63,20 @@ describe("LarkCardPresenter card summary", () => {
     const presenter = makePresenter(cards);
 
     await presenter.sendUnifiedCard("om_1", {
+      status: "received",
+      entries: [],
+      cancellable: true,
+      chatId: "oc_1",
+      threadId: null,
+    });
+    await presenter.updateUnifiedCard("card_1", {
+      status: "preparing",
+      entries: [],
+      cancellable: false,
+      chatId: "oc_1",
+      threadId: null,
+    });
+    await presenter.updateUnifiedCard("card_1", {
       status: "thinking",
       entries: [],
       cancellable: true,
@@ -94,13 +108,18 @@ describe("LarkCardPresenter card summary", () => {
     });
 
     expect(cards.map((card) => card.config?.summary?.content)).toEqual([
+      "📩 消息已收到",
+      "🔄 准备中...",
       "💭 思考中...",
       "🔄 处理中...",
       "⏳ 待确认",
       "✅ 已结束",
     ]);
-    expect(cards[1]?.header?.title?.content).toBe("🔄 处理中...");
-    expect(cards[2]?.header?.title?.content).toBe("⏳ 待确认");
+    expect(cards[0]?.body?.elements?.[0]?.content).toContain("已收到消息");
+    expect(cards[1]?.body?.elements?.[0]?.content).toContain("正在启动或连接 Agent");
+    expect(cards[2]?.body?.elements?.[0]?.content).toContain("已转发给 Agent");
+    expect(cards[3]?.header?.title?.content).toBe("🔄 处理中...");
+    expect(cards[4]?.header?.title?.content).toBe("⏳ 待确认");
   });
 
   it("renders sealed message cards as still-in-progress", async () => {

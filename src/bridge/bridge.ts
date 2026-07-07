@@ -910,6 +910,19 @@ export class LarkBridge {
       await this.notifyUnavailableBindingFallback(messageId, binding.fallbackFrom);
     }
 
+    const progressCardId = await this.presenter
+      .sendUnifiedCard(messageId, {
+        status: "received",
+        entries: [],
+        cancellable: false,
+        chatId,
+        threadId,
+      })
+      .catch((err) => {
+        this.logger.warn({ err, chatId, threadId }, "initial progress card failed");
+        return null;
+      });
+
     const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
     const [userName, chatName] = await Promise.all([
       this.http.getUserName(userId),
@@ -930,7 +943,7 @@ export class LarkBridge {
     prompt.push({ type: "text", text: renderInlineControlHint(chatId, threadId) });
 
     const runtime = await this.acquireRuntime(chatId, threadId, binding);
-    const pending: PendingMessage = { prompt, messageId, chatId };
+    const pending: PendingMessage = { prompt, messageId, chatId, progressCardId };
     try {
       await runtime.enqueue(pending);
     } catch (err) {
@@ -940,6 +953,16 @@ export class LarkBridge {
       this.chats.delete(runtimeKey(chatId, threadId));
       this.logger.error({ err, chatId, threadId }, "agent bootstrap failed");
       const summary = `⚠️ Agent 启动失败: ${formatBootstrapError(err)}`;
+      if (progressCardId) {
+        const updated = await this.presenter.updateUnifiedCard(progressCardId, {
+          status: "failed",
+          entries: [{ kind: "text", text: summary }],
+          cancellable: false,
+          chatId,
+          threadId,
+        });
+        if (updated) return;
+      }
       await this.presenter
         .replyText(messageId, summary)
         .catch((sendErr) => this.logger.warn({ err: sendErr }, "bootstrap error reply failed"));

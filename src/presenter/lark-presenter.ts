@@ -16,6 +16,8 @@ const HEADER_TEMPLATE_REJECTED = "red";
 const HEADER_TEMPLATE_EXPIRED = "grey";
 
 const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> = {
+  received: { content: "📩 消息已收到", template: "wathet" },
+  preparing: { content: "🔄 准备中...", template: "blue" },
   thinking: { content: "💭 思考中...", template: "wathet" },
   calling_tool: { content: "🔄 处理中...", template: "blue" },
   responding: { content: "✍️ 回复中...", template: "blue" },
@@ -292,6 +294,35 @@ function isEmptyTerminalState(state: UnifiedCardState): boolean {
   );
 }
 
+function emptyStateMessage(status: AgentStatus): string {
+  switch (status) {
+    case "received":
+      return "_Humming 已收到消息，正在处理…_";
+    case "preparing":
+      return "_正在启动或连接 Agent，请稍候…_";
+    case "thinking":
+      return "_消息已转发给 Agent，正在等待回复…_";
+    case "calling_tool":
+      return "_Agent 正在处理…_";
+    case "responding":
+      return "_Agent 正在回复…_";
+    case "sealed":
+      return "_当前阶段已结束，等待确认或后续输出…_";
+    case "complete":
+      return "_Agent 本轮没有返回可展示内容。_";
+    case "cancelled":
+      return "_本轮任务已取消。_";
+    case "failed":
+      return "_本轮任务出错。_";
+    default:
+      return assertNeverStatus(status);
+  }
+}
+
+function assertNeverStatus(x: never): never {
+  throw new Error(`unexpected agent status: ${String(x)}`);
+}
+
 function buildUnifiedCard(state: UnifiedCardState): object {
   const elements: object[] = [];
   const emptyTerminal = isEmptyTerminalState(state);
@@ -299,7 +330,7 @@ function buildUnifiedCard(state: UnifiedCardState): object {
   if (emptyTerminal) {
     elements.push({ tag: "markdown", content: EMPTY_OUTPUT_BODY });
   } else if (state.entries.length === 0) {
-    elements.push({ tag: "markdown", content: "_准备中..._" });
+    elements.push({ tag: "markdown", content: emptyStateMessage(state.status) });
   } else {
     state.entries.forEach((entry, i) => {
       // Don't draw a divider directly above a collapsible panel — the

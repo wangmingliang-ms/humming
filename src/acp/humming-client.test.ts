@@ -116,6 +116,42 @@ async function waitForFlush(): Promise<void> {
 }
 
 describe("HummingClient card-v2 conversation rendering", () => {
+  it("adopts the bridge-created progress card and patches it through agent output", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    client.adoptProgressCard("progress_card_1");
+    await client.showPreparing();
+    await client.showForwarded();
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Hello from agent." },
+      },
+    });
+    await waitForFlush();
+    await client.finalize("complete");
+
+    expect(ops.some((op) => op.kind === "sendUnified")).toBe(false);
+    const updates = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(updates.map((op) => op.cardId)).toEqual([
+      "progress_card_1",
+      "progress_card_1",
+      "progress_card_1",
+      "progress_card_1",
+    ]);
+    expect(updates.map((op) => op.state.status)).toEqual([
+      "preparing",
+      "thinking",
+      "responding",
+      "complete",
+    ]);
+    expect(updates.at(-1)?.state.entries).toEqual([{ kind: "text", text: "Hello from agent." }]);
+  });
+
   it("uses a compact 4096-character soft card fold threshold", () => {
     expect(CARD_MARKDOWN_SOFT_CHAR_LIMIT).toBe(4_096);
     expect(CARD_MARKDOWN_SOFT_CHAR_LIMIT).toBeLessThan(CARD_MARKDOWN_ELEMENT_CHAR_LIMIT);

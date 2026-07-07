@@ -295,6 +295,51 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     );
   });
 
+  it("updates an adopted progress card from preparing to forwarded before agent output", async () => {
+    const states: UnifiedCardState[] = [];
+    const fake = makeFakeAgent();
+    let resolveSpawn: (agent: AgentProcess) => void = () => {};
+    spawnAgentMock.mockReturnValue(
+      new Promise<AgentProcess>((resolve) => {
+        resolveSpawn = resolve;
+      }),
+    );
+
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter(states),
+      sessionStore: stubSessionStore(),
+    });
+
+    const enqueue = runtime.enqueue({
+      prompt: [{ type: "text", text: "hello" }],
+      messageId: "om_progress",
+      chatId: "oc_test",
+      progressCardId: "progress_card_1",
+    });
+
+    await vi.waitFor(() => expect(states.at(-1)?.status).toBe("preparing"), {
+      timeout: 1_000,
+      interval: 20,
+    });
+
+    resolveSpawn(fake.agent);
+    await enqueue;
+
+    await vi.waitFor(() => expect(states.at(-1)?.status).toBe("thinking"), {
+      timeout: 1_000,
+      interval: 20,
+    });
+    expect(states.map((state) => state.status)).toContain("preparing");
+    expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: true });
+
+    fake.resolvePrompt("end_turn");
+    await vi.waitFor(() => expect(states.at(-1)?.status).toBe("complete"), {
+      timeout: 1_000,
+      interval: 20,
+    });
+  });
+
   it("marks the card cancelled when a requested cancellation closes the agent connection", async () => {
     const states: UnifiedCardState[] = [];
     const notices: Array<{ title: string; body: string; template: string }> = [];

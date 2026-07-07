@@ -343,6 +343,25 @@ export class HummingClient implements acp.Client {
     this.acceptingRenderableUpdates = true;
   }
 
+  /** Continue rendering into a progress card the bridge already created for this prompt. */
+  adoptProgressCard(cardMessageId: string | null | undefined): void {
+    if (!cardMessageId) return;
+    this.cardId = cardMessageId;
+    this.cardCreating = null;
+  }
+
+  /** Show that the runtime is bootstrapping or connecting to the target agent. */
+  async showPreparing(): Promise<void> {
+    this.status = "preparing";
+    await this.renderCard({ cancellable: false });
+  }
+
+  /** Show that the user's message has been forwarded and Humming is waiting for agent output. */
+  async showForwarded(): Promise<void> {
+    this.status = "thinking";
+    await this.renderCard({ cancellable: true });
+  }
+
   // ----- Permission flow --------------------------------------------------
 
   async requestPermission(

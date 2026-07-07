@@ -25,6 +25,8 @@ export interface PendingMessage {
   /** Message used as reply/card anchor for this prompt. */
   messageId: string;
   chatId: string;
+  /** Progress card created by the bridge as soon as it accepted the prompt. */
+  progressCardId?: string | null;
 }
 
 export interface ChatRuntimeOptions {
@@ -315,6 +317,9 @@ export class ChatRuntime {
       },
     });
     currentClient = client;
+    client.setContext(firstMessage.messageId, firstMessage.chatId, this.opts.threadId);
+    client.adoptProgressCard(firstMessage.progressCardId);
+    await client.showPreparing();
 
     const spawnOpts: SpawnAgentOptions = {
       command: this.opts.agentCommand,
@@ -326,12 +331,19 @@ export class ChatRuntime {
     };
 
     let agent: AgentProcess;
-    if (latest && !latest.profileOnly) {
-      this.logger.info({ previousSessionId: latest.sessionId }, "attempting resume");
-      const result = await spawnAndResumeAgent(spawnOpts, latest.sessionId);
-      agent = result.agent;
-    } else {
-      agent = await spawnAgent(spawnOpts);
+    try {
+      if (latest && !latest.profileOnly) {
+        this.logger.info({ previousSessionId: latest.sessionId }, "attempting resume");
+        const result = await spawnAndResumeAgent(spawnOpts, latest.sessionId);
+        agent = result.agent;
+      } else {
+        agent = await spawnAgent(spawnOpts);
+      }
+    } catch (err) {
+      await client
+        .finalize("failed")
+        .catch((finalErr) => this.logger.warn({ err: finalErr }, "bootstrap card finalize failed"));
+      throw err;
     }
 
     await this.persistSession(agent.sessionId);
@@ -711,6 +723,7 @@ export class ChatRuntime {
         state.lastMessageId = pending.messageId;
 
         state.client.setContext(pending.messageId, pending.chatId, this.opts.threadId);
+        state.client.adoptProgressCard(pending.progressCardId);
 
         this.promptInFlight = true;
         try {
@@ -730,6 +743,7 @@ export class ChatRuntime {
 
   private async runPrompt(state: ChatRuntimeState, pending: PendingMessage): Promise<void> {
     this.logger.info("sending prompt to agent");
+    await state.client.showForwarded();
 
     const result = await this.promptOrDisconnect(state, pending);
 

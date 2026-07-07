@@ -267,6 +267,33 @@ describe("parseArgs — control and session-control subcommands", () => {
     expect(args.controlJson).toBe(true);
   });
 
+  it("falls back to Humming chat/thread env vars for in-agent commands", () => {
+    const oldChat = process.env.HUMMING_CHAT_ID;
+    const oldThread = process.env.HUMMING_THREAD_ID;
+    try {
+      process.env.HUMMING_CHAT_ID = "oc_env";
+      process.env.HUMMING_THREAD_ID = "omt_env";
+
+      const caps = parseArgs(["control", "capabilities", "--json"]);
+      expect(caps.targetChatId).toBe("oc_env");
+      expect(caps.targetThreadId).toBe("omt_env");
+
+      const bind = parseArgs(["sessions", "bind", "--agent", "claude", "--session-id", "sess_1"]);
+      expect(bind.targetChatId).toBe("oc_env");
+      expect(bind.targetThreadId).toBe("omt_env");
+
+      process.env.HUMMING_THREAD_ID = "";
+      const main = parseArgs(["sessions", "set-agent", "--agent", "copilot"]);
+      expect(main.targetChatId).toBe("oc_env");
+      expect(main.targetThreadId).toBeNull();
+    } finally {
+      if (oldChat === undefined) delete process.env.HUMMING_CHAT_ID;
+      else process.env.HUMMING_CHAT_ID = oldChat;
+      if (oldThread === undefined) delete process.env.HUMMING_THREAD_ID;
+      else process.env.HUMMING_THREAD_ID = oldThread;
+    }
+  });
+
   it("parses session bind and rejects cwd", () => {
     const args = parseArgs([
       "sessions",

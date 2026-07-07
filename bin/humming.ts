@@ -116,6 +116,8 @@ const ENV_CONFIG = "HUMMING_CONFIG";
 const ENV_DATA_DIR = "HUMMING_DATA_DIR";
 const ENV_HOME = "HUMMING_HOME";
 const ENV_PERMISSION_MODE = "HUMMING_PERMISSION_MODE";
+const ENV_CHAT_ID = "HUMMING_CHAT_ID";
+const ENV_THREAD_ID = "HUMMING_THREAD_ID";
 /** Branch `humming update` hard-syncs the managed checkout to (override of {@link DEFAULT_UPDATE_REF}). */
 const ENV_UPDATE_REF = "HUMMING_REF";
 
@@ -1083,7 +1085,7 @@ function parseTargetFlags(
     }
     if (token === "--thread-id") {
       if (value === undefined) throw new CliError("--thread-id requires a value");
-      threadId = value === "" || value === "null" || value === "<main>" ? null : value;
+      threadId = normalizeOptionalThreadId(value);
       i += 2;
       continue;
     }
@@ -1117,14 +1119,32 @@ function parseTargetFlags(
     }
     throw new CliError(`unknown control option: ${token ?? "<none>"}`);
   }
+  const envChatId = nonEmptyEnv(ENV_CHAT_ID);
+  const envThreadId = process.env[ENV_THREAD_ID];
+  const effectiveChatId = chatId ?? envChatId;
+  const effectiveThreadId =
+    threadId !== undefined
+      ? threadId
+      : envThreadId !== undefined
+        ? normalizeOptionalThreadId(envThreadId)
+        : undefined;
   return {
-    ...(chatId !== undefined ? { chatId } : {}),
-    ...(threadId !== undefined ? { threadId } : {}),
+    ...(effectiveChatId !== undefined ? { chatId: effectiveChatId } : {}),
+    ...(effectiveThreadId !== undefined ? { threadId: effectiveThreadId } : {}),
     ...(cwd !== undefined ? { cwd } : {}),
     ...(agent !== undefined ? { agent } : {}),
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(json !== undefined ? { json } : {}),
   };
+}
+
+function nonEmptyEnv(name: string): string | undefined {
+  const value = process.env[name];
+  return value !== undefined && value.length > 0 ? value : undefined;
+}
+
+function normalizeOptionalThreadId(value: string): string | null {
+  return value === "" || value === "null" || value === "<main>" ? null : value;
 }
 
 // ---------- effective config ---------------------------------------------
@@ -1449,6 +1469,9 @@ function printHelp(): void {
     `                         its original launch arguments.`,
     ``,
     `Session controls (live bridge required):`,
+    `  Commands run inside a Humming-spawned agent may omit --chat-id and`,
+    `  --thread-id; the CLI falls back to HUMMING_CHAT_ID / HUMMING_THREAD_ID.`,
+    `  Pass explicit ids only when targeting a different chat/topic.`,
     `  control capabilities --chat-id <id> [--thread-id <id>] [--json]`,
     `                         Print live ACP session capabilities: models, modes,`,
     `                         configOptions, plus bridgePermissionModes.`,
@@ -1517,11 +1540,11 @@ function printHelp(): void {
     `  ${APP_NAME} --cwd /work/project proxy --agent opencode`,
     `  ${APP_NAME} --hide-thoughts proxy --agent copilot`,
     `  ${APP_NAME} --permission-mode alwaysAllow proxy --agent claude`,
-    `  ${APP_NAME} control agent-capabilities --chat-id "$HUMMING_CHAT_ID" --agent copilot --json`,
-    `  ${APP_NAME} sessions set-agent --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent copilot`,
-    `  ${APP_NAME} sessions list --chat-id "$HUMMING_CHAT_ID" --agent claude --json`,
+    `  ${APP_NAME} control agent-capabilities --agent copilot --json`,
+    `  ${APP_NAME} sessions set-agent --agent copilot`,
+    `  ${APP_NAME} sessions list --agent claude --json`,
     `  ${APP_NAME} sessions list --agent codex --cwd /work/project --json`,
-    `  ${APP_NAME} sessions bind --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent claude --session-id <id>`,
+    `  ${APP_NAME} sessions bind --agent claude --session-id <id>`,
     `  ${APP_NAME} proxy -- node ./my-acp-server.js`,
     ``,
     `In-chat commands (one Lark bot → many repos):`,

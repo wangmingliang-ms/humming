@@ -264,6 +264,8 @@ HUMMING_REF=some-branch humming update   # 同步非默认分支
 
 运行中的 bridge 会在 home 目录下打开本地 control socket（默认 `~/.humming/control.sock`），供本机 CLI 查询当前 ACP session 的 live capabilities，并受控写入 `sessions.json`。
 
+Humming 会给 agent 子进程注入 `HUMMING_CHAT_ID` / `HUMMING_THREAD_ID`；CLI 会自动 fallback 到这两个 env vars。也就是说，从 Humming agent 内执行下面这些命令时，通常不需要显式传 `--chat-id` / `--thread-id`，这可以避免 Windows PowerShell/cmd 与 bash 的环境变量语法差异。只有在你要操作另一个 chat/topic 时才显式传 id。
+
 #### 绑定 topic 到已有 agent session
 
 `humming sessions list` 用于列出 agent 已有 sessions。默认 cwd 解析顺序是 `--cwd` → 当前 chat binding → `runtime.cwd`；因此在普通项目 chat 里不用指定 cwd，在 host/reception chat 里也可以显式查询某个 repo：
@@ -271,8 +273,6 @@ HUMMING_REF=some-branch humming update   # 同步非默认分支
 ```bash
 # 当前 chat 绑定 repo 内的 Claude sessions
 humming sessions list \
-  --chat-id "$HUMMING_CHAT_ID" \
-  --thread-id "$HUMMING_THREAD_ID" \
   --agent claude \
   --json
 
@@ -286,8 +286,6 @@ humming sessions list --agent codex --cwd /absolute/path/to/repo --json
 
 ```bash
 humming sessions bind \
-  --chat-id "$HUMMING_CHAT_ID" \
-  --thread-id "$HUMMING_THREAD_ID" \
   --agent claude \
   --session-id "<sessions.list[].sessionId>"
 ```
@@ -300,8 +298,6 @@ Agent 属于 topic/session profile，不属于 chat binding。已经有 session 
 
 ```bash
 humming sessions set-agent \
-  --chat-id "$HUMMING_CHAT_ID" \
-  --thread-id "$HUMMING_THREAD_ID" \
   --agent copilot
 ```
 
@@ -319,8 +315,6 @@ humming sessions set-agent \
 
 ```bash
 humming control agent-capabilities \
-  --chat-id "$HUMMING_CHAT_ID" \
-  --thread-id "$HUMMING_THREAD_ID" \
   --agent copilot \
   --json
 ```
@@ -332,7 +326,7 @@ humming control agent-capabilities \
 查询当前会话可用的 ACP 原生能力：
 
 ```bash
-humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json
+humming control capabilities --json
 ```
 
 如果当前 topic 还在 Claude session 上，这个命令返回的就是 Claude 的 live capabilities。要查 Copilot 等另一个 Agent 的能力，使用 `control agent-capabilities --agent <agent>` probe，不要凭记忆猜 id。
@@ -348,8 +342,6 @@ humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_
 
 ```bash
 humming sessions set-control \
-  --chat-id "$HUMMING_CHAT_ID" \
-  --thread-id "$HUMMING_THREAD_ID" \
   --json '{
     "modelId": "<models.availableModels[].modelId>",
     "modeId": "<modes.availableModes[].id>",

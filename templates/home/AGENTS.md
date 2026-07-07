@@ -38,15 +38,17 @@ Session-specific controls live in `sessions.json` and should normally be changed
 
 When the user asks to list/show an agent's "settings", "session settings", available models/modes/config, or existing sessions, use humming commands. Do **not** inspect Claude/Codex/Gemini/OpenCode cache directories or search random project folders for agent state.
 
+Humming injects the current target into every agent subprocess as `HUMMING_CHAT_ID` and `HUMMING_THREAD_ID`. The CLI falls back to those env vars, so commands run from inside a Humming agent should usually omit `--chat-id` / `--thread-id`. This is shell-neutral and works on Windows PowerShell/cmd as well as bash. Only pass explicit ids when you intentionally target a different chat/topic.
+
 - Built-in/user agent presets: `humming agents`
-- Current live session settings/capabilities: `humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json`
-- Capabilities for a specific Agent without changing this topic: `humming control agent-capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent <agent> --json`
-- Existing ACP sessions for an agent: `humming sessions list --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent <agent> --json`
+- Current live session settings/capabilities: `humming control capabilities --json`
+- Capabilities for a specific Agent without changing this topic: `humming control agent-capabilities --agent <agent> --json`
+- Existing ACP sessions for an agent: `humming sessions list --agent <agent> --json`
 
 Before changing model/mode/config/permission controls, always query live capabilities for the current chat/thread. Do not guess ids or values from memory.
 
 ```bash
-humming control capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json
+humming control capabilities --json
 ```
 
 The response keeps ACP-native fields as-is where possible:
@@ -61,7 +63,7 @@ Only choose ids/values that appear in the live response. If the requested target
 If the user asks about another Agent's model/mode/config options before switching to it, use a probe session. This starts the selected Agent briefly, creates a throwaway ACP session to read its real capabilities, then stops it. It does not change the current topic session.
 
 ```bash
-humming control agent-capabilities --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent copilot --json
+humming control agent-capabilities --agent copilot --json
 ```
 
 If the probe fails and a chat id is available, humming sends a `目标 Agent 不可用` notification to the user. Treat that as a hard blocker: do not switch Agent or write controls until the target Agent is installed/authenticated and the probe succeeds.
@@ -69,7 +71,7 @@ If the probe fails and a chat id is available, humming sends a `目标 Agent 不
 Set controls with one JSON payload:
 
 ```bash
-humming sessions set-control --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --json '{
+humming sessions set-control --json '{
   "modelId": "<one models.availableModels[].modelId>",
   "modeId": "<one modes.availableModes[].id>",
   "config": {
@@ -93,7 +95,7 @@ Switching Agent is a topic/session profile change, not a `settings.json` edit. D
 Use the CLI:
 
 ```bash
-humming sessions set-agent --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent copilot
+humming sessions set-agent --agent copilot
 ```
 
 Semantics:
@@ -123,7 +125,7 @@ Rules:
 List sessions for the current chat repo:
 
 ```bash
-humming sessions list --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent claude --json
+humming sessions list --agent claude --json
 ```
 
 List sessions for an explicitly requested repo (query only, not bind):
@@ -135,7 +137,7 @@ humming sessions list --agent codex --cwd /absolute/path/to/repo --json
 Bind the current topic to the selected session in the current chat repo:
 
 ```bash
-humming sessions bind --chat-id "$HUMMING_CHAT_ID" --thread-id "$HUMMING_THREAD_ID" --agent claude --session-id "<selected-session-id>"
+humming sessions bind --agent claude --session-id "<selected-session-id>"
 ```
 
 On success humming sends a notice card naming the bound session title and showing the change details, including Agent / Mode / Model / Permission / Config controls where known. The next user message in this topic resumes that session.

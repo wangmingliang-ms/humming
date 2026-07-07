@@ -5,6 +5,7 @@ export type AgentStatus =
   | "received"
   | "preparing"
   | "thinking"
+  | "waiting"
   | "calling_tool"
   | "responding"
   | "sealed"

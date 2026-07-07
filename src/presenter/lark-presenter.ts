@@ -19,6 +19,7 @@ const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> 
   received: { content: "📩 消息已收到", template: "wathet" },
   preparing: { content: "🔄 准备中...", template: "blue" },
   thinking: { content: "💭 思考中...", template: "wathet" },
+  waiting: { content: "⏳ 等待中...", template: "wathet" },
   calling_tool: { content: "🔄 处理中...", template: "blue" },
   responding: { content: "✍️ 回复中...", template: "blue" },
   sealed: { content: "✅ 已结束", template: "blue" },
@@ -298,6 +299,8 @@ function emptyStateMessage(status: AgentStatus): string {
       return "_正在启动或连接 Agent，请稍候…_";
     case "thinking":
       return "_消息已转发给 Agent，正在等待回复…_";
+    case "waiting":
+      return "_Agent 仍在处理，暂时没有新的可展示内容…_";
     case "calling_tool":
       return "_Agent 正在处理…_";
     case "responding":

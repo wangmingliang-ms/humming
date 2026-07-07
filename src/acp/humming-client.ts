@@ -931,7 +931,7 @@ export class HummingClient implements acp.Client {
     this.timeline = [];
     this.cardId = null;
     this.cardCreating = null;
-    this.status = "thinking";
+    this.status = "waiting";
     this.idleStatusCardPending = true;
     await this.renderCard({ cancellable: true });
     if (this.cardId === null) this.idleStatusCardPending = false;
@@ -949,7 +949,7 @@ export class HummingClient implements acp.Client {
     this.timeline = [];
     this.cardId = null;
     this.cardCreating = null;
-    this.status = "thinking";
+    this.status = "waiting";
     this.idleStatusCardPending = true;
     await this.renderCard({ cancellable: true });
     if (this.cardId === null) this.idleStatusCardPending = false;

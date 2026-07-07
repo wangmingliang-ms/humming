@@ -165,7 +165,7 @@ describe("HummingClient card-v2 conversation rendering", () => {
       const sendsBeforeSecondSegment = ops.filter((op) => op.kind === "sendUnified");
       expect(sendsBeforeSecondSegment).toHaveLength(2);
       expect(sendsBeforeSecondSegment[1]?.state).toMatchObject({
-        status: "thinking",
+        status: "waiting",
         entries: [],
         cancellable: true,
       });
@@ -558,7 +558,7 @@ describe("HummingClient card-v2 conversation rendering", () => {
     );
     expect(sendsAfterApproval).toHaveLength(2);
     expect(sendsAfterApproval[1]?.state).toMatchObject({
-      status: "thinking",
+      status: "waiting",
       entries: [],
       cancellable: true,
     });
@@ -632,7 +632,7 @@ describe("HummingClient card-v2 conversation rendering", () => {
     const statusSlot = ops.findLast(
       (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
     );
-    expect(statusSlot?.state).toMatchObject({ status: "thinking", entries: [] });
+    expect(statusSlot?.state).toMatchObject({ status: "waiting", entries: [] });
 
     await client.finalize("complete");
 

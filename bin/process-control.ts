@@ -48,6 +48,8 @@ const SIGKILL_TIMEOUT_MS = 2_000;
 const EXIT_POLL_INTERVAL_MS = 150;
 /** Poll cadence for `logs --follow`. */
 const LOG_POLL_INTERVAL_MS = 500;
+/** Keep git revision probes short; lifecycle notices must never hang startup. */
+const GIT_REVISION_TIMEOUT_MS = 2_000;
 
 /**
  * A user-facing process-management failure (already running, spawn failed,
@@ -219,6 +221,11 @@ export interface LaunchDescriptor {
   readonly savedAt: string;
 }
 
+export interface CodeRevision {
+  readonly commit: string;
+  readonly message: string;
+}
+
 /**
  * Persist the resolved launch argv to `<home>/bridge.launch.json`. Overwrites
  * any previous descriptor; the file always reflects the most recent launch.
@@ -306,6 +313,18 @@ export function runNpm(args: readonly string[], cwd: string): void {
 }
 
 /**
+ * Read the current git revision for a code checkout. Returns `undefined` when
+ * the path is not inside a git worktree, git is unavailable, or a probe times
+ * out. Lifecycle notices are best-effort and must not block bridge startup.
+ */
+export function readCodeRevision(cwd: string): CodeRevision | undefined {
+  const commit = runGitText(cwd, ["rev-parse", "--short=12", "HEAD"]);
+  const message = runGitText(cwd, ["log", "-1", "--pretty=%s"]);
+  if (commit === undefined || message === undefined) return undefined;
+  return { commit, message };
+}
+
+/**
  * Spawn an external build tool with inherited stdio so the user sees live
  * progress. On Windows the tool is resolved through the shell so `npm` finds
  * `npm.cmd`; the args are fixed literals (no untrusted input), so this is safe.
@@ -334,6 +353,16 @@ function runTool(command: string, args: readonly string[], cwd: string): void {
         : `exit ${result.status}`;
     throw new ProcessControlError(`\`${command} ${args.join(" ")}\` failed (${reason})`);
   }
+}
+
+function runGitText(cwd: string, args: readonly string[]): string | undefined {
+  const result = spawnSync("git", ["-C", cwd, ...args], {
+    encoding: "utf-8",
+    timeout: GIT_REVISION_TIMEOUT_MS,
+  });
+  if (result.error !== undefined || result.status !== 0) return undefined;
+  const trimmed = (result.stdout ?? "").trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 // ---------- actions -------------------------------------------------------

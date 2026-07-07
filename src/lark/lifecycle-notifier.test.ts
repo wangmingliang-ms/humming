@@ -26,6 +26,11 @@ function summary(card: object): string | undefined {
   return rec.config?.summary?.content;
 }
 
+function bodyMarkdown(card: object): string | undefined {
+  const rec = card as { body?: { elements?: readonly [{ content?: string }] } };
+  return rec.body?.elements?.[0]?.content;
+}
+
 describe("buildLifecycleNoticeCard", () => {
   it.each([
     ["started", "✅ Humming 已启动"],
@@ -41,6 +46,27 @@ describe("buildLifecycleNoticeCard", () => {
     expect(headerTitle(card)).toBe(title);
     expect(summary(card)).toBe(title);
     expect(JSON.stringify(card)).toContain("123");
+  });
+
+  it("includes the current code revision on restarted notices", () => {
+    const card = buildLifecycleNoticeCard("restarted", {
+      pid: 123,
+      now: new Date("2026-07-05T10:00:00Z"),
+      codeRevision: { commit: "abc1234", message: "feat: show revision" },
+    });
+
+    expect(bodyMarkdown(card)).toContain("• Commit：`abc1234`");
+    expect(bodyMarkdown(card)).toContain("• Message：feat: show revision");
+  });
+
+  it("does not include code revision on non-restarted notices", () => {
+    const card = buildLifecycleNoticeCard("started", {
+      pid: 123,
+      now: new Date("2026-07-05T10:00:00Z"),
+      codeRevision: { commit: "abc1234", message: "feat: show revision" },
+    });
+
+    expect(bodyMarkdown(card)).not.toContain("Commit");
   });
 });
 

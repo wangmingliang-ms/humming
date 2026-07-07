@@ -13,6 +13,7 @@ import {
   clearBridgeRestartMarker,
   isAlive,
   managedCheckoutDir,
+  readCodeRevision,
   markBridgeRestart,
   parseProcessElapsedSeconds,
   persistLaunchArgv,
@@ -119,6 +120,19 @@ describe("restart marker helpers", () => {
 
     clearBridgeRestartMarker(dir);
     expect(fs.existsSync(marker)).toBe(false);
+  });
+});
+
+describe("readCodeRevision", () => {
+  it("reads the current commit and commit message from a git checkout", () => {
+    expect(readCodeRevision(process.cwd())).toMatchObject({
+      commit: expect.stringMatching(/^[0-9a-f]{7,12}$/),
+      message: expect.any(String),
+    });
+  });
+
+  it("returns undefined for a non-git directory", () => {
+    expect(readCodeRevision(dir)).toBeUndefined();
   });
 });
 

@@ -79,6 +79,7 @@ import {
   isBridgeRunning,
   runGit,
   runNpm,
+  readCodeRevision,
   ProcessControlError,
   DEFAULT_LOG_LINES,
 } from "./process-control.js";
@@ -2495,6 +2496,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     chatIds: cfg.lifecycleNotifyChatIds,
     logger: rootLogger,
   });
+  const codeRevision = readCodeRevision(path.dirname(fileURLToPath(import.meta.url)));
 
   const bridge = new LarkBridge({
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },
@@ -2520,6 +2522,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     lifecycle: {
       notificationChatIds: cfg.lifecycleNotifyChatIds,
       restartMarkerPath: bridgeRestartMarkerPath(homeDir),
+      ...(codeRevision !== undefined ? { codeRevision } : {}),
     },
     sessionStore,
     bindingStore,

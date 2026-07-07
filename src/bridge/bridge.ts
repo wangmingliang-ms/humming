@@ -4,7 +4,11 @@ import path from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
 import { LarkHttpClient } from "../lark/lark-http.js";
-import { sendLifecycleNotice, type LifecycleNoticeKind } from "../lark/lifecycle-notifier.js";
+import {
+  sendLifecycleNotice,
+  type LifecycleCodeRevision,
+  type LifecycleNoticeKind,
+} from "../lark/lifecycle-notifier.js";
 import { LarkWsConnection } from "../lark/lark-ws.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import { installHomeTemplates } from "../home-templates.js";
@@ -254,6 +258,8 @@ export interface LarkBridgeLifecycleOptions {
   notificationChatIds?: readonly string[];
   /** File created by `humming restart`; when present, stop/start render restart wording. */
   restartMarkerPath?: string | null;
+  /** Git revision of the bridge code currently running; shown on restarted notices. */
+  codeRevision?: LifecycleCodeRevision;
   /** Per-chat send timeout for best-effort lifecycle notices. */
   noticeTimeoutMs?: number;
 }
@@ -391,6 +397,7 @@ export class LarkBridge {
   private readonly lark: LarkBridgeLarkOptions;
   private readonly lifecycleNotificationChatIds: readonly string[];
   private readonly restartMarkerPath: string | null;
+  private readonly lifecycleCodeRevision: LifecycleCodeRevision | undefined;
   private readonly lifecycleNoticeTimeoutMs: number | undefined;
 
   private readonly chats = new Map<string, ChatRuntime>();
@@ -440,6 +447,7 @@ export class LarkBridge {
     this.controlSocketPath = opts.controlSocketPath ?? null;
     this.lifecycleNotificationChatIds = opts.lifecycle?.notificationChatIds ?? [];
     this.restartMarkerPath = opts.lifecycle?.restartMarkerPath ?? null;
+    this.lifecycleCodeRevision = opts.lifecycle?.codeRevision;
     this.lifecycleNoticeTimeoutMs = opts.lifecycle?.noticeTimeoutMs;
   }
 
@@ -517,6 +525,9 @@ export class LarkBridge {
       chatIds: this.lifecycleNotificationChatIds,
       kind,
       logger: this.logger,
+      ...(this.lifecycleCodeRevision !== undefined
+        ? { codeRevision: this.lifecycleCodeRevision }
+        : {}),
       ...(this.lifecycleNoticeTimeoutMs !== undefined
         ? { timeoutMs: this.lifecycleNoticeTimeoutMs }
         : {}),

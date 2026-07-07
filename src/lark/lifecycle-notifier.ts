@@ -23,6 +23,11 @@ type LifecycleNoticeSpec = {
   readonly template: HeaderTemplate;
 };
 
+export type LifecycleCodeRevision = {
+  readonly commit: string;
+  readonly message: string;
+};
+
 const LIFECYCLE_NOTICE_SPECS: Readonly<Record<LifecycleNoticeKind, LifecycleNoticeSpec>> = {
   started: {
     title: "✅ Humming 已启动",
@@ -62,6 +67,7 @@ export class LifecycleNoticeTimeoutError extends Error {
 type LifecycleNoticeCardOptions = {
   readonly pid?: number;
   readonly now?: Date;
+  readonly codeRevision?: LifecycleCodeRevision;
 };
 
 export type LifecycleNoticeOptions = LifecycleNoticeCardOptions & {
@@ -79,7 +85,13 @@ export function buildLifecycleNoticeCard(
   const spec = LIFECYCLE_NOTICE_SPECS[kind];
   const pid = opts.pid ?? process.pid;
   const now = opts.now ?? new Date();
-  const body = `${spec.body}\n\n• PID：${pid}\n• 时间：${formatLifecycleTime(now)}`;
+  const body = [
+    spec.body,
+    "",
+    ...formatCodeRevision(kind, opts.codeRevision),
+    `• PID：${pid}`,
+    `• 时间：${formatLifecycleTime(now)}`,
+  ].join("\n");
 
   return {
     schema: CARD_SCHEMA_V2,
@@ -106,7 +118,11 @@ export async function sendLifecycleNotice(opts: LifecycleNoticeOptions): Promise
   }
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
-  const card = buildLifecycleNoticeCard(opts.kind, { pid: opts.pid, now: opts.now });
+  const card = buildLifecycleNoticeCard(opts.kind, {
+    pid: opts.pid,
+    now: opts.now,
+    codeRevision: opts.codeRevision,
+  });
   const results = await Promise.allSettled(
     chatIds.map((chatId) => withTimeout(opts.http.sendCardToChat(chatId, card), chatId, timeoutMs)),
   );
@@ -124,6 +140,18 @@ export async function sendLifecycleNotice(opts: LifecycleNoticeOptions): Promise
 
 function formatLifecycleTime(date: Date): string {
   return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatCodeRevision(
+  kind: LifecycleNoticeKind,
+  revision: LifecycleCodeRevision | undefined,
+): readonly string[] {
+  if (kind !== "restarted" || revision === undefined) return [];
+  const message = revision.message.trim();
+  return [
+    `• Commit：\`${revision.commit}\``,
+    ...(message.length > 0 ? [`• Message：${message}`] : []),
+  ];
 }
 
 function dedupeChatIds(chatIds: readonly string[]): readonly string[] {

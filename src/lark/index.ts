@@ -34,4 +34,8 @@ export {
   buildLifecycleNoticeCard,
   sendLifecycleNotice,
 } from "./lifecycle-notifier.js";
-export type { LifecycleNoticeKind, LifecycleNoticeOptions } from "./lifecycle-notifier.js";
+export type {
+  LifecycleCodeRevision,
+  LifecycleNoticeKind,
+  LifecycleNoticeOptions,
+} from "./lifecycle-notifier.js";

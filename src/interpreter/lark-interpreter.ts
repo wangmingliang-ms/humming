@@ -161,14 +161,19 @@ export type ProfilePermissionMode = "alwaysAsk" | "alwaysAllow" | "alwaysDeny";
 export type LarkCommand =
   | { readonly kind: "cancel" }
   | { readonly kind: "new" }
+  | { readonly kind: "help" }
   | { readonly kind: "bind"; readonly cwd: string; readonly agent: string | null }
   | { readonly kind: "bind-usage" }
   | { readonly kind: "unbind" }
   | { readonly kind: "where" }
   | { readonly kind: "set-agent"; readonly agent: string }
+  | { readonly kind: "list-agents" }
   | { readonly kind: "set-model"; readonly model: string | "auto" }
+  | { readonly kind: "list-models" }
   | { readonly kind: "set-mode"; readonly mode: string }
+  | { readonly kind: "list-modes" }
   | { readonly kind: "set-permission"; readonly permissionMode: ProfilePermissionMode }
+  | { readonly kind: "list-permissions" }
   | { readonly kind: "profile" }
   | { readonly kind: "profile-command-usage"; readonly command: ProfileCommandName };
 
@@ -209,6 +214,7 @@ const MODEL_COMMAND_TOKEN = "/model";
 const MODE_COMMAND_TOKEN = "/mode";
 const PERMISSION_COMMAND_TOKEN = "/permission";
 const PROFILE_COMMAND_TOKEN = "/profile";
+const HELP_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/help", "/commands"]);
 
 /**
  * Interpret a Lark inbound message event.
@@ -296,6 +302,7 @@ function normalizeSegments(segments: PromptSegment[]): PromptSegment[] {
 function detectCommand(text: string): LarkCommand | null {
   if (CANCEL_COMMAND_TOKENS.has(text)) return { kind: "cancel" };
   if (NEW_SESSION_COMMAND_TOKENS.has(text)) return { kind: "new" };
+  if (HELP_COMMAND_TOKENS.has(text)) return { kind: "help" };
   if (UNBIND_COMMAND_TOKENS.has(text)) return { kind: "unbind" };
   if (WHERE_COMMAND_TOKENS.has(text)) return { kind: "where" };
   const profileCommand = detectProfileCommand(text);
@@ -305,19 +312,26 @@ function detectCommand(text: string): LarkCommand | null {
 
 function detectProfileCommand(text: string): LarkCommand | null {
   const agent = detectSingleArgCommand(text, AGENT_COMMAND_TOKEN, "agent");
-  if (agent)
-    return agent.kind === "arg" ? { kind: "set-agent", agent: agent.value } : agent.command;
+  if (agent) {
+    if (agent.kind === "usage") return { kind: "list-agents" };
+    return { kind: "set-agent", agent: agent.value };
+  }
 
   const model = detectSingleArgCommand(text, MODEL_COMMAND_TOKEN, "model");
-  if (model)
-    return model.kind === "arg" ? { kind: "set-model", model: model.value } : model.command;
+  if (model) {
+    if (model.kind === "usage") return { kind: "list-models" };
+    return { kind: "set-model", model: model.value };
+  }
 
   const mode = detectSingleArgCommand(text, MODE_COMMAND_TOKEN, "mode");
-  if (mode) return mode.kind === "arg" ? { kind: "set-mode", mode: mode.value } : mode.command;
+  if (mode) {
+    if (mode.kind === "usage") return { kind: "list-modes" };
+    return { kind: "set-mode", mode: mode.value };
+  }
 
   const permission = detectSingleArgCommand(text, PERMISSION_COMMAND_TOKEN, "permission");
   if (permission) {
-    if (permission.kind === "usage") return permission.command;
+    if (permission.kind === "usage") return { kind: "list-permissions" };
     if (isProfilePermissionMode(permission.value)) {
       return { kind: "set-permission", permissionMode: permission.value };
     }

@@ -19,7 +19,11 @@ import {
 import { ChatRuntime, type PendingMessage } from "./chat-runtime.js";
 import { hydratePrompt } from "./prompt-hydrator.js";
 import type { PermissionMode } from "../acp/humming-client.js";
-import { AgentAuthError, probeAgentSessionCapabilities } from "../acp/agent-process.js";
+import {
+  AgentAuthError,
+  probeAgentSessionCapabilities,
+  type ProbeAgentSessionCapabilitiesResult,
+} from "../acp/agent-process.js";
 import { SessionAlreadyBoundError } from "../session-store/file-session-store.js";
 import type { AgentStatus, NoticeCardSpec } from "../presenter/presenter.js";
 import type {
@@ -182,9 +186,17 @@ export interface ResolvedAgentInvocation {
  */
 export type AgentResolver = (selection: string) => ResolvedAgentInvocation;
 
+export interface AgentListItem {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
 export interface LarkBridgeAgentOptions {
   /** Maps a selection string → concrete invocation. See {@link AgentResolver}. */
   resolver: AgentResolver;
+  /** Agent presets shown by `/agent` with no argument. */
+  availableAgents?: readonly AgentListItem[];
   /**
    * Pre-resolved agent used as the cold-start fallback when a chat/repo has no
    * session profile to inherit. Chat bindings are repo-only; Agent belongs to
@@ -359,6 +371,7 @@ export class LarkBridge {
   private readonly sessionStore: SessionStore;
   private readonly bindingStore: BindingStore;
   private readonly resolver: AgentResolver;
+  private readonly availableAgents: readonly AgentListItem[];
   private readonly defaultAgent: ResolvedAgentInvocation | null;
   private readonly defaultCwd: string | null;
   private readonly display: DisplayOptions;
@@ -400,6 +413,7 @@ export class LarkBridge {
       opts.presenter ?? new LarkCardPresenter({ http: this.http, logger: this.logger });
 
     this.resolver = opts.agent.resolver;
+    this.availableAgents = opts.agent.availableAgents ?? [];
     this.defaultAgent = opts.agent.defaultAgent ?? null;
     this.defaultCwd = opts.agent.defaultCwd ?? null;
     this.display = {
@@ -804,6 +818,9 @@ export class LarkBridge {
         await this.presenter.replyNoticeCard(messageId, COMMAND_NOTICES.new);
         return;
       }
+      case "help":
+        await this.presenter.replyNoticeCard(messageId, buildHelpNotice());
+        return;
       case "bind":
         await this.handleBind(command.cwd, command.agent, chatId, messageId);
         return;
@@ -819,6 +836,9 @@ export class LarkBridge {
       case "set-agent":
         await this.handleSetAgentCommand(command.agent, chatId, threadId, messageId);
         return;
+      case "list-agents":
+        await this.presenter.replyNoticeCard(messageId, buildAgentListNotice(this.availableAgents));
+        return;
       case "set-model":
         await this.handleSetControlsCommand(
           modelCommandToPatch(command.model),
@@ -827,8 +847,14 @@ export class LarkBridge {
           messageId,
         );
         return;
+      case "list-models":
+        await this.handleListModelsCommand(chatId, threadId, messageId);
+        return;
       case "set-mode":
         await this.handleSetControlsCommand({ modeId: command.mode }, chatId, threadId, messageId);
+        return;
+      case "list-modes":
+        await this.handleListModesCommand(chatId, threadId, messageId);
         return;
       case "set-permission":
         await this.handleSetControlsCommand(
@@ -836,6 +862,12 @@ export class LarkBridge {
           chatId,
           threadId,
           messageId,
+        );
+        return;
+      case "list-permissions":
+        await this.presenter.replyNoticeCard(
+          messageId,
+          buildPermissionListNotice(this.display.permissionMode),
         );
         return;
       case "profile":
@@ -941,6 +973,71 @@ export class LarkBridge {
     messageId: string,
   ): Promise<void> {
     await this.controlSetControls(chatId, threadId, controls, messageId);
+  }
+
+  private async handleListModelsCommand(
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<void> {
+    const snapshot = await this.resolveSessionCapabilitiesForListing(chatId, threadId, messageId);
+    if (!snapshot) return;
+    await this.presenter.replyNoticeCard(messageId, buildModelListNotice(snapshot));
+  }
+
+  private async handleListModesCommand(
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<void> {
+    const snapshot = await this.resolveSessionCapabilitiesForListing(chatId, threadId, messageId);
+    if (!snapshot) return;
+    await this.presenter.replyNoticeCard(messageId, buildModeListNotice(snapshot));
+  }
+
+  private async resolveSessionCapabilitiesForListing(
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<SessionCapabilitiesSnapshot | null> {
+    const runtime = this.chats.get(runtimeKey(chatId, threadId));
+    if (runtime) return runtime.capabilities();
+
+    const binding = await this.resolveBinding(chatId);
+    if (!binding) {
+      await this.presenter.replyNoticeCard(
+        messageId,
+        buildProfileCommandFailureNotice(
+          "⚠️ 无法查询 capabilities",
+          "当前 chat 没有可用 repo。请先 /bind <路径>，或配置默认 / reception cwd。",
+        ),
+      );
+      return null;
+    }
+    try {
+      const result = await probeAgentSessionCapabilities({
+        command: binding.command,
+        args: [...binding.args],
+        cwd: binding.cwd,
+        ...(binding.env ? { env: { ...binding.env } } : {}),
+        logger: this.logger,
+      });
+      return buildProbeCapabilitiesSnapshot(chatId, threadId, binding, result);
+    } catch (err) {
+      await this.controlAgentProbeFailed(
+        chatId,
+        threadId,
+        {
+          label: binding.label,
+          command: binding.command,
+          args: [...binding.args],
+          cwd: binding.cwd,
+        },
+        formatBootstrapError(err),
+        messageId,
+      );
+      return null;
+    }
   }
 
   private async handleSetAgentCommand(
@@ -1990,6 +2087,142 @@ function buildSessionBindRejectedNotice(record: SessionRecord): NoticeCardSpec {
     title: "⚠️ Session 已被绑定",
     body: lines.join("\n"),
     template: "orange",
+  };
+}
+
+function buildHelpNotice(): NoticeCardSpec {
+  return {
+    title: "ℹ️ Humming commands",
+    body: [
+      "**Session profile**",
+      "• /agent — 列出可用 Agent",
+      "• /agent <agent> — 切换当前 topic 的 Agent；会先 probe，失败不改状态",
+      "• /model — 列出当前 Agent 可用 Models",
+      "• /model <model-id> — 设置当前 topic 的 Model",
+      "• /model auto — 清除显式 model override，使用 Agent 默认/自动模型",
+      "• /mode — 列出当前 Agent 可用 Modes",
+      "• /mode <mode-id> — 设置当前 topic 的 Mode",
+      "• /permission — 列出 Humming approval 策略",
+      "• /permission <alwaysAsk|alwaysAllow|alwaysDeny> — 设置 Humming approval 策略",
+      "• /profile — 查看当前 topic profile",
+      "",
+      "**Repo / session**",
+      "• /bind <路径> — 绑定当前 chat 到 repo",
+      "• /where — 查看当前 repo binding",
+      "• /unbind — 解除 repo binding",
+      "• /new — 重置当前 topic session",
+      "• /cancel — 中断当前任务",
+      "",
+      "裸 /agent /model /mode /permission 只查询可选项，不会修改状态。",
+    ].join("\n"),
+    template: "blue",
+  };
+}
+
+function buildAgentListNotice(agents: readonly AgentListItem[]): NoticeCardSpec {
+  const lines =
+    agents.length > 0
+      ? agents.map(
+          (agent) =>
+            `• ${agent.id} — ${agent.label}${agent.description ? `：${agent.description}` : ""}`,
+        )
+      : [
+          "• 当前 bridge 没有可展示的 agent registry。仍可使用 /agent <raw-command> 切换到 raw ACP command。",
+        ];
+  return {
+    title: "🤖 可用 Agents",
+    body: [
+      "使用 `/agent <agent>` 切换当前 topic 的 Agent。切换前会先 probe，失败不改状态。",
+      "",
+      ...lines,
+    ].join("\n"),
+    template: "blue",
+  };
+}
+
+function buildModelListNotice(snapshot: SessionCapabilitiesSnapshot): NoticeCardSpec {
+  const models = snapshot.models?.availableModels ?? [];
+  const current = snapshot.models?.currentModelId ?? "auto/default";
+  const lines =
+    models.length > 0
+      ? models.map(
+          (model) =>
+            `• ${model.modelId} — ${model.name}${model.modelId === snapshot.models?.currentModelId ? "（当前）" : ""}`,
+        )
+      : ["• 当前 Agent 没有暴露 ACP model controls。"];
+  return {
+    title: "🧠 可用 Models",
+    body: [
+      `Agent：${displaySnapshotAgent(snapshot)}`,
+      `Repo：${snapshot.agent.cwd}`,
+      `当前 Model：${current}`,
+      "",
+      ...lines,
+      "",
+      "使用 `/model <model-id>` 设置；使用 `/model auto` 清除显式 model override。",
+    ].join("\n"),
+    template: "blue",
+  };
+}
+
+function buildModeListNotice(snapshot: SessionCapabilitiesSnapshot): NoticeCardSpec {
+  const modes = snapshot.modes?.availableModes ?? [];
+  const current = snapshot.modes?.currentModeId ?? "—";
+  const lines =
+    modes.length > 0
+      ? modes.map(
+          (mode) =>
+            `• ${mode.id} — ${mode.name}${mode.description ? `：${mode.description}` : ""}${mode.id === snapshot.modes?.currentModeId ? "（当前）" : ""}`,
+        )
+      : ["• 当前 Agent 没有暴露 ACP mode controls。"];
+  return {
+    title: "🧭 可用 Modes",
+    body: [
+      `Agent：${displaySnapshotAgent(snapshot)}`,
+      `Repo：${snapshot.agent.cwd}`,
+      `当前 Mode：${current}`,
+      "",
+      ...lines,
+      "",
+      "使用 `/mode <mode-id>` 设置。",
+    ].join("\n"),
+    template: "blue",
+  };
+}
+
+function buildPermissionListNotice(current: PermissionMode): NoticeCardSpec {
+  return {
+    title: "🛂 可用 Permission modes",
+    body: [
+      `当前默认策略：${displayControlPermission({ bridgePermissionMode: current })}`,
+      "",
+      "• alwaysAsk — 每次需要 approval 时询问",
+      "• alwaysAllow — 自动批准 Humming permission requests",
+      "• alwaysDeny — 自动拒绝 Humming permission requests",
+      "",
+      "使用 `/permission <mode>` 设置当前 topic 的 bridge-side approval 策略。",
+    ].join("\n"),
+    template: "blue",
+  };
+}
+
+function buildProbeCapabilitiesSnapshot(
+  chatId: string,
+  threadId: string | null,
+  binding: EffectiveBinding,
+  result: ProbeAgentSessionCapabilitiesResult,
+): SessionCapabilitiesSnapshot {
+  return {
+    session: { chatId, threadId, sessionId: result.sessionId },
+    agent: {
+      label: binding.label,
+      command: binding.command,
+      args: binding.args,
+      cwd: binding.cwd,
+    },
+    ...result.capabilities,
+    bridgePermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
+    bridgePermissionMode: "alwaysAsk",
   };
 }
 

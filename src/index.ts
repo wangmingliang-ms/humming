@@ -17,6 +17,7 @@ export type {
   LarkBridgeSessionOptions,
   LarkBridgeLifecycleOptions,
   AgentResolver,
+  AgentListItem,
   ResolvedAgentInvocation,
 } from "./bridge/bridge.js";
 

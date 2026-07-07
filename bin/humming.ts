@@ -2311,6 +2311,20 @@ function makeAgentResolver(registry: Registry): AgentResolver {
   };
 }
 
+function registryToAgentList(registry: Registry): Array<{
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+}> {
+  return [...registry.entries()]
+    .map(([id, entry]) => ({
+      id,
+      label: entry.preset.label,
+      ...(entry.preset.description !== undefined ? { description: entry.preset.description } : {}),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /**
  * Resolve the default agent invocation — the agent used for chats with no
  * explicit `/bind`, and the fallback when `/bind <path>` names no agent.
@@ -2486,6 +2500,7 @@ async function runProxy(args: ParsedArgs): Promise<void> {
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },
     agent: {
       resolver,
+      availableAgents: registryToAgentList(registry),
       defaultAgent,
       defaultCwd: cfg.defaultCwd,
       showThoughts: cfg.showThoughts,

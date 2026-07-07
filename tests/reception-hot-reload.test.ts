@@ -159,7 +159,16 @@ let bridge: LarkBridge;
 function makeBridge(opts?: { unboundCwd?: string | null }): LarkBridge {
   return new LarkBridge({
     lark: { appId: "cli_test", appSecret: "secret_test" },
-    agent: { resolver, defaultAgent: CLAUDE, defaultCwd: null, permissionMode: "alwaysAllow" },
+    agent: {
+      resolver,
+      availableAgents: [
+        { id: "claude", label: "Claude Code", description: "Claude test preset" },
+        { id: "codex", label: "Codex CLI", description: "Codex test preset" },
+      ],
+      defaultAgent: CLAUDE,
+      defaultCwd: null,
+      permissionMode: "alwaysAllow",
+    },
     sessionStore,
     bindingStore,
     presenter,
@@ -181,7 +190,22 @@ beforeEach(async () => {
   probeAgentSessionCapabilitiesMock.mockReset();
   probeAgentSessionCapabilitiesMock.mockResolvedValue({
     sessionId: "probe_session",
-    capabilities: {},
+    capabilities: {
+      models: {
+        currentModelId: "model-old",
+        availableModels: [
+          { modelId: "model-old", name: "Old" },
+          { modelId: "model-new", name: "New" },
+        ],
+      },
+      modes: {
+        currentModeId: "ask",
+        availableModes: [
+          { id: "ask", name: "Ask" },
+          { id: "agent", name: "Agent", description: "Autonomous mode" },
+        ],
+      },
+    },
   });
   bindingStore = new SettingsBindingStore(settingsPath);
   sessionStore = new FileSessionStore(home);
@@ -404,6 +428,110 @@ describe("hot-reload of bindings", () => {
 });
 
 describe("compact slash session profile commands", () => {
+  it("lists all Humming commands via /help", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+
+    await b.routeMessage(
+      textEvent("/help", "oc_x", "th_topic", "om_help"),
+      "ou_user",
+      "om_help",
+      "oc_x",
+      "th_topic",
+    );
+
+    const notice = presenter.notices.at(-1);
+    expect(notice).toMatchObject({ title: "ℹ️ Humming commands", template: "blue" });
+    expect(notice?.body).toContain("/agent <agent>");
+    expect(notice?.body).toContain("/model auto");
+    expect(notice?.body).toContain("/mode <mode-id>");
+    expect(notice?.body).toContain("/permission <alwaysAsk|alwaysAllow|alwaysDeny>");
+    expect(notice?.body).toContain("/bind <路径>");
+    expect(notice?.body).toContain("/cancel");
+  });
+
+  it("lists available Agents via bare /agent", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+
+    await b.routeMessage(
+      textEvent("/agent", "oc_x", "th_topic", "om_agent_list"),
+      "ou_user",
+      "om_agent_list",
+      "oc_x",
+      "th_topic",
+    );
+
+    const notice = presenter.notices.at(-1);
+    expect(notice).toMatchObject({ title: "🤖 可用 Agents", template: "blue" });
+    expect(notice?.body).toContain("claude — Claude Code");
+    expect(notice?.body).toContain("codex — Codex CLI");
+    expect(notice?.body).toContain("/agent <agent>");
+  });
+
+  it("lists available Models via bare /model by probing the effective Agent", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+
+    await b.routeMessage(
+      textEvent("/model", "oc_x", "th_topic", "om_model_list"),
+      "ou_user",
+      "om_model_list",
+      "oc_x",
+      "th_topic",
+    );
+
+    expect(probeAgentSessionCapabilitiesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ command: CLAUDE.command, args: CLAUDE.args, cwd: repoA }),
+    );
+    const notice = presenter.notices.at(-1);
+    expect(notice).toMatchObject({ title: "🧠 可用 Models", template: "blue" });
+    expect(notice?.body).toContain("model-old — Old（当前）");
+    expect(notice?.body).toContain("model-new — New");
+    expect(notice?.body).toContain("/model auto");
+  });
+
+  it("lists available Modes via bare /mode by probing the effective Agent", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+
+    await b.routeMessage(
+      textEvent("/mode", "oc_x", "th_topic", "om_mode_list"),
+      "ou_user",
+      "om_mode_list",
+      "oc_x",
+      "th_topic",
+    );
+
+    const notice = presenter.notices.at(-1);
+    expect(notice).toMatchObject({ title: "🧭 可用 Modes", template: "blue" });
+    expect(notice?.body).toContain("ask — Ask（当前）");
+    expect(notice?.body).toContain("agent — Agent：Autonomous mode");
+    expect(notice?.body).toContain("/mode <mode-id>");
+  });
+
+  it("lists bridge permission modes via bare /permission", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+
+    await b.routeMessage(
+      textEvent("/permission", "oc_x", "th_topic", "om_perm_list"),
+      "ou_user",
+      "om_perm_list",
+      "oc_x",
+      "th_topic",
+    );
+
+    const notice = presenter.notices.at(-1);
+    expect(notice).toMatchObject({ title: "🛂 可用 Permission modes", template: "blue" });
+    expect(notice?.body).toContain("alwaysAsk");
+    expect(notice?.body).toContain("alwaysAllow");
+    expect(notice?.body).toContain("alwaysDeny");
+    expect(notice?.body).toContain("/permission <mode>");
+  });
+
   it("handles /model auto through the shared stored setControls path without spawning a runtime", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);

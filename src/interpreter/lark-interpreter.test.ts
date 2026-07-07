@@ -130,24 +130,20 @@ describe("interpretLarkMessage — existing commands still work", () => {
 describe("interpretLarkMessage — compact session profile commands", () => {
   it("parses slash-only session profile commands", () => {
     expect(expectCommand("/agent copilot")).toEqual({ kind: "set-agent", agent: "copilot" });
+    expect(expectCommand("/agent")).toEqual({ kind: "list-agents" });
     expect(expectCommand("/model gpt-5")).toEqual({ kind: "set-model", model: "gpt-5" });
     expect(expectCommand("/model auto")).toEqual({ kind: "set-model", model: "auto" });
+    expect(expectCommand("/model")).toEqual({ kind: "list-models" });
     expect(expectCommand("/mode plan")).toEqual({ kind: "set-mode", mode: "plan" });
+    expect(expectCommand("/mode")).toEqual({ kind: "list-modes" });
     expect(expectCommand("/permission alwaysAllow")).toEqual({
       kind: "set-permission",
       permissionMode: "alwaysAllow",
     });
+    expect(expectCommand("/permission")).toEqual({ kind: "list-permissions" });
     expect(expectCommand("/profile")).toEqual({ kind: "profile" });
-  });
-
-  it("emits usage commands for exact slash tokens with missing arguments", () => {
-    expect(expectCommand("/agent")).toEqual({ kind: "profile-command-usage", command: "agent" });
-    expect(expectCommand("/model")).toEqual({ kind: "profile-command-usage", command: "model" });
-    expect(expectCommand("/mode")).toEqual({ kind: "profile-command-usage", command: "mode" });
-    expect(expectCommand("/permission")).toEqual({
-      kind: "profile-command-usage",
-      command: "permission",
-    });
+    expect(expectCommand("/help")).toEqual({ kind: "help" });
+    expect(expectCommand("/commands")).toEqual({ kind: "help" });
   });
 
   it("rejects non-slash aliases and lookalikes as ordinary prompts", () => {

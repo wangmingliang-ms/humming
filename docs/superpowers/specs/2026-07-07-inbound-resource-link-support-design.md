@@ -58,15 +58,15 @@ vision models genuinely "see" them and they are size-bounded.
 
 ## 3. Scope
 
-| Lark `message_type`            | Today                    | After this feature                     |
-| ------------------------------ | ------------------------ | -------------------------------------- |
-| `image`, post-embedded `img`   | inline `image` block     | **unchanged**                          |
-| `file`                         | text placeholder         | **`resource_link` → local temp file**  |
-| `audio` (voice)                | text placeholder         | **`resource_link` → local temp file**  |
-| `media` (video)                | text placeholder         | **`resource_link` → local temp file**  |
-| `sticker`                      | text placeholder         | **stays text placeholder**             |
-| `share_chat` / `share_user`    | text placeholder         | **stays text placeholder**             |
-| `location` / `merge_forward`   | text placeholder         | **stays text placeholder**             |
+| Lark `message_type`          | Today                | After this feature                    |
+| ---------------------------- | -------------------- | ------------------------------------- |
+| `image`, post-embedded `img` | inline `image` block | **unchanged**                         |
+| `file`                       | text placeholder     | **`resource_link` → local temp file** |
+| `audio` (voice)              | text placeholder     | **`resource_link` → local temp file** |
+| `media` (video)              | text placeholder     | **`resource_link` → local temp file** |
+| `sticker`                    | text placeholder     | **stays text placeholder**            |
+| `share_chat` / `share_user`  | text placeholder     | **stays text placeholder**            |
+| `location` / `merge_forward` | text placeholder     | **stays text placeholder**            |
 
 ### 3.1 Non-goals
 
@@ -292,14 +292,14 @@ restart is a manual step (the agent cannot restart the bridge it runs inside).
 
 ## 7. Risks & mitigations
 
-| Risk                                             | Mitigation                                                                 |
-| ------------------------------------------------ | -------------------------------------------------------------------------- |
-| Agent doesn't understand `resource_link`         | `name`/`description` still convey context; no worse than today's text.     |
-| Agent lacks local file-read tooling              | Degrades to "a link it can't open" — still names the file; acceptable.     |
-| Disk growth from downloaded temp files           | 24 h startup sweep bounds it; namespaced by `messageId`.                    |
-| Large (up to 100 MB) download blocks the turn    | Streamed to disk (not buffered); acceptable, matches Lark's own limit.     |
-| Filename injection / path traversal              | `safeAttachmentName` strips separators and `..`; writes only under inboundDir. |
-| `content-type` header absent                     | `mimeType` is optional on `ResourceLink`; omit it when unknown.            |
+| Risk                                          | Mitigation                                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------------------ |
+| Agent doesn't understand `resource_link`      | `name`/`description` still convey context; no worse than today's text.         |
+| Agent lacks local file-read tooling           | Degrades to "a link it can't open" — still names the file; acceptable.         |
+| Disk growth from downloaded temp files        | 24 h startup sweep bounds it; namespaced by `messageId`.                       |
+| Large (up to 100 MB) download blocks the turn | Streamed to disk (not buffered); acceptable, matches Lark's own limit.         |
+| Filename injection / path traversal           | `safeAttachmentName` strips separators and `..`; writes only under inboundDir. |
+| `content-type` header absent                  | `mimeType` is optional on `ResourceLink`; omit it when unknown.                |
 
 ## 8. Files touched
 

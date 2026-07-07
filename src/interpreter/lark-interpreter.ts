@@ -2,10 +2,10 @@
  * Lark message interpreter — translate a Lark message event into the pure
  * {@link PromptSegment}[] shape the bridge hydrates into an agent prompt.
  *
- * Images (standalone and post-embedded) become `image-ref` segments; the
- * bridge's prompt hydrator downloads them into ACP image blocks. Every other
- * attachment is rendered as a descriptive text segment. This module stays
- * pure — no bytes are downloaded here.
+ * Images (standalone and post-embedded) become `image-ref` segments; files,
+ * audio and video become `resource-ref` segments. The bridge's prompt hydrator
+ * downloads referenced bytes. This module stays pure — no bytes are downloaded
+ * here.
  *
  * Content shapes are based on the Lark Open Platform docs:
  * https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/im-v1/message/events/message_content
@@ -150,7 +150,14 @@ interface LocationPayload {
  */
 export type PromptSegment =
   | { readonly kind: "text"; readonly text: string }
-  | { readonly kind: "image-ref"; readonly messageId: string; readonly imageKey: string };
+  | { readonly kind: "image-ref"; readonly messageId: string; readonly imageKey: string }
+  | {
+      readonly kind: "resource-ref";
+      readonly messageId: string;
+      readonly fileKey: string;
+      readonly name: string;
+      readonly label: string;
+    };
 
 /**
  * High-level commands a user can issue via plain-text messages.
@@ -223,8 +230,9 @@ export interface InterpretOptions {
  * The interpreter stays pure: it emits {@link PromptSegment}s, never
  * downloading bytes. Images (standalone and post-embedded) become `image-ref`
  * segments carrying `message_id` / `image_key`, which the bridge's hydrator
- * downloads into ACP image blocks. Every other attachment (file, audio, video,
- * sticker, …) is rendered as a descriptive text segment.
+ * downloads into ACP image blocks. Files, audio and video become
+ * `resource-ref` segments; unsupported attachments (sticker, share, location,
+ * …) stay descriptive text.
  */
 export function interpretLarkMessage(
   event: Lark.RawMessageEvent,
@@ -250,11 +258,11 @@ function parseNonTextMessage(message: Lark.RawMessageEvent["message"]): PromptSe
     case "image":
       return parseImage(message.content, message.message_id);
     case "file":
-      return parseFile(message.content);
+      return parseFile(message.content, message.message_id);
     case "audio":
-      return parseAudio(message.content);
+      return parseAudio(message.content, message.message_id);
     case "media":
-      return parseMedia(message.content);
+      return parseMedia(message.content, message.message_id);
     case "sticker":
       return parseSticker(message.content);
     case "share_chat":
@@ -277,12 +285,12 @@ function segmentsToPrompt(segments: PromptSegment[]): InterpretedMessage {
 /**
  * Regularise an interleaved segment list: merge adjacent text segments into
  * one and drop empty-text segments. Image-ref segments are passed through
- * untouched, so text/image ordering is preserved.
+ * untouched, so text/attachment ordering is preserved.
  */
 function normalizeSegments(segments: PromptSegment[]): PromptSegment[] {
   const out: PromptSegment[] = [];
   for (const segment of segments) {
-    if (segment.kind === "image-ref") {
+    if (segment.kind === "image-ref" || segment.kind === "resource-ref") {
       out.push(segment);
       continue;
     }
@@ -521,26 +529,45 @@ function parseImage(raw: string, messageId: string): PromptSegment[] {
   return [{ kind: "image-ref", messageId, imageKey: key }];
 }
 
-function parseFile(raw: string): PromptSegment[] {
+function parseFile(raw: string, messageId: string): PromptSegment[] {
   const p = safeParse<FilePayload>(raw);
   const name = p?.file_name ?? "未命名";
-  const key = p?.file_key ?? "unknown";
-  return [{ kind: "text", text: `[文件: ${name} (file_key=${key})]` }];
+  const key = p?.file_key;
+  if (!key) return [{ kind: "text", text: `[文件: ${name} (file_key=unknown)]` }];
+  return [{ kind: "resource-ref", messageId, fileKey: key, name, label: `文件: ${name}` }];
 }
 
-function parseAudio(raw: string): PromptSegment[] {
+function parseAudio(raw: string, messageId: string): PromptSegment[] {
   const p = safeParse<AudioPayload>(raw);
   const dur = p?.duration ? `${p.duration}ms` : "未知时长";
-  const key = p?.file_key ?? "unknown";
-  return [{ kind: "text", text: `[音频: ${dur} (file_key=${key})]` }];
+  const key = p?.file_key;
+  if (!key) return [{ kind: "text", text: `[音频: ${dur} (file_key=unknown)]` }];
+  return [
+    {
+      kind: "resource-ref",
+      messageId,
+      fileKey: key,
+      name: `voice-${shortKey(key)}.opus`,
+      label: `语音 (${dur})`,
+    },
+  ];
 }
 
-function parseMedia(raw: string): PromptSegment[] {
+function parseMedia(raw: string, messageId: string): PromptSegment[] {
   const p = safeParse<MediaPayload>(raw);
-  const name = p?.file_name ?? "未命名";
+  const key = p?.file_key;
+  const name = p?.file_name ?? (key ? `video-${shortKey(key)}.mp4` : "未命名");
   const dur = p?.duration ? `${p.duration}ms` : "未知时长";
-  const key = p?.file_key ?? "unknown";
-  return [{ kind: "text", text: `[视频: ${name} ${dur} (file_key=${key})]` }];
+  if (!key) return [{ kind: "text", text: `[视频: ${name} ${dur} (file_key=unknown)]` }];
+  return [
+    {
+      kind: "resource-ref",
+      messageId,
+      fileKey: key,
+      name,
+      label: `视频: ${name} (${dur})`,
+    },
+  ];
 }
 
 function parseSticker(raw: string): PromptSegment[] {
@@ -567,6 +594,10 @@ function parseLocation(raw: string): PromptSegment[] {
   const lat = p?.latitude ?? "?";
   const lon = p?.longitude ?? "?";
   return [{ kind: "text", text: `[位置: ${name} (${lat}, ${lon})]` }];
+}
+
+function shortKey(key: string): string {
+  return key.replace(/[^A-Za-z0-9_-]/gu, "").slice(0, 12) || "unknown";
 }
 
 // ---- Element renderers ----

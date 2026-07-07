@@ -5,6 +5,7 @@ import {
   MAX_INLINE_IMAGE_BYTES,
   type ImageDownloader,
   type HydrateDeps,
+  type ResourceDownloader,
 } from "./prompt-hydrator.js";
 import type { PromptSegment } from "../interpreter/lark-interpreter.js";
 import type { LarkLogger } from "../logger/logger.js";
@@ -41,8 +42,21 @@ function fakeDownloader(bytes: Buffer, mimeType = "image/png"): ImageDownloader 
   };
 }
 
-function deps(over: Partial<HydrateDeps> & { downloader: ImageDownloader }): HydrateDeps {
-  return { logger: silentLogger, ...over };
+function fakeResourceDownloader(
+  result = { mimeType: "application/pdf", size: 123 },
+): ResourceDownloader {
+  return {
+    downloadMessageResourceToFile: vi.fn(async () => result),
+  };
+}
+
+function deps(
+  over: Partial<HydrateDeps> & {
+    downloader: ImageDownloader;
+    resourceDownloader?: ResourceDownloader;
+  },
+): HydrateDeps {
+  return { logger: silentLogger, resourceDownloader: fakeResourceDownloader(), ...over };
 }
 
 describe("hydratePrompt", () => {
@@ -119,5 +133,100 @@ describe("hydratePrompt", () => {
 
   it("MAX_INLINE_IMAGE_BYTES is 10 MiB", () => {
     expect(MAX_INLINE_IMAGE_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it("downloads a resource-ref into a resource_link block", async () => {
+    const resourceDownloader = fakeResourceDownloader({ mimeType: "application/pdf", size: 456 });
+    const segments: PromptSegment[] = [
+      {
+        kind: "resource-ref",
+        messageId: "om_file",
+        fileKey: "fk",
+        name: "report.pdf",
+        label: "文件: report.pdf",
+      },
+    ];
+    const blocks = await hydratePrompt(
+      segments,
+      deps({
+        downloader: fakeDownloader(Buffer.from("x")),
+        resourceDownloader,
+        inboundDir: "/tmp/humming-inbound",
+      }),
+    );
+    expect(blocks).toEqual([
+      {
+        type: "resource_link",
+        uri: "file:///tmp/humming-inbound/om_file/report.pdf",
+        name: "report.pdf",
+        description: "文件: report.pdf",
+        mimeType: "application/pdf",
+        size: 456,
+      },
+    ]);
+    expect(resourceDownloader.downloadMessageResourceToFile).toHaveBeenCalledWith(
+      "om_file",
+      "fk",
+      "/tmp/humming-inbound/om_file/report.pdf",
+    );
+  });
+
+  it("falls back to a text placeholder and warns when resource download throws", async () => {
+    const { logger, warn } = spyLogger();
+    const resourceDownloader: ResourceDownloader = {
+      downloadMessageResourceToFile: vi.fn(async () => {
+        throw new Error("download failed");
+      }),
+    };
+    const segments: PromptSegment[] = [
+      {
+        kind: "resource-ref",
+        messageId: "om_file",
+        fileKey: "fk",
+        name: "report.pdf",
+        label: "文件: report.pdf",
+      },
+    ];
+    const blocks = await hydratePrompt(
+      segments,
+      deps({ downloader: fakeDownloader(Buffer.from("x")), resourceDownloader, logger }),
+    );
+    expect(blocks).toEqual([
+      { type: "text", text: "[文件: report.pdf — 附件下载失败 (file_key=fk)]" },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps output order across mixed text, image, and resource segments", async () => {
+    const segments: PromptSegment[] = [
+      { kind: "text", text: "before" },
+      { kind: "image-ref", messageId: "om_img", imageKey: "img" },
+      {
+        kind: "resource-ref",
+        messageId: "om_file",
+        fileKey: "fk",
+        name: "report.pdf",
+        label: "文件: report.pdf",
+      },
+    ];
+    const blocks = await hydratePrompt(
+      segments,
+      deps({
+        downloader: fakeDownloader(Buffer.from([1]), "image/png"),
+        resourceDownloader: fakeResourceDownloader({ mimeType: null, size: 9 }),
+        inboundDir: "/tmp/humming-inbound",
+      }),
+    );
+    expect(blocks).toEqual([
+      { type: "text", text: "before" },
+      { type: "image", data: Buffer.from([1]).toString("base64"), mimeType: "image/png" },
+      {
+        type: "resource_link",
+        uri: "file:///tmp/humming-inbound/om_file/report.pdf",
+        name: "report.pdf",
+        description: "文件: report.pdf",
+        size: 9,
+      },
+    ]);
   });
 });

@@ -229,10 +229,66 @@ describe("interpretLarkMessage — post rich text", () => {
   });
 });
 
-describe("interpretLarkMessage — other attachments stay text", () => {
-  it("renders a file message as a text segment (regression)", () => {
+describe("interpretLarkMessage — downloadable attachments", () => {
+  it("emits a resource-ref for file messages", () => {
     const content = JSON.stringify({ file_name: "a.pdf", file_key: "fk" });
-    const event = messageEvent("file", content);
-    expect(expectSegments(event)).toEqual([{ kind: "text", text: "[文件: a.pdf (file_key=fk)]" }]);
+    const event = messageEvent("file", content, "om_file");
+    expect(expectSegments(event)).toEqual([
+      {
+        kind: "resource-ref",
+        messageId: "om_file",
+        fileKey: "fk",
+        name: "a.pdf",
+        label: "文件: a.pdf",
+      },
+    ]);
+  });
+
+  it("emits a resource-ref for audio messages with a synthesized opus name", () => {
+    const content = JSON.stringify({ file_key: "voice_key_abcdef", duration: 1500 });
+    const event = messageEvent("audio", content, "om_audio");
+    expect(expectSegments(event)).toEqual([
+      {
+        kind: "resource-ref",
+        messageId: "om_audio",
+        fileKey: "voice_key_abcdef",
+        name: "voice-voice_key_ab.opus",
+        label: "语音 (1500ms)",
+      },
+    ]);
+  });
+
+  it("emits a resource-ref for media messages", () => {
+    const content = JSON.stringify({
+      file_name: "demo.mp4",
+      file_key: "video_key",
+      duration: 2000,
+    });
+    const event = messageEvent("media", content, "om_media");
+    expect(expectSegments(event)).toEqual([
+      {
+        kind: "resource-ref",
+        messageId: "om_media",
+        fileKey: "video_key",
+        name: "demo.mp4",
+        label: "视频: demo.mp4 (2000ms)",
+      },
+    ]);
+  });
+
+  it("falls back to the old text placeholder when a file message lacks file_key", () => {
+    const content = JSON.stringify({ file_name: "a.pdf" });
+    const event = messageEvent("file", content, "om_file_missing");
+    expect(expectSegments(event)).toEqual([
+      { kind: "text", text: "[文件: a.pdf (file_key=unknown)]" },
+    ]);
+  });
+
+  it("keeps unsupported stickers as text placeholders", () => {
+    const content = JSON.stringify({ file_key: "sticker_key" });
+    const event = messageEvent("sticker", content, "om_sticker");
+    expect(expectSegments(event)).toEqual([
+      { kind: "text", text: "[表情包 (file_key=sticker_key)]" },
+    ]);
   });
 });

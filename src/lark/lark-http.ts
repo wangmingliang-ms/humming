@@ -1,3 +1,7 @@
+import { createWriteStream } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { LarkLogger } from "../logger/logger.js";
 
@@ -219,14 +223,47 @@ export class LarkHttpClient {
     }
     const bytes = Buffer.concat(chunks);
 
-    const headers = res.headers as Record<string, string | string[] | undefined> | undefined;
-    const raw = headers?.["content-type"];
-    const headerValue = Array.isArray(raw) ? raw[0] : raw;
-    // strip charset / boundary suffix, e.g. "image/png; charset=utf-8"
-    const mimeType = headerValue?.split(";")[0]?.trim() || sniffImageMime(bytes);
+    const mimeType = parseContentType(res.headers) ?? sniffImageMime(bytes);
 
     return { bytes, mimeType };
   }
+
+  /**
+   * Download a user-sent file/audio/video resource straight to disk.
+   *
+   * Uses `im.messageResource.get` with `type=file`; Lark documents this as the
+   * resource type for non-image message attachments.
+   *
+   * @throws when the SDK call rejects or the stream/disk write fails.
+   */
+  async downloadMessageResourceToFile(
+    messageId: string,
+    fileKey: string,
+    destPath: string,
+  ): Promise<{ mimeType: string | null; size: number }> {
+    await fs.mkdir(path.dirname(destPath), { recursive: true });
+    const res = await this.client.im.messageResource.get({
+      path: { message_id: messageId, file_key: fileKey },
+      params: { type: "file" },
+    });
+
+    await pipeline(res.getReadableStream(), createWriteStream(destPath));
+    const stat = await fs.stat(destPath);
+    return { mimeType: parseContentType(res.headers), size: stat.size };
+  }
+}
+
+function parseContentType(headers: unknown): string | null {
+  if (!isRecord(headers)) return null;
+  const raw = headers["content-type"];
+  const headerValue = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof headerValue !== "string") return null;
+  const mimeType = headerValue.split(";")[0]?.trim();
+  return mimeType && mimeType.length > 0 ? mimeType : null;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 // Magic-byte sniff for the MIME types Lark accepts (per `im.image.create`

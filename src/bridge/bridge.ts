@@ -23,6 +23,7 @@ import {
   validateSessionControls,
   type PendingMessage,
 } from "./chat-runtime.js";
+import { DEFAULT_INBOUND_DIR, sweepInboundDir } from "./inbound-store.js";
 import { hydratePrompt } from "./prompt-hydrator.js";
 import type { PermissionMode } from "../acp/humming-client.js";
 import {
@@ -460,6 +461,7 @@ export class LarkBridge {
     await this.snapshotBindings();
     this.startSettingsWatcher();
     this.writeHomeInstructions();
+    this.sweepInboundResources();
     await this.startControlServer();
 
     this.cleanupTimer = setInterval(() => {
@@ -1446,7 +1448,11 @@ export class LarkBridge {
 
     const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
     const [prompt, userName, chatName] = await Promise.all([
-      hydratePrompt(segments, { downloader: this.http, logger: this.logger }),
+      hydratePrompt(segments, {
+        downloader: this.http,
+        resourceDownloader: this.http,
+        logger: this.logger,
+      }),
       this.http.getUserName(userId),
       isGroup ? this.http.getChatName(chatId) : Promise.resolve(""),
     ]);
@@ -1790,6 +1796,12 @@ export class LarkBridge {
     } catch (err) {
       this.logger.warn({ err, homeDir }, "failed to install humming home templates");
     }
+  }
+
+  private sweepInboundResources(): void {
+    sweepInboundDir(DEFAULT_INBOUND_DIR).catch((err) =>
+      this.logger.warn({ err, inboundDir: DEFAULT_INBOUND_DIR }, "inbound resource sweep failed"),
+    );
   }
 
   // ----- Hot-reload of settings.json bindings -----------------------------

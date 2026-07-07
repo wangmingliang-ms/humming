@@ -155,13 +155,22 @@ export type PromptSegment =
  * Filesystem validation, `~` expansion and agent-preset resolution are the
  * bridge's job (they are effects).
  */
+export type ProfileCommandName = "agent" | "model" | "mode" | "permission";
+export type ProfilePermissionMode = "alwaysAsk" | "alwaysAllow" | "alwaysDeny";
+
 export type LarkCommand =
   | { readonly kind: "cancel" }
   | { readonly kind: "new" }
   | { readonly kind: "bind"; readonly cwd: string; readonly agent: string | null }
   | { readonly kind: "bind-usage" }
   | { readonly kind: "unbind" }
-  | { readonly kind: "where" };
+  | { readonly kind: "where" }
+  | { readonly kind: "set-agent"; readonly agent: string }
+  | { readonly kind: "set-model"; readonly model: string | "auto" }
+  | { readonly kind: "set-mode"; readonly mode: string }
+  | { readonly kind: "set-permission"; readonly permissionMode: ProfilePermissionMode }
+  | { readonly kind: "profile" }
+  | { readonly kind: "profile-command-usage"; readonly command: ProfileCommandName };
 
 /**
  * Outcome of interpreting a Lark inbound message.
@@ -189,7 +198,17 @@ const CANCEL_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/cancel", "/stop", 
 const NEW_SESSION_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/new", "/restart"]);
 const UNBIND_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/unbind", "/unpin"]);
 const WHERE_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/where", "/pwd", "/binding"]);
+const PROFILE_PERMISSION_MODES: ReadonlySet<ProfilePermissionMode> = new Set([
+  "alwaysAsk",
+  "alwaysAllow",
+  "alwaysDeny",
+]);
 const BIND_COMMAND_TOKEN = "/bind";
+const AGENT_COMMAND_TOKEN = "/agent";
+const MODEL_COMMAND_TOKEN = "/model";
+const MODE_COMMAND_TOKEN = "/mode";
+const PERMISSION_COMMAND_TOKEN = "/permission";
+const PROFILE_COMMAND_TOKEN = "/profile";
 
 /**
  * Interpret a Lark inbound message event.
@@ -279,7 +298,53 @@ function detectCommand(text: string): LarkCommand | null {
   if (NEW_SESSION_COMMAND_TOKENS.has(text)) return { kind: "new" };
   if (UNBIND_COMMAND_TOKENS.has(text)) return { kind: "unbind" };
   if (WHERE_COMMAND_TOKENS.has(text)) return { kind: "where" };
+  const profileCommand = detectProfileCommand(text);
+  if (profileCommand) return profileCommand;
   return detectBindCommand(text);
+}
+
+function detectProfileCommand(text: string): LarkCommand | null {
+  const agent = detectSingleArgCommand(text, AGENT_COMMAND_TOKEN, "agent");
+  if (agent) return agent.kind === "arg" ? { kind: "set-agent", agent: agent.value } : agent.command;
+
+  const model = detectSingleArgCommand(text, MODEL_COMMAND_TOKEN, "model");
+  if (model) return model.kind === "arg" ? { kind: "set-model", model: model.value } : model.command;
+
+  const mode = detectSingleArgCommand(text, MODE_COMMAND_TOKEN, "mode");
+  if (mode) return mode.kind === "arg" ? { kind: "set-mode", mode: mode.value } : mode.command;
+
+  const permission = detectSingleArgCommand(text, PERMISSION_COMMAND_TOKEN, "permission");
+  if (permission) {
+    if (permission.kind === "usage") return permission.command;
+    if (isProfilePermissionMode(permission.value)) {
+      return { kind: "set-permission", permissionMode: permission.value };
+    }
+    return null;
+  }
+
+  const profileRest = stripLeadingToken(text, PROFILE_COMMAND_TOKEN);
+  if (profileRest === "") return { kind: "profile" };
+  return null;
+}
+
+type SingleArgCommandResult =
+  | { readonly kind: "arg"; readonly value: string }
+  | { readonly kind: "usage"; readonly command: { readonly kind: "profile-command-usage"; readonly command: ProfileCommandName } };
+
+function detectSingleArgCommand(
+  text: string,
+  token: string,
+  command: ProfileCommandName,
+): SingleArgCommandResult | null {
+  const rest = stripLeadingToken(text, token);
+  if (rest === null) return null;
+  if (rest.length === 0) return { kind: "usage", command: { kind: "profile-command-usage", command } };
+  if (/\s/.test(rest)) return null;
+  return { kind: "arg", value: rest };
+}
+
+function isProfilePermissionMode(value: string): value is ProfilePermissionMode {
+  return PROFILE_PERMISSION_MODES.has(value as ProfilePermissionMode);
 }
 
 /**

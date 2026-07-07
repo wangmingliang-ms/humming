@@ -127,6 +127,37 @@ describe("interpretLarkMessage — existing commands still work", () => {
   });
 });
 
+describe("interpretLarkMessage — compact session profile commands", () => {
+  it("parses slash-only session profile commands", () => {
+    expect(expectCommand("/agent copilot")).toEqual({ kind: "set-agent", agent: "copilot" });
+    expect(expectCommand("/model gpt-5")).toEqual({ kind: "set-model", model: "gpt-5" });
+    expect(expectCommand("/model auto")).toEqual({ kind: "set-model", model: "auto" });
+    expect(expectCommand("/mode plan")).toEqual({ kind: "set-mode", mode: "plan" });
+    expect(expectCommand("/permission alwaysAllow")).toEqual({
+      kind: "set-permission",
+      permissionMode: "alwaysAllow",
+    });
+    expect(expectCommand("/profile")).toEqual({ kind: "profile" });
+  });
+
+  it("emits usage commands for exact slash tokens with missing arguments", () => {
+    expect(expectCommand("/agent")).toEqual({ kind: "profile-command-usage", command: "agent" });
+    expect(expectCommand("/model")).toEqual({ kind: "profile-command-usage", command: "model" });
+    expect(expectCommand("/mode")).toEqual({ kind: "profile-command-usage", command: "mode" });
+    expect(expectCommand("/permission")).toEqual({
+      kind: "profile-command-usage",
+      command: "permission",
+    });
+  });
+
+  it("rejects non-slash aliases and lookalikes as ordinary prompts", () => {
+    expect(interpretLarkMessage(textEvent("/agentx copilot")).kind).toBe("prompt");
+    expect(interpretLarkMessage(textEvent("agent copilot")).kind).toBe("prompt");
+    expect(interpretLarkMessage(textEvent("/modelx auto")).kind).toBe("prompt");
+    expect(interpretLarkMessage(textEvent("/profile extra")).kind).toBe("prompt");
+  });
+});
+
 function expectSegments(event: Lark.RawMessageEvent): PromptSegment[] {
   const result = interpretLarkMessage(event);
   if (result.kind !== "prompt") {

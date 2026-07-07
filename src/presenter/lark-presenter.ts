@@ -40,7 +40,11 @@ const CANCEL_BUTTON_TEXT = "中断当前任务";
 // https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-json-v2-structure
 const CARD_SCHEMA_V2 = "2.0";
 const CARD_CONFIG_V2 = { width_mode: "fill", update_multi: true } as const;
-export const NOTICE_BODY_CHAR_LIMIT = 1_500;
+// Notice cards are used for command output such as `/capabilities` and can be
+// legitimately longer than a tiny toast. Keep a generous whole-card cap for
+// runaway stderr/errors, but split markdown into smaller card elements below.
+export const NOTICE_BODY_CHAR_LIMIT = 12_000;
+const NOTICE_MARKDOWN_ELEMENT_CHAR_LIMIT = 3_000;
 const NOTICE_TRUNCATION_SUFFIX =
   "\n\n…\n\n_内容过长，已截断；完整细节请查看 bridge.log 或本地日志。_";
 
@@ -203,11 +207,36 @@ function truncateNoticeBody(body: string): string {
   return `${body.slice(0, Math.max(0, NOTICE_BODY_CHAR_LIMIT - NOTICE_TRUNCATION_SUFFIX.length)).trimEnd()}${NOTICE_TRUNCATION_SUFFIX}`;
 }
 
+function splitNoticeBody(body: string): string[] {
+  const chunks: string[] = [];
+  let remaining = body;
+  while (remaining.length > NOTICE_MARKDOWN_ELEMENT_CHAR_LIMIT) {
+    let splitAt = remaining.lastIndexOf("\n\n", NOTICE_MARKDOWN_ELEMENT_CHAR_LIMIT);
+    if (splitAt > 0) splitAt += 2;
+    if (splitAt <= 0) {
+      splitAt = remaining.lastIndexOf("\n", NOTICE_MARKDOWN_ELEMENT_CHAR_LIMIT);
+      if (splitAt > 0) splitAt += 1;
+    }
+    if (splitAt <= 0) splitAt = NOTICE_MARKDOWN_ELEMENT_CHAR_LIMIT;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function buildNoticeBodyElements(body: string): object[] {
+  return splitNoticeBody(truncateNoticeBody(body)).flatMap((chunk, index) => [
+    ...(index > 0 ? [{ tag: "hr" }] : []),
+    { tag: "markdown", content: chunk },
+  ]);
+}
+
 function buildNoticeCard(notice: NoticeCardSpec): object {
   return buildV2Card(
     notice.title,
     notice.template,
-    [{ tag: "markdown", content: truncateNoticeBody(notice.body) }],
+    buildNoticeBodyElements(notice.body),
     notice.title,
   );
 }

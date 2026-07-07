@@ -283,6 +283,27 @@ describe("LarkCardPresenter card summary", () => {
     expect(calls.map((call) => call.opts?.replyInThread)).toEqual([true, true]);
   });
 
+  it("splits long-but-valid notice card bodies without truncating them", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+    const body = `Capabilities\n\n${"model description\n".repeat(260)}`;
+
+    await presenter.replyNoticeCard("om_1", {
+      title: "🧩 Agent capabilities",
+      body,
+      template: "blue",
+    });
+
+    const elements = cards[0]?.body?.elements ?? [];
+    const rendered = elements
+      .filter((element) => element.tag === "markdown")
+      .map((element) => element.content ?? "")
+      .join("");
+    expect(rendered).toBe(body);
+    expect(rendered).not.toContain("内容过长，已截断");
+    expect(elements.filter((element) => element.tag === "markdown").length).toBeGreaterThan(1);
+  });
+
   it("truncates oversized notice card bodies", async () => {
     const cards: CardWithConfig[] = [];
     const presenter = makePresenter(cards);
@@ -293,8 +314,12 @@ describe("LarkCardPresenter card summary", () => {
       template: "red",
     });
 
-    const content = cards[0]?.body?.elements?.[0]?.content ?? "";
+    const contents = (cards[0]?.body?.elements ?? [])
+      .filter((element) => element.tag === "markdown")
+      .map((element) => element.content ?? "");
+    const content = contents.join("");
     expect(content.length).toBeLessThanOrEqual(NOTICE_BODY_CHAR_LIMIT);
+    expect(contents.every((chunk) => chunk.length <= 3_000)).toBe(true);
     expect(content).toContain("内容过长，已截断");
     expect(content).toContain("bridge.log");
   });

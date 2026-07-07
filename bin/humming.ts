@@ -49,6 +49,7 @@ import type {
   LarkLogger,
   PermissionMode,
   SessionControls,
+  SessionControlPatch,
   AgentResolver,
   ResolvedAgentInvocation,
   SessionRecord,
@@ -1858,7 +1859,7 @@ function printAgents(registry: Registry): void {
   process.stdout.write(lines.join("\n"));
 }
 
-function parseControlJson(raw: string): SessionControls {
+function parseControlJson(raw: string): SessionControlPatch {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -1868,10 +1869,11 @@ function parseControlJson(raw: string): SessionControls {
   return validateSessionControls(parsed);
 }
 
-function validateSessionControls(value: unknown): SessionControls {
+function validateSessionControls(value: unknown): SessionControlPatch {
   if (!isRecord(value)) throw new CliError("controls JSON must be an object");
   const out: {
     modelId?: string;
+    clearModelId?: true;
     modeId?: string;
     bridgePermissionMode?: PermissionMode;
     config?: Record<
@@ -1886,6 +1888,17 @@ function validateSessionControls(value: unknown): SessionControls {
       throw new CliError("controls.modelId must be a non-empty string");
     }
     out.modelId = modelId;
+  }
+
+  const clearModelId = value["clearModelId"];
+  if (clearModelId !== undefined) {
+    if (clearModelId !== true) {
+      throw new CliError("controls.clearModelId must be true when present");
+    }
+    if (out.modelId !== undefined) {
+      throw new CliError("controls cannot contain both modelId and clearModelId");
+    }
+    out.clearModelId = true;
   }
 
   const modeId = value["modeId"];
@@ -1941,6 +1954,7 @@ function validateSessionControls(value: unknown): SessionControls {
 
   if (
     out.modelId === undefined &&
+    out.clearModelId === undefined &&
     out.modeId === undefined &&
     out.bridgePermissionMode === undefined &&
     out.config === undefined

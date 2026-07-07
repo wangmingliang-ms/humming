@@ -24,6 +24,7 @@ import { SessionAlreadyBoundError } from "../session-store/file-session-store.js
 import type { AgentStatus, NoticeCardSpec } from "../presenter/presenter.js";
 import type {
   SessionCapabilitiesSnapshot,
+  SessionControlPatch,
   SessionControls,
   SessionRecord,
   SessionStore,
@@ -550,7 +551,7 @@ export class LarkBridge {
   private async controlSetControls(
     chatId: string,
     threadId: string | null,
-    controls: SessionControls,
+    controls: SessionControlPatch,
   ): Promise<{
     readonly applied: boolean;
     readonly queued?: boolean;
@@ -811,6 +812,18 @@ export class LarkBridge {
         return;
       case "where":
         await this.handleWhere(chatId, messageId);
+        return;
+      case "set-agent":
+      case "set-model":
+      case "set-mode":
+      case "set-permission":
+      case "profile":
+      case "profile-command-usage":
+        await this.presenter.replyNoticeCard(messageId, {
+          title: "ℹ️ Session profile 命令即将支持",
+          body: "该 compact slash command 已被 Humming 识别，不会转发给 Agent。实现正在接入共享的 Humming control 逻辑。",
+          template: "blue",
+        });
         return;
       default:
         return assertNever(command);

@@ -40,7 +40,7 @@ export interface SessionRecord {
   cwd: string;
   controls?: SessionControls;
   /** One-shot next-turn control changes, consumed before the next ACP prompt. */
-  pendingControls?: SessionControls;
+  pendingControls?: SessionControlPatch;
   createdAt: number;
   updatedAt: number;
 }
@@ -56,12 +56,22 @@ export interface SessionControls {
   config?: Readonly<Record<string, SessionConfigControlValue>>;
 }
 
+export interface SessionControlPatch extends SessionControls {
+  /** Clear any explicit `controls.modelId`; used for `/model auto`. */
+  clearModelId?: true;
+}
+
 export type PermissionMode = "alwaysAllow" | "alwaysDeny" | "alwaysAsk";
 
 export type SessionConfigControlValue =
   | { readonly type: "boolean"; readonly value: boolean }
   // ACP select config requests use `{ value: <valueId> }` with no `type` field.
   | { readonly value: string };
+
+export type HummingSessionModelState = Omit<acp.SessionModelState, "currentModelId"> & {
+  /** Absent when Humming intentionally clears the explicit model override (`/model auto`). */
+  readonly currentModelId?: string;
+};
 
 export interface SessionCapabilitiesSnapshot {
   readonly session: {
@@ -76,7 +86,7 @@ export interface SessionCapabilitiesSnapshot {
     readonly args: readonly string[];
     readonly cwd: string;
   };
-  readonly models?: acp.SessionModelState | null;
+  readonly models?: HummingSessionModelState | null;
   readonly modes?: acp.SessionModeState | null;
   readonly configOptions?: readonly acp.SessionConfigOption[] | null;
   readonly bridgePermissionModes: readonly PermissionMode[];
@@ -134,18 +144,18 @@ export interface SessionStore {
   bindThreadSession(record: SessionRecord): Promise<SessionRecord>;
 
   /** Merge control fields into one existing/current session record. */
-  setControls(target: SessionControlTarget, controls: SessionControls): Promise<SessionRecord>;
+  setControls(target: SessionControlTarget, controls: SessionControlPatch): Promise<SessionRecord>;
 
   /** Merge control fields into the one-shot next-turn queue for one existing/current session. */
   setPendingControls(
     target: SessionControlTarget,
-    controls: SessionControls,
+    controls: SessionControlPatch,
   ): Promise<SessionRecord>;
 
   /** Consume the one-shot next-turn controls for one existing/current session. */
   consumePendingControls(
     target: SessionControlTarget,
-  ): Promise<{ readonly record: SessionRecord; readonly pendingControls?: SessionControls }>;
+  ): Promise<{ readonly record: SessionRecord; readonly pendingControls?: SessionControlPatch }>;
 
   /** Drop all persisted ACP sessions for one chat/thread. */
   clearThread(chatId: string, threadId: string | null): Promise<void>;

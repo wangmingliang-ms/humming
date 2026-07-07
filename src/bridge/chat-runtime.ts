@@ -13,6 +13,7 @@ import {
 import type {
   SessionCapabilitiesSnapshot,
   SessionConfigControlValue,
+  SessionControlPatch,
   SessionControls,
   SessionRecord,
   SessionStore,
@@ -241,7 +242,7 @@ export class ChatRuntime {
     };
   }
 
-  async applyControls(controls: SessionControls): Promise<void> {
+  async applyControls(controls: SessionControlPatch, noticeMessageId?: string): Promise<void> {
     const state = this.state;
     if (!state) throw new Error("session runtime is not started yet");
     if (this.promptInFlight || state.processing || state.queue.length > 0) {
@@ -262,7 +263,7 @@ export class ChatRuntime {
       state.sessionCapabilities = nextCapabilities;
       await this.persistSession(state.agent.sessionId, controls);
       await this.notifyControlSuccess(
-        state,
+        noticeMessageId ?? state.lastMessageId,
         beforeSnapshot,
         {
           ...state.sessionCapabilities,
@@ -271,7 +272,7 @@ export class ChatRuntime {
         controls,
       );
     } catch (err) {
-      await this.notifyControlFailure(state, err);
+      await this.notifyControlFailure(noticeMessageId ?? state.lastMessageId, err);
       throw err;
     }
   }
@@ -447,7 +448,7 @@ export class ChatRuntime {
     };
   }
 
-  private validateControls(snapshot: SessionCapabilitiesSnapshot, controls: SessionControls): void {
+  private validateControls(snapshot: SessionCapabilitiesSnapshot, controls: SessionControlPatch): void {
     if (controls.modelId !== undefined) {
       if (!snapshot.models) {
         throw new ControlApplyError(
@@ -509,8 +510,7 @@ export class ChatRuntime {
     }
   }
 
-  private async notifyControlFailure(state: ChatRuntimeState, err: unknown): Promise<void> {
-    const messageId = state.lastMessageId;
+  private async notifyControlFailure(messageId: string | null, err: unknown): Promise<void> {
     if (!messageId) return;
     const body = [
       "Session control 设置失败，当前 runtime 和 sessions.json 未更新。",
@@ -529,12 +529,11 @@ export class ChatRuntime {
   }
 
   private async notifyControlSuccess(
-    state: ChatRuntimeState,
+    messageId: string | null,
     before: SessionCapabilitiesSnapshot,
     after: SessionCapabilitiesSnapshot,
-    controls: SessionControls,
+    controls: SessionControlPatch,
   ): Promise<void> {
-    const messageId = state.lastMessageId;
     if (!messageId) return;
     await this.opts.presenter
       .replyNoticeCard(messageId, {
@@ -605,11 +604,17 @@ export class ChatRuntime {
 
   private async applyControlsToState(
     state: ChatRuntimeState,
-    controls: SessionControls,
+    controls: SessionControlPatch,
   ): Promise<SessionCapabilitiesSnapshot> {
     let next = state.sessionCapabilities;
     const rollbacks: Array<() => Promise<void>> = [];
     try {
+      if (controls.clearModelId === true && next.models) {
+        next = {
+          ...next,
+          models: { ...next.models, currentModelId: undefined },
+        };
+      }
       if (controls.modelId !== undefined) {
         const previousModelId = next.models?.currentModelId;
         try {
@@ -956,7 +961,7 @@ export class ChatRuntime {
       .catch((sendErr) => this.logger.warn({ err: sendErr }, "error reply failed"));
   }
 
-  private async persistSession(sessionId: string, controls?: SessionControls): Promise<void> {
+  private async persistSession(sessionId: string, controls?: SessionControlPatch): Promise<void> {
     const now = Date.now();
     try {
       const latest = await this.opts.sessionStore.getLatest(this.opts.chatId, this.opts.threadId);
@@ -1108,7 +1113,7 @@ function bridgePermissionLabel(mode: SessionCapabilitiesSnapshot["bridgePermissi
 function renderControlSuccessBody(
   before: SessionCapabilitiesSnapshot,
   after: SessionCapabilitiesSnapshot,
-  controls: SessionControls,
+  controls: SessionControlPatch,
 ): string {
   const changed = controlChangeLines(before, after, controls);
   return [
@@ -1129,13 +1134,13 @@ function renderControlSuccessBody(
 function controlChangeLines(
   before: SessionCapabilitiesSnapshot,
   after: SessionCapabilitiesSnapshot,
-  controls: SessionControls,
+  controls: SessionControlPatch,
 ): string[] {
   const lines: string[] = [];
   if (controls.modeId !== undefined) {
     lines.push(`• Mode：${displayMode(before)} → ${displayMode(after)}`);
   }
-  if (controls.modelId !== undefined) {
+  if (controls.clearModelId === true || controls.modelId !== undefined) {
     lines.push(`• Model：${displayModel(before)} → ${displayModel(after)}`);
   }
   if (controls.bridgePermissionMode !== undefined) {
@@ -1177,20 +1182,33 @@ function cloneCapabilitiesSnapshot(
 
 function mergeSessionControls(
   existing: SessionControls | undefined,
-  patch: SessionControls | undefined,
+  patch: SessionControlPatch | undefined,
 ): SessionControls {
-  return {
-    ...(existing ?? {}),
-    ...(patch ?? {}),
-    config: {
-      ...(existing?.config ?? {}),
-      ...(patch?.config ?? {}),
-    },
-  };
+  const out: SessionControls = { ...(existing ?? {}) };
+  if (patch?.clearModelId === true) delete out.modelId;
+  if (patch?.modelId !== undefined) out.modelId = patch.modelId;
+  if (patch?.modeId !== undefined) out.modeId = patch.modeId;
+  if (patch?.bridgePermissionMode !== undefined) out.bridgePermissionMode = patch.bridgePermissionMode;
+  const config = mergeSessionConfig(existing?.config, patch?.config);
+  if (config) out.config = config;
+  else delete out.config;
+  return out;
 }
 
-function hasControls(controls: SessionControls): boolean {
+function mergeSessionConfig(
+  existing: SessionControls["config"] | undefined,
+  patch: SessionControls["config"] | undefined,
+): Record<string, SessionConfigControlValue> | undefined {
+  const merged: Record<string, SessionConfigControlValue> = {
+    ...(existing ?? {}),
+    ...(patch ?? {}),
+  };
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function hasControls(controls: SessionControlPatch): boolean {
   return (
+    controls.clearModelId === true ||
     controls.modelId !== undefined ||
     controls.modeId !== undefined ||
     controls.bridgePermissionMode !== undefined ||

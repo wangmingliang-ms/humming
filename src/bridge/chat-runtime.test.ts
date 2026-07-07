@@ -878,6 +878,52 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     expect(notices.at(-1)?.body).toContain("Mode bypassPermissions");
   });
 
+  it("clears an explicit live model override for /model auto without sending literal auto", async () => {
+    const fake = makeFakeAgent();
+    const setModel = vi.fn(async () => ({}));
+    fake.agent.connection = {
+      ...fake.agent.connection,
+      unstable_setSessionModel: setModel,
+    } as AgentProcess["connection"];
+    spawnAgentMock.mockResolvedValue(fake.agent);
+
+    let latest: SessionRecord | null = null;
+    const saved: SessionRecord[] = [];
+    const store: SessionStore = {
+      ...stubSessionStore(),
+      getLatest: async () => latest,
+      save: async (record) => {
+        latest = record;
+        saved.push(record);
+      },
+    };
+    const notices: Array<{ title: string; body: string; template: string }> = [];
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([], notices),
+      sessionStore: store,
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "hello" }],
+      messageId: "om_model_auto",
+      chatId: "oc_test",
+    });
+    fake.resolvePrompt("end_turn");
+    await vi.waitFor(() => expect(runtime.processing).toBe(false), {
+      timeout: 1_000,
+      interval: 20,
+    });
+
+    await runtime.applyControls({ clearModelId: true }, "om_model_auto_cmd");
+
+    expect(setModel).not.toHaveBeenCalledWith({ sessionId: "sess_fake", modelId: "auto" });
+    expect(runtime.capabilities().models?.currentModelId).toBeUndefined();
+    expect(saved.at(-1)?.controls).not.toHaveProperty("modelId");
+    expect(notices.at(-1)).toMatchObject({ title: "✅ Session profile 已更新", template: "green" });
+    expect(notices.at(-1)?.body).toContain("Model：Old → —");
+  });
+
   it("applies and reports session controls with ACP-shaped requests", async () => {
     const fake = makeFakeAgent();
     const setModel = vi.fn(async () => ({}));

@@ -47,6 +47,7 @@ export type {
   PermissionMode as SessionPermissionMode,
   SessionCapabilitiesSnapshot,
   SessionConfigControlValue,
+  SessionControlPatch,
   SessionControlTarget,
   SessionControls,
   SessionRecord,

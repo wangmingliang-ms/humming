@@ -276,6 +276,43 @@ describe("FileSessionStore session controls", () => {
     ).rejects.toThrow(/no session found/);
   });
 
+  it("clears an explicit model override without persisting a clear marker", async () => {
+    await store.save(
+      record({
+        chatId: "oc_A",
+        threadId: "th_1",
+        sessionId: "s_t1",
+        controls: { modelId: "model-old", modeId: "agent" },
+      }),
+    );
+
+    const updated = await store.setControls(
+      { chatId: "oc_A", threadId: "th_1" },
+      { clearModelId: true },
+    );
+
+    expect(updated.controls).toEqual({ modeId: "agent" });
+    expect(updated.controls).not.toHaveProperty("clearModelId");
+  });
+
+  it("queues model clearing as a pending control patch", async () => {
+    await store.save(
+      record({
+        chatId: "oc_A",
+        threadId: "th_1",
+        sessionId: "s_t1",
+        controls: { modelId: "model-old" },
+      }),
+    );
+
+    const updated = await store.setPendingControls(
+      { chatId: "oc_A", threadId: "th_1" },
+      { clearModelId: true },
+    );
+
+    expect(updated.pendingControls).toEqual({ clearModelId: true });
+  });
+
   it("clears only one thread and removes profile-only records when the real session is saved", async () => {
     await store.save(record({ chatId: "oc_A", threadId: "th_1", sessionId: "profile:1" }));
     await store.save(record({ chatId: "oc_A", threadId: "th_2", sessionId: "s_other" }));

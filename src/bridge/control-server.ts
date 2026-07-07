@@ -4,7 +4,7 @@ import path from "node:path";
 import type { LarkLogger } from "../logger/logger.js";
 import type {
   SessionCapabilitiesSnapshot,
-  SessionControls,
+  SessionControlPatch,
   SessionRecord,
 } from "../session-store/session-store.js";
 
@@ -27,7 +27,7 @@ export type ControlRequest =
       readonly params: {
         readonly chatId: string;
         readonly threadId?: string | null;
-        readonly controls: SessionControls;
+        readonly controls: SessionControlPatch;
       };
     }
   | {
@@ -58,7 +58,7 @@ export type ControlResponse =
 
 export interface BridgeControlHandlers {
   capabilities(chatId: string, threadId: string | null): Promise<SessionCapabilitiesSnapshot>;
-  setControls(chatId: string, threadId: string | null, controls: SessionControls): Promise<unknown>;
+  setControls(chatId: string, threadId: string | null, controls: SessionControlPatch): Promise<unknown>;
   bindSession(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
   setAgent(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
   agentProbeFailed(

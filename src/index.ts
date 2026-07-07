@@ -10,6 +10,7 @@
  */
 
 export { LarkBridge } from "./bridge/bridge.js";
+export { HUMMING_COMMAND_HELP_GROUPS, renderCommandHelpBody } from "./interpreter/commands.js";
 export type {
   LarkBridgeOptions,
   LarkBridgeLarkOptions,

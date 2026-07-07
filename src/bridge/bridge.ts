@@ -9,6 +9,7 @@ import { LarkWsConnection } from "../lark/lark-ws.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import { installHomeTemplates } from "../home-templates.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
+import { renderCommandHelpBody } from "../interpreter/commands.js";
 import { BridgeControlServer, type AgentProbeFailureTarget } from "./control-server.js";
 import {
   interpretLarkMessage,
@@ -770,11 +771,14 @@ export class LarkBridge {
     }
 
     const interpreted: InterpretedMessage = interpretLarkMessage(event, { botOpenId });
+
+    // Inbound middleware pipeline. Each middleware can fully handle the message
+    // and short-circuit routing; only messages that fall through are forwarded
+    // to the Agent as prompts.
+    if (await this.runSlashCommandMiddleware(interpreted, chatId, threadId, messageId)) return;
+
     switch (interpreted.kind) {
       case "empty":
-        return;
-      case "command":
-        await this.handleCommand(interpreted.command, chatId, threadId, messageId);
         return;
       case "prompt":
         await this.enqueueWithContext(
@@ -786,12 +790,35 @@ export class LarkBridge {
           interpreted.segments,
         );
         return;
+      case "command":
+        throw new Error("slash command middleware declined a parsed command");
       default:
         return assertNever(interpreted);
     }
   }
 
+  private async runSlashCommandMiddleware(
+    interpreted: InterpretedMessage,
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<boolean> {
+    if (interpreted.kind !== "command") return false;
+    await this.dispatchSlashCommand(interpreted.command, chatId, threadId, messageId);
+    return true;
+  }
+
+  /** Backward-compatible private entrypoint used by integration tests. */
   private async handleCommand(
+    command: LarkCommand,
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<void> {
+    await this.dispatchSlashCommand(command, chatId, threadId, messageId);
+  }
+
+  private async dispatchSlashCommand(
     command: LarkCommand,
     chatId: string,
     threadId: string | null,
@@ -2174,31 +2201,7 @@ function buildSessionBindRejectedNotice(record: SessionRecord): NoticeCardSpec {
 function buildHelpNotice(): NoticeCardSpec {
   return {
     title: "ℹ️ Humming commands",
-    body: [
-      "**Discovery**",
-      "• /help 或 /commands — 列出所有 Humming slash commands",
-      "• /capabilities — 列出当前有效 Agent 支持的 model / mode / config / permission controls",
-      "• /capabilities <agent> — probe 指定 Agent 的 capabilities，只查询不切换",
-      "• /agent — 列出可用 Agent",
-      "• /agent <agent> — 切换当前 topic 的 Agent；会先 probe，失败不改状态",
-      "• /model — 列出当前 Agent 可用 Models",
-      "• /model <model-id> — 设置当前 topic 的 Model",
-      "• /model auto — 清除显式 model override，使用 Agent 默认/自动模型",
-      "• /mode — 列出当前 Agent 可用 Modes",
-      "• /mode <mode-id> — 设置当前 topic 的 Mode",
-      "• /permission — 列出 Humming approval 策略",
-      "• /permission <alwaysAsk|alwaysAllow|alwaysDeny> — 设置 Humming approval 策略",
-      "• /profile — 查看当前 topic profile",
-      "",
-      "**Repo / session**",
-      "• /bind <路径> — 绑定当前 chat 到 repo",
-      "• /where — 查看当前 repo binding",
-      "• /unbind — 解除 repo binding",
-      "• /new — 重置当前 topic session",
-      "• /cancel — 中断当前任务",
-      "",
-      "裸 /agent /model /mode /permission 只查询可选项，不会修改状态。",
-    ].join("\n"),
+    body: renderCommandHelpBody(),
     template: "blue",
   };
 }
@@ -2225,15 +2228,8 @@ function buildAgentListNotice(agents: readonly AgentListItem[]): NoticeCardSpec 
 }
 
 function buildModelListNotice(snapshot: SessionCapabilitiesSnapshot): NoticeCardSpec {
-  const models = snapshot.models?.availableModels ?? [];
   const current = snapshot.models?.currentModelId ?? "auto/default";
-  const lines =
-    models.length > 0
-      ? models.map(
-          (model) =>
-            `• ${model.modelId} — ${model.name}${model.modelId === snapshot.models?.currentModelId ? "（当前）" : ""}`,
-        )
-      : ["• 当前 Agent 没有暴露 ACP model controls。"];
+  const lines = formatModelCapabilityLines(snapshot);
   return {
     title: "🧠 可用 Models",
     body: [

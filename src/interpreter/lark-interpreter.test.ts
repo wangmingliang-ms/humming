@@ -113,11 +113,14 @@ describe("interpretLarkMessage — unbind / where", () => {
 });
 
 describe("interpretLarkMessage — existing commands still work", () => {
-  it.each(["/cancel", "/stop", "取消", "停止"])("parses %s as cancel", (token) => {
-    expect(expectCommand(token)).toEqual({ kind: "cancel" });
-  });
+  it.each(["/cancel", "/stop", "/CANCEL", "/STOP", "取消", "停止"])(
+    "parses %s as cancel",
+    (token) => {
+      expect(expectCommand(token)).toEqual({ kind: "cancel" });
+    },
+  );
 
-  it.each(["/new", "/restart"])("parses %s as new", (token) => {
+  it.each(["/new", "/restart", "/NEW", "/Restart"])("parses %s as new", (token) => {
     expect(expectCommand(token)).toEqual({ kind: "new" });
   });
 
@@ -130,22 +133,39 @@ describe("interpretLarkMessage — existing commands still work", () => {
 describe("interpretLarkMessage — compact session profile commands", () => {
   it("parses slash-only session profile commands", () => {
     expect(expectCommand("/agent copilot")).toEqual({ kind: "set-agent", agent: "copilot" });
+    expect(expectCommand("/Agent Copilot")).toEqual({ kind: "set-agent", agent: "Copilot" });
     expect(expectCommand("/agent")).toEqual({ kind: "list-agents" });
+    expect(expectCommand("/AGENT")).toEqual({ kind: "list-agents" });
     expect(expectCommand("/model gpt-5")).toEqual({ kind: "set-model", model: "gpt-5" });
+    expect(expectCommand("/Model gpt-5")).toEqual({ kind: "set-model", model: "gpt-5" });
     expect(expectCommand("/model auto")).toEqual({ kind: "set-model", model: "auto" });
+    expect(expectCommand("/MODEL AUTO")).toEqual({ kind: "set-model", model: "auto" });
     expect(expectCommand("/model")).toEqual({ kind: "list-models" });
+    expect(expectCommand("/Model")).toEqual({ kind: "list-models" });
     expect(expectCommand("/mode plan")).toEqual({ kind: "set-mode", mode: "plan" });
+    expect(expectCommand("/Mode plan")).toEqual({ kind: "set-mode", mode: "plan" });
     expect(expectCommand("/mode")).toEqual({ kind: "list-modes" });
+    expect(expectCommand("/MODE")).toEqual({ kind: "list-modes" });
     expect(expectCommand("/permission alwaysAllow")).toEqual({
       kind: "set-permission",
       permissionMode: "alwaysAllow",
     });
+    expect(expectCommand("/permission ALWAYSALLOW")).toEqual({
+      kind: "set-permission",
+      permissionMode: "alwaysAllow",
+    });
     expect(expectCommand("/permission")).toEqual({ kind: "list-permissions" });
+    expect(expectCommand("/Permission")).toEqual({ kind: "list-permissions" });
     expect(expectCommand("/profile")).toEqual({ kind: "profile" });
+    expect(expectCommand("/Profile")).toEqual({ kind: "profile" });
     expect(expectCommand("/help")).toEqual({ kind: "help" });
+    expect(expectCommand("/Help")).toEqual({ kind: "help" });
     expect(expectCommand("/commands")).toEqual({ kind: "help" });
+    expect(expectCommand("/COMMANDS")).toEqual({ kind: "help" });
     expect(expectCommand("/capabilities")).toEqual({ kind: "capabilities", agent: null });
+    expect(expectCommand("/Capabilities")).toEqual({ kind: "capabilities", agent: null });
     expect(expectCommand("/capabilities codex")).toEqual({ kind: "capabilities", agent: "codex" });
+    expect(expectCommand("/Capabilities Codex")).toEqual({ kind: "capabilities", agent: "Codex" });
   });
 
   it("rejects non-slash aliases and lookalikes as ordinary prompts", () => {

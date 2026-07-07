@@ -463,6 +463,13 @@ describe("compact slash session profile commands", () => {
     expect(notice?.body).toContain("/permission <alwaysAsk|alwaysAllow|alwaysDeny>");
     expect(notice?.body).toContain("/bind <路径>");
     expect(notice?.body).toContain("/cancel");
+    expect(notice?.body).toContain("/stop");
+    expect(notice?.body).toContain("/new");
+    expect(notice?.body).toContain("/restart");
+    expect(notice?.body).toContain("/where");
+    expect(notice?.body).toContain("/pwd");
+    expect(notice?.body).toContain("/unbind");
+    expect(notice?.body).toContain("/unpin");
   });
 
   it("lists available Agents via bare /agent", async () => {

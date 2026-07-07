@@ -12,6 +12,23 @@
  */
 
 import type * as Lark from "@larksuiteoapi/node-sdk";
+import {
+  AGENT_COMMAND_TOKEN,
+  BIND_COMMAND_TOKEN,
+  CANCEL_COMMAND_TOKENS,
+  CAPABILITIES_COMMAND_TOKEN,
+  HELP_COMMAND_TOKENS,
+  MODE_COMMAND_TOKEN,
+  MODEL_COMMAND_TOKEN,
+  NEW_SESSION_COMMAND_TOKENS,
+  PERMISSION_COMMAND_TOKEN,
+  PROFILE_COMMAND_TOKEN,
+  PROFILE_PERMISSION_MODES,
+  UNBIND_COMMAND_TOKENS,
+  WHERE_COMMAND_TOKENS,
+  type ProfileCommandName,
+  type ProfilePermissionMode,
+} from "./commands.js";
 
 type LarkRawMention = NonNullable<Lark.RawMessageEvent["message"]["mentions"]>[number];
 
@@ -155,9 +172,6 @@ export type PromptSegment =
  * Filesystem validation, `~` expansion and agent-preset resolution are the
  * bridge's job (they are effects).
  */
-export type ProfileCommandName = "agent" | "model" | "mode" | "permission";
-export type ProfilePermissionMode = "alwaysAsk" | "alwaysAllow" | "alwaysDeny";
-
 export type LarkCommand =
   | { readonly kind: "cancel" }
   | { readonly kind: "new" }
@@ -199,24 +213,6 @@ export interface InterpretOptions {
    */
   readonly botOpenId?: string;
 }
-
-const CANCEL_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/cancel", "/stop", "取消", "停止"]);
-const NEW_SESSION_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/new", "/restart"]);
-const UNBIND_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/unbind", "/unpin"]);
-const WHERE_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/where", "/pwd", "/binding"]);
-const PROFILE_PERMISSION_MODES: ReadonlySet<ProfilePermissionMode> = new Set([
-  "alwaysAsk",
-  "alwaysAllow",
-  "alwaysDeny",
-]);
-const BIND_COMMAND_TOKEN = "/bind";
-const AGENT_COMMAND_TOKEN = "/agent";
-const MODEL_COMMAND_TOKEN = "/model";
-const MODE_COMMAND_TOKEN = "/mode";
-const PERMISSION_COMMAND_TOKEN = "/permission";
-const PROFILE_COMMAND_TOKEN = "/profile";
-const HELP_COMMAND_TOKENS: ReadonlySet<string> = new Set(["/help", "/commands"]);
-const CAPABILITIES_COMMAND_TOKEN = "/capabilities";
 
 /**
  * Interpret a Lark inbound message event.
@@ -302,13 +298,13 @@ function normalizeSegments(segments: PromptSegment[]): PromptSegment[] {
 }
 
 function detectCommand(text: string): LarkCommand | null {
-  if (CANCEL_COMMAND_TOKENS.has(text)) return { kind: "cancel" };
-  if (NEW_SESSION_COMMAND_TOKENS.has(text)) return { kind: "new" };
-  if (HELP_COMMAND_TOKENS.has(text)) return { kind: "help" };
+  if (tokenMatches(CANCEL_COMMAND_TOKENS, text)) return { kind: "cancel" };
+  if (tokenMatches(NEW_SESSION_COMMAND_TOKENS, text)) return { kind: "new" };
+  if (tokenMatches(HELP_COMMAND_TOKENS, text)) return { kind: "help" };
   const capabilitiesCommand = detectCapabilitiesCommand(text);
   if (capabilitiesCommand) return capabilitiesCommand;
-  if (UNBIND_COMMAND_TOKENS.has(text)) return { kind: "unbind" };
-  if (WHERE_COMMAND_TOKENS.has(text)) return { kind: "where" };
+  if (tokenMatches(UNBIND_COMMAND_TOKENS, text)) return { kind: "unbind" };
+  if (tokenMatches(WHERE_COMMAND_TOKENS, text)) return { kind: "where" };
   const profileCommand = detectProfileCommand(text);
   if (profileCommand) return profileCommand;
   return detectBindCommand(text);
@@ -332,7 +328,10 @@ function detectProfileCommand(text: string): LarkCommand | null {
   const model = detectSingleArgCommand(text, MODEL_COMMAND_TOKEN, "model");
   if (model) {
     if (model.kind === "usage") return { kind: "list-models" };
-    return { kind: "set-model", model: model.value };
+    return {
+      kind: "set-model",
+      model: model.value.toLowerCase() === "auto" ? "auto" : model.value,
+    };
   }
 
   const mode = detectSingleArgCommand(text, MODE_COMMAND_TOKEN, "mode");
@@ -344,9 +343,8 @@ function detectProfileCommand(text: string): LarkCommand | null {
   const permission = detectSingleArgCommand(text, PERMISSION_COMMAND_TOKEN, "permission");
   if (permission) {
     if (permission.kind === "usage") return { kind: "list-permissions" };
-    if (isProfilePermissionMode(permission.value)) {
-      return { kind: "set-permission", permissionMode: permission.value };
-    }
+    const permissionMode = normalizeProfilePermissionMode(permission.value);
+    if (permissionMode) return { kind: "set-permission", permissionMode };
     return null;
   }
 
@@ -378,8 +376,14 @@ function detectSingleArgCommand(
   return { kind: "arg", value: rest };
 }
 
-function isProfilePermissionMode(value: string): value is ProfilePermissionMode {
-  return PROFILE_PERMISSION_MODES.has(value as ProfilePermissionMode);
+function normalizeProfilePermissionMode(value: string): ProfilePermissionMode | null {
+  return (
+    PROFILE_PERMISSION_MODES.find((mode) => mode.toLowerCase() === value.toLowerCase()) ?? null
+  );
+}
+
+function tokenMatches(tokens: readonly string[], value: string): boolean {
+  return tokens.some((token) => token.toLowerCase() === value.toLowerCase());
 }
 
 /**
@@ -414,8 +418,10 @@ function detectBindCommand(text: string): LarkCommand | null {
  * `null`. Guards against `/bindfoo` matching `/bind`.
  */
 function stripLeadingToken(text: string, token: string): string | null {
-  if (text === token) return "";
-  if (!text.startsWith(token)) return null;
+  const textLower = text.toLowerCase();
+  const tokenLower = token.toLowerCase();
+  if (textLower === tokenLower) return "";
+  if (!textLower.startsWith(tokenLower)) return null;
   const next = text.charAt(token.length);
   if (next.trim().length !== 0) return null; // e.g. "/bindx" — not our command
   return text.slice(token.length).trim();

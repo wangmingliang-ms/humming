@@ -1,5 +1,7 @@
 export type {
   AgentStatus,
+  AgentSwitchWarningCardSpec,
+  AgentSwitchWarningResolution,
   LarkPresenter,
   NoticeCardSpec,
   NoticeTemplate,

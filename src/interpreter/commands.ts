@@ -54,7 +54,7 @@ export const HUMMING_COMMAND_HELP_GROUPS: readonly CommandHelpGroup[] = [
       { syntax: "/agent", description: "列出可用 Agent" },
       {
         syntax: "/agent <agent>",
-        description: "切换当前 topic 的 Agent；会先 probe，失败不改状态",
+        description: "切换当前 topic 的 Agent；已开始 topic 会先 warning，确认后才 probe/切换",
       },
       { syntax: "/model", description: "通过 ACP capabilities 列出当前 Agent 可用 Models" },
       { syntax: "/model <model-id>", description: "设置当前 topic 的 Model" },

@@ -52,6 +52,23 @@ export interface CommandResultCardSpec {
   readonly template: NoticeTemplate;
 }
 
+/** Destructive Agent switch warning with confirmation buttons. */
+export interface AgentSwitchWarningCardSpec {
+  readonly switchId: string;
+  readonly chatId: string;
+  readonly threadId: string | null;
+  readonly fromAgent: string;
+  readonly toAgent: string;
+  readonly repo: string;
+  readonly body: string;
+}
+
+/** Terminal state rendered back onto an Agent switch warning card. */
+export interface AgentSwitchWarningResolution {
+  readonly status: "confirmed" | "cancelled" | "expired" | "failed";
+  readonly text: string;
+}
+
 /** Compact session-control metadata shown at the bottom of a conversation card. */
 export interface SessionCardMeta {
   readonly agent: string;
@@ -150,6 +167,22 @@ export interface LarkPresenter {
    * budget tracks message-card readability limits rather than notice/toast limits.
    */
   replyCommandResultCard(replyToMessageId: string, result: CommandResultCardSpec): Promise<void>;
+
+  /**
+   * Reply with a destructive Agent-switch warning that requires explicit user
+   * confirmation. Optional so non-Lark test/dummy presenters can omit the
+   * interactive path; the bridge falls back to a plain notice if absent.
+   */
+  replyAgentSwitchWarningCard?(
+    replyToMessageId: string,
+    warning: AgentSwitchWarningCardSpec,
+  ): Promise<string | null>;
+
+  /** Patch an Agent-switch warning after confirm/cancel/expiry. */
+  updateAgentSwitchWarningCard?(
+    cardMessageId: string,
+    resolution: AgentSwitchWarningResolution,
+  ): Promise<void>;
 
   /**
    * Send a fresh single-card notice directly into a chat, without replying to

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
 import { LarkHttpClient } from "../lark/lark-http.js";
@@ -36,7 +37,11 @@ import {
   type ProbeAgentSessionCapabilitiesResult,
 } from "../acp/agent-process.js";
 import { SessionAlreadyBoundError } from "../session-store/file-session-store.js";
-import type { AgentStatus, NoticeCardSpec } from "../presenter/presenter.js";
+import type {
+  AgentStatus,
+  AgentSwitchWarningCardSpec,
+  NoticeCardSpec,
+} from "../presenter/presenter.js";
 import type {
   SessionCapabilitiesSnapshot,
   SessionControlPatch,
@@ -168,6 +173,10 @@ interface CardActionPayload {
   th?: string | null;
   /** Set on the unified card's "cancel current task" button. */
   cancel?: boolean;
+  /** Pending destructive Agent-switch id (set on Agent switch warning cards). */
+  sw?: string;
+  /** Agent switch warning action. */
+  swa?: "confirm" | "cancel";
 }
 
 export interface LarkBridgeLarkOptions {
@@ -362,6 +371,15 @@ interface BindingSnapshot {
   readonly cwd: string;
 }
 
+interface PendingAgentSwitch {
+  readonly switchId: string;
+  readonly chatId: string;
+  readonly threadId: string | null;
+  readonly target: ResolvedAgentInvocation;
+  readonly cwd: string;
+  readonly warningCardId?: string;
+}
+
 /**
  * Top-level bridge that connects a Lark bot to ACP agents.
  *
@@ -401,6 +419,7 @@ export class LarkBridge {
   private readonly lifecycleNoticeTimeoutMs: number | undefined;
 
   private readonly chats = new Map<string, ChatRuntime>();
+  private readonly pendingAgentSwitches = new Map<string, PendingAgentSwitch>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private ws: LarkWsConnection | null = null;
   private controlServer: BridgeControlServer | null = null;
@@ -1342,11 +1361,71 @@ export class LarkBridge {
       );
       return;
     }
+    const previous = await this.sessionStore.getLatest(chatId, threadId);
+    if (previous && !previous.profileOnly) {
+      await this.requestDestructiveAgentSwitchConfirmation(
+        chatId,
+        threadId,
+        messageId,
+        binding,
+        target,
+        previous,
+      );
+      return;
+    }
+    await this.switchAgentAfterProbe(chatId, threadId, messageId, binding.cwd, target);
+  }
+
+  private async requestDestructiveAgentSwitchConfirmation(
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+    binding: EffectiveBinding,
+    target: ResolvedAgentInvocation,
+    previous: SessionRecord,
+  ): Promise<void> {
+    const switchId = randomUUID();
+    const warning = buildAgentSwitchWarning(
+      switchId,
+      chatId,
+      threadId,
+      binding.cwd,
+      previous,
+      target,
+    );
+    const warningCardId = this.presenter.replyAgentSwitchWarningCard
+      ? await this.presenter.replyAgentSwitchWarningCard(messageId, warning)
+      : null;
+    if (!warningCardId) {
+      await this.presenter.replyNoticeCard(messageId, {
+        title: "⚠️ 切换 Agent 需要确认",
+        body: `${warning.body}\n\n当前客户端不支持确认按钮，未执行切换。`,
+        template: "orange",
+      });
+      return;
+    }
+    this.pendingAgentSwitches.set(switchId, {
+      switchId,
+      chatId,
+      threadId,
+      target,
+      cwd: binding.cwd,
+      warningCardId,
+    });
+  }
+
+  private async switchAgentAfterProbe(
+    chatId: string,
+    threadId: string | null,
+    noticeMessageId: string | null,
+    cwd: string,
+    target: ResolvedAgentInvocation,
+  ): Promise<void> {
     try {
       await probeAgentSessionCapabilities({
         command: target.command,
         args: [...target.args],
-        cwd: binding.cwd,
+        cwd,
         ...(target.env ? { env: { ...target.env } } : {}),
         logger: this.logger,
       });
@@ -1358,10 +1437,10 @@ export class LarkBridge {
           label: target.label,
           command: target.command,
           args: [...target.args],
-          cwd: binding.cwd,
+          cwd,
         },
         formatBootstrapError(err),
-        messageId,
+        noticeMessageId,
       );
       return;
     }
@@ -1377,11 +1456,68 @@ export class LarkBridge {
         agentArgs: [...target.args],
         ...(target.env ? { agentEnv: { ...target.env } } : {}),
         agentLabel: target.label,
-        cwd: binding.cwd,
+        cwd,
         createdAt: now,
         updatedAt: now,
       },
-      messageId,
+      noticeMessageId,
+    );
+  }
+
+  private handleAgentSwitchWarningAction(
+    cardMessageId: string | undefined,
+    chatId: string,
+    threadId: string | null,
+    switchId: string,
+    action: "confirm" | "cancel",
+  ): void {
+    this.resolveAgentSwitchWarningAction(cardMessageId, chatId, threadId, switchId, action).catch(
+      (err) => this.logger.warn({ err, chatId, threadId, switchId }, "agent switch action failed"),
+    );
+  }
+
+  private async resolveAgentSwitchWarningAction(
+    cardMessageId: string | undefined,
+    chatId: string,
+    threadId: string | null,
+    switchId: string,
+    action: "confirm" | "cancel",
+  ): Promise<void> {
+    const pending = this.pendingAgentSwitches.get(switchId);
+    const updateCardId = cardMessageId ?? pending?.warningCardId;
+    if (!pending || pending.chatId !== chatId || pending.threadId !== threadId) {
+      if (updateCardId && this.presenter.updateAgentSwitchWarningCard) {
+        await this.presenter.updateAgentSwitchWarningCard(updateCardId, {
+          status: "expired",
+          text: "这次 Agent 切换确认已失效，请重新发送 /agent <agent>。",
+        });
+      }
+      return;
+    }
+
+    this.pendingAgentSwitches.delete(switchId);
+    if (action === "cancel") {
+      if (updateCardId && this.presenter.updateAgentSwitchWarningCard) {
+        await this.presenter.updateAgentSwitchWarningCard(updateCardId, {
+          status: "cancelled",
+          text: "已取消 Agent 切换；当前 session 保持不变。",
+        });
+      }
+      return;
+    }
+
+    if (updateCardId && this.presenter.updateAgentSwitchWarningCard) {
+      await this.presenter.updateAgentSwitchWarningCard(updateCardId, {
+        status: "confirmed",
+        text: "已确认切换，正在启动目标 Agent 检查可用性。",
+      });
+    }
+    await this.switchAgentAfterProbe(
+      chatId,
+      threadId,
+      updateCardId ?? null,
+      pending.cwd,
+      pending.target,
     );
   }
 
@@ -1937,6 +2073,11 @@ export class LarkBridge {
       return;
     }
 
+    if (value.sw && value.swa) {
+      this.handleAgentSwitchWarningAction(event.messageId, value.c, threadId, value.sw, value.swa);
+      return;
+    }
+
     if (!value.r || !value.o) return;
     this.handlePermissionCardAction(
       event,
@@ -2365,7 +2506,9 @@ function buildSessionAgentSwitchedNotice(
   const beforeAgent = before ? (before.agentLabel ?? before.agentCommand) : "未绑定";
   const currentAgent = record.agentLabel ?? record.agentCommand;
   const lines = [
-    `当前 topic 的 Agent 已切换为 **${currentAgent}**。旧 Agent 的内部对话历史不会自动迁移；下一条消息会用新 Agent 创建全新 ACP session。`,
+    `当前 topic 的 Agent 已切换为 **${currentAgent}**。旧 Agent 的内部对话历史不会自动迁移，内部 session context 没有迁移；下一条消息会用新 Agent 创建全新 ACP session。`,
+    "",
+    "请发送下一条消息开始新的任务。触发切换的那条消息只是控制消息，不会作为任务发送给新 Agent。",
     "",
     "**切换结果**",
     `• Agent：${beforeAgent} → ${currentAgent}`,
@@ -2385,6 +2528,51 @@ function buildSessionAgentSwitchedNotice(
     body: lines.join("\n"),
     template: "green",
   };
+}
+
+function buildAgentSwitchWarning(
+  switchId: string,
+  chatId: string,
+  threadId: string | null,
+  repo: string,
+  previous: SessionRecord,
+  target: ResolvedAgentInvocation,
+): AgentSwitchWarningCardSpec {
+  const fromAgent = previous.agentLabel ?? previous.agentCommand;
+  const toAgent = target.label;
+  const body = [
+    `当前 topic 已由 **${fromAgent}** 处理过。确认切换到 **${toAgent}** 后，Humming 会清掉当前 topic 的旧 Agent session binding，并让新 Agent 从全新 session 开始。`,
+    "",
+    "**会保留**",
+    "• 当前 Feishu topic",
+    "• 当前 chat/repo 绑定",
+    "• topic 里已经可见的历史消息",
+    "",
+    "**不会保留**",
+    "• 当前 Agent 的内部 session context",
+    "• 当前 Agent 已读取但未输出的信息",
+    "• 当前 Agent 专属的 model/mode/config 状态",
+    "• 这条切换消息中的任务内容",
+    "",
+    "这条切换消息不会作为任务发送给新 Agent。确认切换后，请重新发送你的任务。",
+    "",
+    "**目标**",
+    `• Agent：${toAgent}`,
+    `• Repo：${repo}`,
+  ];
+  return {
+    switchId,
+    chatId,
+    threadId,
+    fromAgent,
+    toAgent,
+    repo,
+    body: linesToBody(body),
+  };
+}
+
+function linesToBody(lines: readonly string[]): string {
+  return lines.join("\n");
 }
 
 function buildSessionBindRejectedNotice(record: SessionRecord): NoticeCardSpec {

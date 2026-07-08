@@ -5,6 +5,8 @@ import type { LarkHttpClient } from "../lark/lark-http.js";
 import { markdownToPost, splitMarkdown } from "./lark-markdown.js";
 import type {
   AgentStatus,
+  AgentSwitchWarningCardSpec,
+  AgentSwitchWarningResolution,
   CommandResultCardSpec,
   LarkPresenter,
   NoticeCardSpec,
@@ -113,6 +115,62 @@ function buildCallbackButton(
     type,
     behaviors: [{ type: "callback", value }],
   };
+}
+
+function buildAgentSwitchWarningCard(warning: AgentSwitchWarningCardSpec): object {
+  return buildV2Card(
+    "⚠️ 切换 Agent 会丢失 context",
+    "orange",
+    [
+      { tag: "markdown", content: warning.body },
+      { tag: "hr" },
+      buildCallbackButton("确认切换", "danger", {
+        sw: warning.switchId,
+        swa: "confirm",
+        c: warning.chatId,
+        ...(warning.threadId !== null ? { th: warning.threadId } : {}),
+      }),
+      buildCallbackButton("取消", "default", {
+        sw: warning.switchId,
+        swa: "cancel",
+        c: warning.chatId,
+        ...(warning.threadId !== null ? { th: warning.threadId } : {}),
+      }),
+    ],
+    "⚠️ 切换 Agent 会丢失 context",
+  );
+}
+
+function buildAgentSwitchWarningResolutionCard(resolution: AgentSwitchWarningResolution): object {
+  const header = agentSwitchResolutionHeader(resolution.status);
+  return buildV2Card(
+    header.title,
+    header.template,
+    [{ tag: "markdown", content: resolution.text }],
+    header.title,
+  );
+}
+
+function agentSwitchResolutionHeader(status: AgentSwitchWarningResolution["status"]): {
+  readonly title: string;
+  readonly template: string;
+} {
+  switch (status) {
+    case "confirmed":
+      return { title: "✅ 已确认切换", template: "green" };
+    case "cancelled":
+      return { title: "⛔ 已取消切换", template: "grey" };
+    case "expired":
+      return { title: "⛔ 切换已失效", template: "grey" };
+    case "failed":
+      return { title: "⚠️ 切换失败", template: "red" };
+    default:
+      return assertNeverSwitchResolution(status);
+  }
+}
+
+function assertNeverSwitchResolution(x: never): never {
+  throw new Error(`unexpected agent switch resolution: ${String(x)}`);
 }
 
 function buildPermissionCard(
@@ -510,6 +568,31 @@ export class LarkCardPresenter implements LarkPresenter {
       await this.http.replyCard(replyToMessageId, buildCommandResultCard(result));
     } catch (err) {
       this.logger.warn({ err, replyToMessageId }, "replyCommandResultCard failed");
+    }
+  }
+
+  async replyAgentSwitchWarningCard(
+    replyToMessageId: string,
+    warning: AgentSwitchWarningCardSpec,
+  ): Promise<string | null> {
+    try {
+      return await this.http.replyCard(replyToMessageId, buildAgentSwitchWarningCard(warning), {
+        replyInThread: warning.threadId !== null,
+      });
+    } catch (err) {
+      this.logger.warn({ err, replyToMessageId }, "replyAgentSwitchWarningCard failed");
+      return null;
+    }
+  }
+
+  async updateAgentSwitchWarningCard(
+    cardMessageId: string,
+    resolution: AgentSwitchWarningResolution,
+  ): Promise<void> {
+    try {
+      await this.http.patchCard(cardMessageId, buildAgentSwitchWarningResolutionCard(resolution));
+    } catch (err) {
+      this.logger.warn({ err, cardMessageId }, "updateAgentSwitchWarningCard failed");
     }
   }
 

@@ -108,7 +108,11 @@ If set-control is requested while the current topic has an in-flight prompt, Hum
 
 ## Switching the current topic's Agent
 
-Switching Agent is a topic/session profile change, not a `settings.json` edit. Do **not** change `runtime.agent` or write an agent into `bindings` to switch the current topic; those only affect cold starts / repo binding, not an already-bound topic session.
+Switching Agent is a destructive topic/session boundary, not a `settings.json` edit. Do **not** change `runtime.agent` or write an agent into `bindings` to switch the current topic; those only affect cold starts / repo binding, not an already-bound topic session.
+
+Preferred Feishu UX: ask the user to send `/agent <agent>`. If the current topic already has a real session, Humming will show a warning card explaining that the current Agent's internal session context and the switch message's task content will be lost. Only after the user clicks **确认切换** does Humming probe the target Agent and perform the switch. If the user cancels, the old session stays active.
+
+Do not silently run `humming sessions set-agent` from inside an Agent in response to a user's natural-language switch request for an already-started topic; that bypasses the warning/confirmation UI. Use the CLI only after explicit user confirmation or for admin/recovery workflows where the caller already understands the destructive semantics.
 
 Use the CLI:
 
@@ -118,6 +122,8 @@ humming sessions set-agent --agent copilot
 
 Semantics:
 
+- `/agent <agent>` in an already-started topic first sends a context-loss warning and does not probe or mutate state until the user confirms.
+- The switch command/control message is a control message, not a task message. Its task text, if any, is not forwarded to the new Agent; after switching, the user must send the next task message.
 - Humming stops the current topic runtime if it is running.
 - Humming drops the old topic session binding and writes a profile-only record for the new Agent.
 - Humming copies Model / Mode / Permission / Config controls from the most recent session in the current chat that used the target Agent. This is metadata-only inheritance; it does not copy history or sessionId.

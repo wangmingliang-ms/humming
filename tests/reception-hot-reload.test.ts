@@ -15,6 +15,8 @@ import {
   SettingsBindingStore,
   type LarkPresenter,
   type NoticeCardSpec,
+  type AgentSwitchWarningCardSpec,
+  type AgentSwitchWarningResolution,
   type SessionControlPatch,
   type SessionRecord,
   type AgentResolver,
@@ -38,6 +40,8 @@ vi.mock("../src/acp/agent-process.js", async (importOriginal) => {
 class RecordingPresenter implements LarkPresenter {
   readonly notices: NoticeCardSpec[] = [];
   readonly commandResults: NoticeCardSpec[] = [];
+  readonly agentSwitchWarnings: AgentSwitchWarningCardSpec[] = [];
+  readonly agentSwitchResolutions: AgentSwitchWarningResolution[] = [];
   async replyText(): Promise<void> {}
   async sendInterruptCard(): Promise<string | null> {
     return null;
@@ -56,6 +60,19 @@ class RecordingPresenter implements LarkPresenter {
   async sendNoticeCard(_chatId: string, notice: NoticeCardSpec): Promise<string | null> {
     this.notices.push(notice);
     return "notice_msg";
+  }
+  async replyAgentSwitchWarningCard(
+    _id: string,
+    warning: AgentSwitchWarningCardSpec,
+  ): Promise<string | null> {
+    this.agentSwitchWarnings.push(warning);
+    return "agent_switch_warning_msg";
+  }
+  async updateAgentSwitchWarningCard(
+    _id: string,
+    resolution: AgentSwitchWarningResolution,
+  ): Promise<void> {
+    this.agentSwitchResolutions.push(resolution);
   }
   async sendUnifiedCard(): Promise<string | null> {
     return null;
@@ -113,6 +130,7 @@ interface BridgeInternals {
     chatId: string,
     threadId: string | null,
   ): Promise<void>;
+  handleCardAction(event: Lark.CardActionEvent): void;
   readonly activeChatCount: number;
 }
 function asInternals(bridge: LarkBridge): BridgeInternals {
@@ -805,7 +823,7 @@ describe("compact slash session profile commands", () => {
     expect(notice?.body).toContain("状态：profile-only");
   });
 
-  it("switches Agent via /agent using the same controlSetAgent notice path", async () => {
+  it("warns before switching Agent via /agent when the topic already has a session", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
@@ -829,18 +847,77 @@ describe("compact slash session profile commands", () => {
       "th_topic",
     );
 
-    expect(probeAgentSessionCapabilitiesMock).toHaveBeenCalledWith(
-      expect.objectContaining({ command: CODEX.command, args: CODEX.args, cwd: repoA }),
+    expect(probeAgentSessionCapabilitiesMock).not.toHaveBeenCalled();
+    expect(await sessionStore.getLatest("oc_x", "th_topic")).toMatchObject({
+      sessionId: "s_claude",
+      agentLabel: "claude",
+    });
+    expect(presenter.agentSwitchWarnings).toHaveLength(1);
+    expect(presenter.agentSwitchWarnings[0]).toMatchObject({
+      chatId: "oc_x",
+      threadId: "th_topic",
+      fromAgent: "claude",
+      toAgent: "codex",
+      repo: repoA,
+    });
+    expect(presenter.agentSwitchWarnings[0]?.body).toContain(
+      "这条切换消息不会作为任务发送给新 Agent",
     );
-    const stored = await sessionStore.getLatest("oc_x", "th_topic");
-    expect(stored).toMatchObject({ profileOnly: true, agentLabel: "codex", cwd: repoA });
+    expect(presenter.notices).toEqual([]);
+  });
+
+  it("switches Agent after the user confirms the context-loss warning", async () => {
+    bridge = makeBridge({ unboundCwd: home });
+    const b = asInternals(bridge);
+    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await sessionStore.save({
+      chatId: "oc_x",
+      threadId: "th_topic",
+      sessionId: "s_claude",
+      agentCommand: CLAUDE.command,
+      agentArgs: [...CLAUDE.args],
+      agentLabel: CLAUDE.label,
+      cwd: repoA,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    await b.routeMessage(
+      textEvent("/agent codex", "oc_x", "th_topic", "om_agent_confirm"),
+      "ou_user",
+      "om_agent_confirm",
+      "oc_x",
+      "th_topic",
+    );
+    const switchId = presenter.agentSwitchWarnings[0]?.switchId;
+    expect(switchId).toBeDefined();
+
+    b.handleCardAction({
+      action: { value: { c: "oc_x", th: "th_topic", sw: switchId, swa: "confirm" } },
+      messageId: "om_warning_card",
+    } as unknown as Lark.CardActionEvent);
+
+    await vi.waitFor(async () => {
+      expect(probeAgentSessionCapabilitiesMock).toHaveBeenCalledWith(
+        expect.objectContaining({ command: CODEX.command, args: CODEX.args, cwd: repoA }),
+      );
+      expect(await sessionStore.getLatest("oc_x", "th_topic")).toMatchObject({
+        profileOnly: true,
+        agentLabel: "codex",
+        cwd: repoA,
+      });
+    });
+    expect(presenter.agentSwitchResolutions).toContainEqual({
+      status: "confirmed",
+      text: "已确认切换，正在启动目标 Agent 检查可用性。",
+    });
     const notice = presenter.notices.at(-1);
     expect(notice).toMatchObject({ title: "✅ Agent 已切换", template: "green" });
     expect(notice?.body).toContain("Agent：claude → codex");
     expect(notice?.body).toContain("旧 Agent 的内部对话历史不会自动迁移");
   });
 
-  it("keeps the old Agent when /agent target probe fails", async () => {
+  it("keeps the old Agent when confirmed /agent target probe fails", async () => {
     bridge = makeBridge({ unboundCwd: home });
     const b = asInternals(bridge);
     probeAgentSessionCapabilitiesMock.mockRejectedValueOnce(new Error("Authentication required"));
@@ -864,7 +941,15 @@ describe("compact slash session profile commands", () => {
       "oc_x",
       "th_topic",
     );
+    const switchId = presenter.agentSwitchWarnings[0]?.switchId;
+    expect(switchId).toBeDefined();
 
+    b.handleCardAction({
+      action: { value: { c: "oc_x", th: "th_topic", sw: switchId, swa: "confirm" } },
+      messageId: "om_warning_fail_card",
+    } as unknown as Lark.CardActionEvent);
+
+    await vi.waitFor(() => expect(probeAgentSessionCapabilitiesMock).toHaveBeenCalled());
     expect(await sessionStore.getLatest("oc_x", "th_topic")).toMatchObject({
       sessionId: "s_claude",
       agentLabel: "claude",

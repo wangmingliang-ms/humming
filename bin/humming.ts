@@ -2139,10 +2139,17 @@ function resolveSessionTargetContext(args: ParsedArgs): SessionTargetContext {
   const chatId = args.targetChatId;
   const threadId = args.targetThreadId ?? null;
   const binding = chatId ? file.bindings[chatId] : undefined;
-  const rawCwd = args.targetCwd ?? args.cwd ?? binding?.cwd ?? file.runtime.cwd;
+  const sessionCwd = chatId ? readLatestSessionCwd(dataDir, chatId, threadId) : undefined;
+  const rawCwd =
+    args.targetCwd ??
+    args.cwd ??
+    binding?.cwd ??
+    sessionCwd ??
+    file.runtime.cwd ??
+    normalizeOptionalCwd(file.runtime.unboundCwd);
   if (!rawCwd) {
     throw new CliError(
-      "no cwd available; pass --cwd for sessions list, or bind the current chat to a repo first",
+      "no cwd available; pass --cwd for sessions list, bind the current chat to a repo, or configure runtime.unboundCwd for reception chats",
     );
   }
   const cwd = path.resolve(expandTilde(rawCwd));
@@ -2152,6 +2159,39 @@ function resolveSessionTargetContext(args: ParsedArgs): SessionTargetContext {
   const selection = args.targetAgent ?? file.runtime.agent ?? DEFAULT_AGENT;
   const invocation = makeAgentResolver(registry)(selection);
   return { homeDir, dataDir, configPath, file, registry, chatId, threadId, cwd, invocation };
+}
+
+function normalizeOptionalCwd(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0) return undefined;
+  return value;
+}
+
+function readLatestSessionCwd(
+  dataDir: string,
+  chatId: string,
+  threadId: string | null,
+): string | undefined {
+  const sessionsPath = path.join(dataDir, "sessions.json");
+  if (!fs.existsSync(sessionsPath)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(sessionsPath, "utf-8"));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed)) return undefined;
+  const records = parsed[chatId];
+  if (!Array.isArray(records)) return undefined;
+  const latest = records
+    .filter((record): record is Record<string, unknown> => isRecord(record))
+    .filter((record) => (record["threadId"] ?? null) === threadId)
+    .sort((a, b) => numberField(b["updatedAt"]) - numberField(a["updatedAt"]))[0];
+  const cwd = latest?.["cwd"];
+  return typeof cwd === "string" && cwd.length > 0 ? cwd : undefined;
+}
+
+function numberField(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 async function notifyAgentProbeFailure(target: SessionTargetContext, err: unknown): Promise<void> {
@@ -3077,6 +3117,7 @@ export {
   parseControlJson,
   readControlJsonInput,
   readPromptInput,
+  resolveSessionTargetContext,
   runProxy,
   runInit,
   runSetup,

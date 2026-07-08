@@ -136,6 +136,8 @@ Then run:
 humming sessions set-agent --agent <agent>
 ```
 
+Do not add `--cwd` for `set-agent`. In bound chats, Humming resolves the repo from the chat binding. In reception/unbound chats, it resolves the cwd from the current topic session or `runtime.unboundCwd`.
+
 If the same user message also contains a real task, store that task separately:
 
 ```bash

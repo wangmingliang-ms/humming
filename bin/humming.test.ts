@@ -24,6 +24,7 @@ import {
   resolveHomeDir,
   parseControlJson,
   readControlJsonInput,
+  resolveSessionTargetContext,
   runInit,
   resolveUpdateRef,
   restartHasExplicitOptions,
@@ -365,6 +366,75 @@ describe("parseArgs — control and session-control subcommands", () => {
     expect(args.targetAgent).toBe("claude");
     expect(args.targetCwd).toBe("/repo");
     expect(args.controlJson).toBe(true);
+  });
+
+  it("resolves session-control cwd from latest session or reception cwd", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-session-cwd-"));
+    try {
+      const home = path.join(dir, "home");
+      const repo = path.join(dir, "repo");
+      const reception = path.join(dir, "reception");
+      fs.mkdirSync(repo, { recursive: true });
+      fs.mkdirSync(reception, { recursive: true });
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(
+        path.join(home, "settings.json"),
+        JSON.stringify({
+          runtime: { agent: "claude", unboundCwd: reception },
+          credentials: { appId: "cli_x", appSecret: "secret" },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(home, "sessions.json"),
+        JSON.stringify({
+          oc_A: [
+            {
+              chatId: "oc_A",
+              threadId: "th_1",
+              sessionId: "sess_1",
+              agentCommand: "npx",
+              agentArgs: ["-y", "@github/copilot", "--acp"],
+              agentLabel: "copilot",
+              cwd: repo,
+              createdAt: 1,
+              updatedAt: 2,
+            },
+          ],
+        }),
+      );
+
+      const fromSession = resolveSessionTargetContext(
+        parseArgs([
+          "--home",
+          home,
+          "sessions",
+          "set-agent",
+          "--chat-id",
+          "oc_A",
+          "--thread-id",
+          "th_1",
+          "--agent",
+          "claude",
+        ]),
+      );
+      expect(fromSession.cwd).toBe(repo);
+
+      const fromReception = resolveSessionTargetContext(
+        parseArgs([
+          "--home",
+          home,
+          "sessions",
+          "set-agent",
+          "--chat-id",
+          "oc_B",
+          "--agent",
+          "claude",
+        ]),
+      );
+      expect(fromReception.cwd).toBe(reception);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("falls back to Humming chat/thread env vars for in-agent commands", () => {

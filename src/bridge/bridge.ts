@@ -386,6 +386,7 @@ interface PendingPostTurnAgentSwitch {
   readonly record: SessionRecord;
   readonly noticeMessageId: string | null;
   readonly targetProfile?: PendingTargetProfile;
+  readonly queuedNoticeMessageId?: string | null;
 }
 
 const POST_TURN_AGENT_SWITCH_TASK_HINT =
@@ -897,20 +898,22 @@ export class LarkBridge {
         ...(profile.task ? { task: { ...profile.task, prompt: profile.task.prompt.trim() } } : {}),
       },
     );
-    this.pendingPostTurnAgentSwitches.set(runtimeKey(chatId, threadId), {
-      record: baseRecord,
-      noticeMessageId: noticeMessageId ?? runtime.lastMessageId ?? null,
-      targetProfile: profile,
-    });
     const replyTo = noticeMessageId ?? runtime.lastMessageId ?? chatId;
-    await this.presenter
+    const queuedNoticeMessageId = await this.presenter
       .replyNoticeCard(
         replyTo,
         buildPendingTargetProfileQueuedNotice(previous, baseRecord, saved.pendingTargetProfile),
       )
-      .catch((err) =>
-        this.logger.warn({ err, chatId, threadId }, "pending target profile notice failed"),
-      );
+      .catch((err) => {
+        this.logger.warn({ err, chatId, threadId }, "pending target profile notice failed");
+        return null;
+      });
+    this.pendingPostTurnAgentSwitches.set(runtimeKey(chatId, threadId), {
+      record: baseRecord,
+      noticeMessageId: noticeMessageId ?? runtime.lastMessageId ?? null,
+      targetProfile: profile,
+      queuedNoticeMessageId,
+    });
     return {
       queued: true,
       agent: baseRecord.agentLabel ?? baseRecord.agentCommand,
@@ -981,6 +984,7 @@ export class LarkBridge {
     replyTo: string | null,
     pendingTask?: PendingSessionTask,
     noticeKind: "agent-switch" | "pending-target-profile" = "agent-switch",
+    updateNoticeMessageId?: string | null,
   ): Promise<void> {
     const key = runtimeKey(record.chatId, record.threadId);
     const runtime = this.chats.get(key);
@@ -997,17 +1001,32 @@ export class LarkBridge {
       noticeKind === "pending-target-profile"
         ? buildPendingTargetProfileAppliedNotice(record, previous, pendingTask)
         : buildSessionAgentSwitchedNotice(record, previous, inherited, pendingTask);
+    if (updateNoticeMessageId && this.presenter.updateNoticeCard) {
+      const updated = await this.presenter.updateNoticeCard(updateNoticeMessageId, notice);
+      if (!updated) {
+        await this.sendAgentSwitchNotice(record.chatId, replyTo, notice);
+      }
+    } else {
+      await this.sendAgentSwitchNotice(record.chatId, replyTo, notice);
+    }
+
+    if (pendingTask) await this.enqueueTaskForSwitchedAgent(record, pendingTask, replyTo);
+  }
+
+  private async sendAgentSwitchNotice(
+    chatId: string,
+    replyTo: string | null,
+    notice: NoticeCardSpec,
+  ): Promise<void> {
     if (replyTo) {
       await this.presenter
         .replyNoticeCard(replyTo, notice)
         .catch((err) => this.logger.warn({ err }, "session agent switch notice failed"));
     } else {
       await this.presenter
-        .sendNoticeCard(record.chatId, notice)
+        .sendNoticeCard(chatId, notice)
         .catch((err) => this.logger.warn({ err }, "session agent switch notice failed"));
     }
-
-    if (pendingTask) await this.enqueueTaskForSwitchedAgent(record, pendingTask, replyTo);
   }
 
   private async handleRuntimeTurnComplete(
@@ -1033,6 +1052,7 @@ export class LarkBridge {
       pending?.noticeMessageId ?? messageId,
       pendingTask,
       targetProfile ? "pending-target-profile" : "agent-switch",
+      pending?.queuedNoticeMessageId ?? null,
     );
   }
 
@@ -2879,6 +2899,8 @@ function buildPendingTargetProfileAppliedNotice(
 ): NoticeCardSpec {
   const currentAgent = record.agentLabel ?? record.agentCommand;
   const beforeAgent = before ? (before.agentLabel ?? before.agentCommand) : "未绑定";
+  const beforeControls = before?.controls;
+  const afterControls = record.controls;
   const lines = [
     "Pending target profile 已应用。",
     "",
@@ -2886,13 +2908,13 @@ function buildPendingTargetProfileAppliedNotice(
       ? "正在交给目标 Agent 执行 pending task。"
       : "没有 pending task；下一条消息会使用目标 profile。",
     "",
-    "**Profile 更新**",
+    "**本次 Profile 更新**",
     `• Agent：${beforeAgent} → ${currentAgent}`,
-    `• Repo：${record.cwd}`,
-    `• Mode：${displayControlMode(record.controls)}`,
-    `• Model：${displayControlModel(record.controls)}`,
-    `• Permission：${displayControlPermission(record.controls)}`,
-    `• Controls：${displayControlConfig(record.controls)}`,
+    `• Repo：${before?.cwd ?? "—"} → ${record.cwd}`,
+    `• Mode：${displayControlMode(beforeControls)} → ${displayControlMode(afterControls)}`,
+    `• Model：${displayControlModel(beforeControls)} → ${displayControlModel(afterControls)}`,
+    `• Permission：${displayControlPermission(beforeControls)} → ${displayControlPermission(afterControls)}`,
+    `• Controls：${displayControlConfig(beforeControls)} → ${displayControlConfig(afterControls)}`,
   ];
   return {
     title: "✅ Pending target profile 已生效",

@@ -65,6 +65,7 @@ function recordingPresenter(
         body: notice.body,
         template: notice.template,
       });
+      return null;
     },
     replyCommandResultCard: async (_messageId, result) => {
       ops.push({

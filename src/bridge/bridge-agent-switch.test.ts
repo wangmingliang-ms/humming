@@ -191,6 +191,7 @@ interface PresenterEvents {
   readonly warnings: AgentSwitchWarningCardSpec[];
   readonly warningResolutions: AgentSwitchWarningResolution[];
   readonly notices: NoticeCardSpec[];
+  readonly noticeUpdates: NoticeCardSpec[];
   readonly commandResults: CommandResultCardSpec[];
   readonly unifiedCards: UnifiedCardState[];
 }
@@ -204,6 +205,11 @@ function recordingPresenter(events: PresenterEvents): LarkPresenter {
     expirePermissionCard: async () => {},
     replyNoticeCard: async (_messageId, notice) => {
       events.notices.push(notice);
+      return "notice_card";
+    },
+    updateNoticeCard: async (_messageId, notice) => {
+      events.noticeUpdates.push(notice);
+      return true;
     },
     replyCommandResultCard: async (_messageId, result) => {
       events.commandResults.push(result);
@@ -378,6 +384,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
 
@@ -408,6 +415,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
 
@@ -432,6 +440,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
 
@@ -464,6 +473,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
     const testable = bridge as unknown as {
@@ -526,6 +536,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
     const testable = bridge as unknown as {
@@ -607,6 +618,15 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       });
       expect(testable.activeChatCount).toBe(1);
     });
+    expect(events.notices).toHaveLength(1);
+    expect(events.noticeUpdates).toHaveLength(1);
+    expect(events.noticeUpdates[0]).toMatchObject({
+      title: "✅ Pending target profile 已生效",
+      template: "green",
+    });
+    expect(events.noticeUpdates[0]?.body).toContain("**本次 Profile 更新**");
+    expect(events.noticeUpdates[0]?.body).toContain("• Agent：claude → codex");
+    expect(events.noticeUpdates[0]?.body).toContain("• Model：— → gpt-5.5");
     expect((await store.getLatest("oc_A", "omt_1"))?.pendingTargetProfile).toBeUndefined();
     expect(fakeRuntime.supersede).toHaveBeenCalledTimes(1);
     expect(spawnAgentMock).toHaveBeenCalledTimes(1);
@@ -620,6 +640,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
     const testable = bridge as unknown as {
@@ -673,8 +694,10 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
     await testable.handleRuntimeTurnComplete("oc_A", "omt_1", "om_handoff");
 
     await vi.waitFor(() => expect(testable.activeChatCount).toBe(1));
-    expect(events.notices.at(-1)).toMatchObject({ title: "✅ Pending target profile 已生效" });
-    expect(events.notices.at(-1)?.body).toContain("正在交给目标 Agent 执行 pending task");
+    expect(events.noticeUpdates.at(-1)).toMatchObject({
+      title: "✅ Pending target profile 已生效",
+    });
+    expect(events.noticeUpdates.at(-1)?.body).toContain("正在交给目标 Agent 执行 pending task");
     expect(spawnAgentMock).toHaveBeenCalledTimes(1);
   });
 
@@ -686,6 +709,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
     const testable = bridge as unknown as {
@@ -761,6 +785,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       notices: [],
       commandResults: [],
       unifiedCards: [],
+      noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
 

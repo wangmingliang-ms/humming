@@ -103,6 +103,7 @@ function recordingPresenter(
     expirePermissionCard: async () => {},
     replyNoticeCard: async (_id, notice) => {
       notices.push({ title: notice.title, body: notice.body, template: notice.template });
+      return "notice_msg";
     },
     replyCommandResultCard: async (_id, result) => {
       notices.push({ title: result.title, body: result.body, template: result.template });

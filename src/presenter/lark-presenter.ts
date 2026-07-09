@@ -552,11 +552,22 @@ export class LarkCardPresenter implements LarkPresenter {
     }
   }
 
-  async replyNoticeCard(replyToMessageId: string, notice: NoticeCardSpec): Promise<void> {
+  async replyNoticeCard(replyToMessageId: string, notice: NoticeCardSpec): Promise<string | null> {
     try {
-      await this.http.replyCard(replyToMessageId, buildNoticeCard(notice));
+      return await this.http.replyCard(replyToMessageId, buildNoticeCard(notice));
     } catch (err) {
       this.logger.warn({ err, replyToMessageId }, "replyNoticeCard failed");
+      return null;
+    }
+  }
+
+  async updateNoticeCard(messageId: string, notice: NoticeCardSpec): Promise<boolean> {
+    try {
+      await this.http.patchCard(messageId, buildNoticeCard(notice));
+      return true;
+    } catch (err) {
+      this.logger.warn({ err, messageId }, "updateNoticeCard failed");
+      return false;
     }
   }
 

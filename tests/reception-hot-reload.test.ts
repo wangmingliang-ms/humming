@@ -51,8 +51,9 @@ class RecordingPresenter implements LarkPresenter {
   }
   async updatePermissionCard(): Promise<void> {}
   async expirePermissionCard(): Promise<void> {}
-  async replyNoticeCard(_id: string, notice: NoticeCardSpec): Promise<void> {
+  async replyNoticeCard(_id: string, notice: NoticeCardSpec): Promise<string | null> {
     this.notices.push(notice);
+    return "notice_msg";
   }
   async replyCommandResultCard(_id: string, result: NoticeCardSpec): Promise<void> {
     this.commandResults.push(result);

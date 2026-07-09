@@ -160,7 +160,10 @@ export interface LarkPresenter {
    * be overkill. This path is intentionally compact; use
    * {@link replyCommandResultCard} for slash-command listing/query output.
    */
-  replyNoticeCard(replyToMessageId: string, notice: NoticeCardSpec): Promise<void>;
+  replyNoticeCard(replyToMessageId: string, notice: NoticeCardSpec): Promise<string | null>;
+
+  /** Patch an existing notice card. Returns false when the transport rejects. */
+  updateNoticeCard?(messageId: string, notice: NoticeCardSpec): Promise<boolean>;
 
   /**
    * Reply to `replyToMessageId` with a slash-command execution result. The body

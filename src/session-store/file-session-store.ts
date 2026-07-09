@@ -184,19 +184,29 @@ export class FileSessionStore implements SessionStore {
     return updated;
   }
 
-  async consumePendingControls(
-    target: SessionControlTarget,
-  ): Promise<{ readonly record: SessionRecord; readonly pendingControls?: SessionControls }> {
+  async consumePendingControls(target: SessionControlTarget): Promise<{
+    readonly record: SessionRecord;
+    readonly pendingControls?: SessionControlPatch;
+    readonly noticeMessageId?: string;
+  }> {
     const record = await this.findControlTarget(target);
     const pendingControls = record.pendingControls;
-    if (pendingControls === undefined) return { record };
+    const noticeMessageId = record.pendingControlsNoticeMessageId;
+    if (pendingControls === undefined) {
+      return { record, ...(noticeMessageId !== undefined ? { noticeMessageId } : {}) };
+    }
     const updated: SessionRecord = {
       ...record,
       pendingControls: undefined,
+      pendingControlsNoticeMessageId: undefined,
       updatedAt: Date.now(),
     };
     await this.save(updated);
-    return { record: updated, pendingControls };
+    return {
+      record: updated,
+      pendingControls,
+      ...(noticeMessageId !== undefined ? { noticeMessageId } : {}),
+    };
   }
 
   async setPendingTask(

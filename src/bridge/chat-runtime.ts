@@ -751,11 +751,12 @@ export class ChatRuntime {
           bridgePermissionMode: state.client.getPermissionMode(),
         },
         pendingControls,
+        consumed.noticeMessageId,
       );
       return true;
     } catch (err) {
       this.logger.warn({ err }, "pending session controls apply failed");
-      await this.notifyPendingControlFailure(messageId, err);
+      await this.notifyPendingControlFailure(messageId, err, consumed.noticeMessageId);
       return false;
     }
   }
@@ -787,20 +788,28 @@ export class ChatRuntime {
     });
   }
 
-  private async notifyPendingControlFailure(messageId: string, err: unknown): Promise<void> {
-    const body = [
-      "之前排队的 session control 设置在本轮发送前应用失败，已丢弃；当前消息会继续使用旧 profile。",
-      "",
-      formatControlFailure(err),
-      "",
-      "请让 agent 重新查询 capabilities 后，使用有效的 modelId / modeId / config 值再试。",
-    ].join("\n");
+  private async notifyPendingControlFailure(
+    messageId: string,
+    err: unknown,
+    queuedNoticeMessageId?: string,
+  ): Promise<void> {
+    const notice = {
+      title: "⚠️ 排队的 Session 设置未生效",
+      body: [
+        "之前排队的 session control 设置在本轮发送前应用失败，已丢弃；当前消息会继续使用旧 profile。",
+        "",
+        formatControlFailure(err),
+        "",
+        "请让 agent 重新查询 capabilities 后，使用有效的 modelId / modeId / config 值再试。",
+      ].join("\n"),
+      template: "orange" as const,
+    };
+    if (queuedNoticeMessageId && this.opts.presenter.updateNoticeCard) {
+      const updated = await this.opts.presenter.updateNoticeCard(queuedNoticeMessageId, notice);
+      if (updated) return;
+    }
     await this.opts.presenter
-      .replyNoticeCard(messageId, {
-        title: "⚠️ 排队的 Session 设置未生效",
-        body,
-        template: "orange",
-      })
+      .replyNoticeCard(messageId, notice)
       .catch((sendErr) =>
         this.logger.warn({ err: sendErr }, "pending control failure notice failed"),
       );
@@ -812,13 +821,19 @@ export class ChatRuntime {
     before: SessionCapabilitiesSnapshot,
     after: SessionCapabilitiesSnapshot,
     controls: SessionControls,
+    queuedNoticeMessageId?: string,
   ): Promise<void> {
+    const notice = {
+      title: "✅ 排队的 Session profile 已生效",
+      body: renderControlSuccessBody(before, after, controls),
+      template: "green" as const,
+    };
+    if (queuedNoticeMessageId && this.opts.presenter.updateNoticeCard) {
+      const updated = await this.opts.presenter.updateNoticeCard(queuedNoticeMessageId, notice);
+      if (updated) return;
+    }
     await this.opts.presenter
-      .replyNoticeCard(messageId, {
-        title: "✅ 排队的 Session profile 已生效",
-        body: renderControlSuccessBody(before, after, controls),
-        template: "green",
-      })
+      .replyNoticeCard(messageId, notice)
       .catch((sendErr) =>
         this.logger.warn({ err: sendErr }, "pending control success notice failed"),
       );
@@ -969,6 +984,9 @@ export class ChatRuntime {
           : {}),
         ...(previous?.pendingControls !== undefined
           ? { pendingControls: previous.pendingControls }
+          : {}),
+        ...(previous?.pendingControlsNoticeMessageId !== undefined
+          ? { pendingControlsNoticeMessageId: previous.pendingControlsNoticeMessageId }
           : {}),
         ...(previous?.pendingTask !== undefined ? { pendingTask: previous.pendingTask } : {}),
         ...(previous?.pendingTargetProfile !== undefined

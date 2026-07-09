@@ -682,11 +682,18 @@ export class LarkBridge {
         if (!validation.ok) return { applied: false, rejected: true, reason: validation.reason };
         const record = await this.sessionStore.setPendingControls({ chatId, threadId }, controls);
         const replyTo = noticeMessageId ?? runtime.lastMessageId ?? chatId;
-        await this.presenter
+        const queuedNoticeMessageId = await this.presenter
           .replyNoticeCard(replyTo, buildPendingControlQueuedNotice(before, record, controls))
-          .catch((err) =>
-            this.logger.warn({ err, chatId, threadId }, "pending control queue notice failed"),
-          );
+          .catch((err) => {
+            this.logger.warn({ err, chatId, threadId }, "pending control queue notice failed");
+            return null;
+          });
+        if (queuedNoticeMessageId) {
+          await this.sessionStore.save({
+            ...record,
+            pendingControlsNoticeMessageId: queuedNoticeMessageId,
+          });
+        }
         return { applied: false, queued: true, recordSessionId: record.sessionId };
       }
       try {

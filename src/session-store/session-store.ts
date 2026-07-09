@@ -41,6 +41,8 @@ export interface SessionRecord {
   controls?: SessionControls;
   /** One-shot next-turn control changes, consumed before the next ACP prompt. */
   pendingControls?: SessionControlPatch;
+  /** Card id for the queued pendingControls notice, patched when the controls apply/fail. */
+  pendingControlsNoticeMessageId?: string;
   /** One-shot task prompt to run automatically after queued controls become live. */
   pendingTask?: PendingSessionTask;
   /** Atomic Agent + controls + optional task target to apply after the current turn. */
@@ -176,9 +178,11 @@ export interface SessionStore {
   ): Promise<SessionRecord>;
 
   /** Consume the one-shot next-turn controls for one existing/current session. */
-  consumePendingControls(
-    target: SessionControlTarget,
-  ): Promise<{ readonly record: SessionRecord; readonly pendingControls?: SessionControlPatch }>;
+  consumePendingControls(target: SessionControlTarget): Promise<{
+    readonly record: SessionRecord;
+    readonly pendingControls?: SessionControlPatch;
+    readonly noticeMessageId?: string;
+  }>;
 
   /** Store/replace the one-shot task prompt to run after queued controls apply. */
   setPendingTask(target: SessionControlTarget, task: PendingSessionTask): Promise<SessionRecord>;

@@ -94,6 +94,7 @@ describe("ChatRuntime idle-eviction getters (regression: evicted mid-spawn)", ()
 function recordingPresenter(
   states: UnifiedCardState[],
   notices: Array<{ title: string; body: string; template: string }> = [],
+  noticeUpdates: Array<{ title: string; body: string; template: string }> = [],
 ): LarkPresenter {
   return {
     replyText: async () => {},
@@ -104,6 +105,10 @@ function recordingPresenter(
     replyNoticeCard: async (_id, notice) => {
       notices.push({ title: notice.title, body: notice.body, template: notice.template });
       return "notice_msg";
+    },
+    updateNoticeCard: async (_id, notice) => {
+      noticeUpdates.push({ title: notice.title, body: notice.body, template: notice.template });
+      return true;
     },
     replyCommandResultCard: async (_id, result) => {
       notices.push({ title: result.title, body: result.body, template: result.template });
@@ -732,6 +737,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
     let latest: SessionRecord | null = null;
     const notices: Array<{ title: string; body: string; template: string }> = [];
+    const noticeUpdates: Array<{ title: string; body: string; template: string }> = [];
     const store: SessionStore = {
       ...stubSessionStore(),
       getLatest: async () => latest,
@@ -741,13 +747,18 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       consumePendingControls: async () => {
         if (!latest?.pendingControls) return { record: latest!, pendingControls: undefined };
         const pendingControls = latest.pendingControls;
-        latest = { ...latest, pendingControls: undefined };
-        return { record: latest, pendingControls };
+        const noticeMessageId = latest.pendingControlsNoticeMessageId;
+        latest = {
+          ...latest,
+          pendingControls: undefined,
+          pendingControlsNoticeMessageId: undefined,
+        };
+        return { record: latest, pendingControls, noticeMessageId };
       },
     };
     const runtime = new ChatRuntime({
       ...opts(),
-      presenter: recordingPresenter([], notices),
+      presenter: recordingPresenter([], notices, noticeUpdates),
       sessionStore: store,
     });
 
@@ -764,6 +775,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     latest = {
       ...latest!,
       pendingControls: { modelId: "model-new" },
+      pendingControlsNoticeMessageId: "notice_msg",
     };
 
     fake.resolvePrompt("end_turn");
@@ -776,7 +788,9 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     expect(setModel).toHaveBeenCalledWith({ sessionId: "sess_fake", modelId: "model-new" });
     expect(latest).toMatchObject({ controls: { modelId: "model-new" } });
     expect(latest?.pendingControls).toBeUndefined();
-    expect(notices.at(-1)).toMatchObject({
+    expect(latest?.pendingControlsNoticeMessageId).toBeUndefined();
+    expect(notices).toEqual([]);
+    expect(noticeUpdates.at(-1)).toMatchObject({
       title: "✅ 排队的 Session profile 已生效",
       template: "green",
     });
@@ -803,8 +817,13 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       consumePendingControls: async () => {
         if (!latest?.pendingControls) return { record: latest!, pendingControls: undefined };
         const pendingControls = latest.pendingControls;
-        latest = { ...latest, pendingControls: undefined };
-        return { record: latest, pendingControls };
+        const noticeMessageId = latest.pendingControlsNoticeMessageId;
+        latest = {
+          ...latest,
+          pendingControls: undefined,
+          pendingControlsNoticeMessageId: undefined,
+        };
+        return { record: latest, pendingControls, noticeMessageId };
       },
       consumePendingTask: async () => {
         if (!latest?.pendingTask) return { record: latest!, pendingTask: undefined };

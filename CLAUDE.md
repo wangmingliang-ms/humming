@@ -42,16 +42,43 @@ humming proxy --agent claude    # 前台运行（占终端，Ctrl-C 停）
 
 ## humming 自身操作指南
 
-- Chat binding 是 repo-only：`settings.json` 的 `bindings.<chatId>` 只写 `{ "cwd": "/absolute/path/to/repo" }`，不要写 agent。Agent / Model / Mode / Permission / Config controls 都属于 topic/session profile；新 topic 会继承同 chat + repo 最近 session profile，repo 没有历史 session 时才使用全局默认 Agent（`runtime.agent`）。
-- 当用户要求列出某个 agent 的 settings / session settings / capabilities / existing sessions 时，必须使用 humming 提供的 CLI/control 命令，不要去 Claude/Codex/Gemini/OpenCode 的缓存目录或项目目录里猜状态。Humming 会把当前 chat/topic 注入到 agent 子进程的 `HUMMING_CHAT_ID` / `HUMMING_THREAD_ID`，CLI 会自动 fallback 到这些 env vars；在 Humming agent 内执行命令时优先省略 `--chat-id` / `--thread-id`，避免 Windows PowerShell/cmd 与 bash 环境变量语法差异。
-  - Agent preset 列表：`humming agents`
-  - 当前 live session settings/capabilities：`humming control capabilities --json`
-  - 指定 Agent 的 capabilities（不改变当前 topic）：`humming control agent-capabilities --agent <agent> --json`
-  - 某 agent 的已有 ACP sessions：`humming sessions list --agent <agent> --json`
-- 修改当前 topic 的 Model / Mode / Permission / Config controls 前必须先查询 live capabilities，确认 id/value 存在后再用 `humming sessions set-control ... --json '<controls>'`。成功后 Humming 会发「Session profile 已更新」通知，展示当前 Agent、Mode、Model、Permission 和 Controls；失败时 runtime 与 `sessions.json` 都不能被污染。如果同一条自然语言请求还包含 controls 生效后要执行的真实任务，成功排队/验证 controls 后再用 `humming sessions queue-task --prompt-file <task.md>`（短任务也可 `humming sessions queue-task -- <task>`）单独登记任务；Humming 会在当前 prompt 结束后先 apply pendingControls，成功后自动把 pending task 投递给生效后的 session profile。没有任务就不要 queue-task。
-- 切换当前 topic 的 Agent 是破坏性 session boundary。`/agent <agent>` 是显式 slash 控制命令：如果 topic 已经有真实 session，Humming 会先发 context-loss warning，说明旧 Agent 内部 session context、未输出信息、旧 controls、以及这条切换消息里的任务内容都不会迁移；用户点「确认切换」后才 probe/切换，点取消则旧 session 保持不变。自然语言 handoff 走另一条路径：如果用户说“用 Codex 做 X / 切到 Claude 继续查 Y / 让澎湃 CI 看这个 pipeline”，Agent 应抽取目标 Agent 与 residual task，调用 `humming sessions set-agent --agent <agent>`，并在同一 turn 用 `humming sessions queue-task --prompt-file <task.md>` 登记任务。`set-agent` 不接受也不需要 `--cwd`：绑定 chat 从 chat binding 解析 cwd，reception/unbound chat 从当前 topic session 或 `runtime.unboundCwd` 解析 cwd。当前 turn 结束后 Humming 会切到目标 Agent 并把 pending task 自动投递过去，用户不需要重复任务。不要改 `settings.json` 的 `runtime.agent`，也不要在 `bindings` 里写 agent。probe 成功后才停止当前 topic runtime、清掉旧 session binding，并用新 Agent 创建全新 ACP session；旧 Agent 的内部历史不会自动迁移。切换时只会从当前 chat 最近的目标 Agent session 继承 Model / Mode / Permission / Config controls，不会继承旧 Agent controls、history 或 sessionId。
-- Model / Mode / Config IDs 是 agent-specific。Claude 的 `opus` / `default` / `acceptEdits` 等控制不要带到 Copilot/Codex；切换后先查新 Agent capabilities，再用新返回里的 id 设置 controls。
-- `sessions bind` 只能绑定当前 chat repo 内的 session；如果该 session 已经绑定到另一个 chat/thread，必须拒绝并提示用户先重置原 thread，不要通过手改 `sessions.json` 绕过。绑定成功通知应包含 Title / Agent / Repo / Mode / Model / Permission / Controls，且不要在群里打印完整 session/chat/thread id。
+- Chat binding 只写 repo：`settings.json` 的 `bindings.<chatId>` 只保存 `{ "cwd": "/absolute/path/to/repo" }`。不要在 binding 里写 Agent / Model / Mode / Permission / Config。
+- 查看 Humming 状态只用这些命令，不要翻各 Agent 缓存目录：
+  - `humming agents`
+  - `humming control capabilities --json`
+  - `humming control agent-capabilities --agent <agent> --json`
+  - `humming sessions list --agent <agent> --json`
+- 在 Humming Agent 内执行命令时优先省略 `--chat-id` / `--thread-id`；CLI 会读取 `HUMMING_CHAT_ID` / `HUMMING_THREAD_ID`。只有明确要操作别的 chat/topic 时才手动传 ID。
+- 修改 Model / Mode / Permission / Config：先查 capabilities，确认 id/value 后用 split flags：
+
+  ```bash
+  humming control capabilities --json
+  humming sessions set-control --model <model-id>
+  humming sessions set-control --model auto
+  humming sessions set-control --mode <mode-id>
+  humming sessions set-control --permission alwaysAsk
+  humming sessions set-control --config <select-config-id>=<value-id>
+  humming sessions set-control --bool-config <boolean-config-id>=true
+  ```
+
+  多个 control 合并到一个命令；复杂批量 config 才用 `--json-file` / `--json-stdin`。如果同一请求还有后续任务，`set-control` 成功后再 `humming sessions queue-task --prompt-file <task.md>`；没有任务不要 queue。
+
+- 纯 Agent 切换：`humming sessions set-agent --agent <agent>`。
+- 自然语言 handoff（Agent + controls/task 同一句）：使用一个 pending target profile 命令：
+
+  ```bash
+  humming sessions set-pending-target-profile --agent <agent> \
+    --model <model-id> \
+    --mode <mode-id> \
+    --permission alwaysAsk \
+    --prompt-file <task.md>
+  ```
+
+  `set-pending-target-profile` 必须带 `--agent`。只有 Model/Mode/Permission/Config 变化时，始终用 `set-control`，即使当前已有 pending Agent switch。
+
+- `set-agent` / `set-pending-target-profile` 不加 `--cwd`；不要改 `runtime.agent`，不要把 Agent 写进 `bindings`。
+- `sessions bind` 只绑定当前 chat repo 内的 session；不接受 `--cwd`。session 已绑定到别处时不要手改 `sessions.json` 绕过。
+- 群聊里不要打印完整 session/chat/thread id。
 
 # TypeScript 工程准则（TypeScript 5.x / Strict Mode）
 

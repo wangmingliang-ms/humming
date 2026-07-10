@@ -32,18 +32,15 @@ describe("installHomeTemplates", () => {
     expect(agents).toContain(settingsPath);
     expect(agents).toContain(sessionsPath);
     expect(agents).toContain(path.join(dir, "control.sock"));
-    expect(agents).toContain("before/after details");
-    expect(agents).toContain("humming commands");
-    expect(agents).toContain("Chat bindings are repo-only");
+    expect(agents).toContain("Use Humming CLI/control commands for Agent/session state");
+    expect(agents).toContain("Chat binding is repo-only");
     expect(agents).toContain("/agent <agent>");
     expect(agents).toContain("/model auto");
     expect(agents).toContain("/capabilities <agent>");
-    expect(agents).toContain("`/help` lists all Humming slash commands");
-    expect(agents).toContain("`/capabilities` lists the current effective Agent");
-    expect(agents).toContain(
-      "Bare `/agent`, `/model`, `/mode`, and `/permission` list available options",
-    );
-    expect(agents).toContain("Humming handles that message in the bridge");
+    expect(agents).toContain("humming sessions set-control --model <model-id>");
+    expect(agents).toContain("humming sessions set-pending-target-profile --agent <agent>");
+    expect(agents).toContain("set-pending-target-profile` requires `--agent");
+    expect(agents).toContain("Do not explain Humming internals to the user");
 
     expect(fs.existsSync(settingsPath)).toBe(false);
     expect(fs.existsSync(sessionsPath)).toBe(false);

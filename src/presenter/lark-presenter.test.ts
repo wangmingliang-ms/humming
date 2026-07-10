@@ -118,7 +118,7 @@ describe("LarkCardPresenter card summary", () => {
       "💭 思考中...",
       "🔄 处理中...",
       "⏳ 待确认",
-      "✅ 已结束",
+      "done",
     ]);
     expect(cards[0]?.body?.elements?.[0]?.content).toContain("已收到消息");
     expect(cards[1]?.body?.elements?.[0]?.content).toContain("正在启动或连接 Agent");
@@ -127,7 +127,7 @@ describe("LarkCardPresenter card summary", () => {
     expect(cards[4]?.header?.title?.content).toBe("⏳ 待确认");
   });
 
-  it("renders sealed message cards as still-in-progress", async () => {
+  it("renders sealed conversation cards as neutral fragments with content summaries", async () => {
     const cards: CardWithConfig[] = [];
     const presenter = makePresenter(cards);
 
@@ -139,9 +139,39 @@ describe("LarkCardPresenter card summary", () => {
       threadId: null,
     });
 
-    expect(cards[0]?.header?.title?.content).toBe("✅ 已结束");
-    expect(cards[0]?.header?.template).toBe("blue");
-    expect(cards[0]?.config?.summary?.content).toBe("✅ 已结束");
+    expect(cards[0]?.header?.title?.content).toBe("💬 对话片段");
+    expect(cards[0]?.header?.template).toBe("grey");
+    expect(cards[0]?.config?.summary?.content).toBe("before approve");
+  });
+
+  it("renders completed conversation cards as neutral replies with summaries from the first entry", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+
+    await presenter.updateUnifiedCard("card_1", {
+      status: "complete",
+      entries: [
+        {
+          kind: "text",
+          text: "**第一条消息** 这里是一个很长的 conversation card 开头，用来做外层 summary，不能再显示成功态勾选。".repeat(
+            3,
+          ),
+        },
+        { kind: "text", text: "second message should not drive the summary" },
+      ],
+      cancellable: false,
+      chatId: "oc_1",
+      threadId: null,
+    });
+
+    const summary = cards[0]?.config?.summary?.content ?? "";
+    expect(cards[0]?.header?.title?.content).toBe("💬 回复");
+    expect(cards[0]?.header?.template).toBe("grey");
+    expect(summary).toContain("第一条消息");
+    expect(summary).not.toContain("**");
+    expect(summary).not.toContain("second message");
+    expect(summary).not.toContain("已完成");
+    expect(summary.endsWith("…")).toBe(true);
   });
 
   it("renders an explicit empty-output warning for terminal cards with no entries", async () => {

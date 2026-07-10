@@ -26,11 +26,13 @@ const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> 
   waiting: { content: "⏳ 等待中...", template: "wathet" },
   calling_tool: { content: "🔄 处理中...", template: "blue" },
   responding: { content: "✍️ 回复中...", template: "blue" },
-  sealed: { content: "✅ 已结束", template: "blue" },
-  complete: { content: "✅ 已结束", template: "blue" },
+  sealed: { content: "💬 对话片段", template: "grey" },
+  complete: { content: "💬 回复", template: "grey" },
   cancelled: { content: "⛔ 已取消", template: "grey" },
   failed: { content: "⚠️ 出错", template: "red" },
 };
+
+const CONVERSATION_SUMMARY_CHAR_LIMIT = 80;
 
 const EMPTY_OUTPUT_HEADER = { content: "⚠️ 空回复", template: "orange" } as const;
 const EMPTY_OUTPUT_BODY =
@@ -383,6 +385,37 @@ function entryToCardElement(entry: TimelineEntry): object {
   return { tag: "markdown", content: nonThoughtEntryToMarkdown(entry) };
 }
 
+function unifiedCardSummary(state: UnifiedCardState, fallback: string): string {
+  if (state.status !== "sealed" && state.status !== "complete") return fallback;
+  const firstText = firstSummaryText(state.entries);
+  return firstText ? truncateSummary(stripMarkdownForSummary(firstText)) : fallback;
+}
+
+function firstSummaryText(entries: readonly TimelineEntry[]): string | undefined {
+  for (const entry of entries) {
+    if (entry.kind === "text" || entry.kind === "thought") return entry.text;
+    const toolSummary = `${entry.toolKind}: ${entry.title}`;
+    if (toolSummary.trim()) return toolSummary;
+  }
+  return undefined;
+}
+
+function stripMarkdownForSummary(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_~>#|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function truncateSummary(text: string): string {
+  if (text.length <= CONVERSATION_SUMMARY_CHAR_LIMIT) return text;
+  return `${text.slice(0, CONVERSATION_SUMMARY_CHAR_LIMIT).trimEnd()}…`;
+}
+
 function buildSessionMetaElement(state: UnifiedCardState): object | null {
   const meta = state.meta;
   if (!meta) return null;
@@ -468,7 +501,12 @@ function buildUnifiedCard(state: UnifiedCardState): object {
   }
 
   const header = emptyTerminal ? EMPTY_OUTPUT_HEADER : STATUS_HEADER[state.status];
-  return buildV2Card(header.content, header.template, elements, header.content);
+  return buildV2Card(
+    header.content,
+    header.template,
+    elements,
+    unifiedCardSummary(state, header.content),
+  );
 }
 
 export interface LarkCardPresenterOptions {

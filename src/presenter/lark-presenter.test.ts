@@ -118,7 +118,7 @@ describe("LarkCardPresenter card summary", () => {
       "💭 思考中...",
       "🔄 处理中...",
       "⏳ 待确认",
-      "done",
+      "✅ 已结束",
     ]);
     expect(cards[0]?.body?.elements?.[0]?.content).toContain("已收到消息");
     expect(cards[1]?.body?.elements?.[0]?.content).toContain("正在启动或连接 Agent");
@@ -143,7 +143,7 @@ describe("LarkCardPresenter card summary", () => {
     expect(cards[0]?.config?.summary?.content).toBe("before approve");
   });
 
-  it("renders completed conversation cards as ended while keeping summaries from the first entry", async () => {
+  it("renders completed conversation cards as ended and mirrors that status in summaries", async () => {
     const cards: CardWithConfig[] = [];
     const presenter = makePresenter(cards);
 
@@ -163,14 +163,9 @@ describe("LarkCardPresenter card summary", () => {
       threadId: null,
     });
 
-    const summary = cards[0]?.config?.summary?.content ?? "";
     expect(cards[0]?.header?.title?.content).toBe("✅ 已结束");
     expect(cards[0]?.header?.template).toBe("blue");
-    expect(summary).toContain("第一条消息");
-    expect(summary).not.toContain("**");
-    expect(summary).not.toContain("second message");
-    expect(summary).not.toContain("已完成");
-    expect(summary.endsWith("…")).toBe(true);
+    expect(cards[0]?.config?.summary?.content).toBe("✅ 已结束");
   });
 
   it("renders an explicit empty-output warning for terminal cards with no entries", async () => {

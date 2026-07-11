@@ -390,7 +390,7 @@ function entryToCardElement(entry: TimelineEntry): object {
 }
 
 function unifiedCardSummary(state: UnifiedCardState, fallback: string): string {
-  if (state.status !== "sealed" && state.status !== "complete") return fallback;
+  if (state.status !== "sealed") return fallback;
   const firstText = firstSummaryText(state.entries);
   return firstText ? truncateSummary(stripMarkdownForSummary(firstText)) : fallback;
 }

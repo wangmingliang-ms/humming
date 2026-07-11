@@ -890,6 +890,40 @@ describe("HummingClient card-v2 conversation rendering", () => {
     });
   });
 
+  it("folds multibyte text by UTF-8 byte budget before final card patching", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+    const multibyteText = "界".repeat(
+      Math.floor(CARD_MARKDOWN_SOFT_CHAR_LIMIT / Buffer.byteLength("界", "utf8")) + 10,
+    );
+    expect(multibyteText.length).toBeLessThan(CARD_MARKDOWN_SOFT_CHAR_LIMIT);
+    expect(Buffer.byteLength(multibyteText, "utf8")).toBeGreaterThan(CARD_MARKDOWN_SOFT_CHAR_LIMIT);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: multibyteText },
+      },
+    });
+    await waitForFlush();
+    await client.finalize("complete");
+
+    const finalPatch = ops.findLast(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(finalPatch?.state.status).toBe("complete");
+    expect(finalPatch?.state.entries).toEqual([
+      expect.objectContaining({
+        kind: "text",
+        text: expect.stringContaining("任务结束前折叠"),
+      }),
+    ]);
+    expect(
+      finalPatch?.state.entries.map((entry) => (entry.kind === "text" ? entry.text : "")).join(""),
+    ).not.toContain(multibyteText);
+  });
+
   it("sends a fallback notice when patching the unified card fails", async () => {
     const ops: RenderOp[] = [];
     const client = makeClient(ops, { failUpdates: true });

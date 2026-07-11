@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
+import { Buffer } from "node:buffer";
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type {
@@ -70,20 +71,24 @@ interface ToolDisplay {
   readonly detail?: string;
 }
 
-function entryTextLength(entry: TimelineEntry): number {
+function entryTextSize(entry: TimelineEntry): number {
   switch (entry.kind) {
     case "text":
     case "thought":
-      return entry.text.length;
+      return Buffer.byteLength(entry.text, "utf8");
     case "tool":
-      return entry.title.length + entry.toolKind.length + (entry.detail?.length ?? 0);
+      return (
+        Buffer.byteLength(entry.title, "utf8") +
+        Buffer.byteLength(entry.toolKind, "utf8") +
+        (entry.detail ? Buffer.byteLength(entry.detail, "utf8") : 0)
+      );
     default:
       return assertNeverEntry(entry);
   }
 }
 
-function timelineTextLength(entries: readonly TimelineEntry[]): number {
-  return entries.reduce((sum, entry) => sum + entryTextLength(entry), 0);
+function timelineTextSize(entries: readonly TimelineEntry[]): number {
+  return entries.reduce((sum, entry) => sum + entryTextSize(entry), 0);
 }
 
 function compactionNoticeReason(reason: CardCompactionReason): string {
@@ -762,7 +767,7 @@ export class HummingClient implements acp.Client {
 
   private markCompactionNeededIfOverSoftLimit(): void {
     if (this.needsBoundaryCompaction) return;
-    if (timelineTextLength(this.timeline) >= CARD_MARKDOWN_SOFT_CHAR_LIMIT) {
+    if (timelineTextSize(this.timeline) >= CARD_MARKDOWN_SOFT_CHAR_LIMIT) {
       this.needsBoundaryCompaction = true;
     }
   }
@@ -770,7 +775,7 @@ export class HummingClient implements acp.Client {
   private compactTimelineAtBoundary(reason: CardCompactionReason): void {
     if (
       !this.needsBoundaryCompaction &&
-      timelineTextLength(this.timeline) < CARD_MARKDOWN_SOFT_CHAR_LIMIT
+      timelineTextSize(this.timeline) < CARD_MARKDOWN_SOFT_CHAR_LIMIT
     ) {
       return;
     }
@@ -783,14 +788,14 @@ export class HummingClient implements acp.Client {
   }
 
   private compactTimelineForFinalCard(): void {
-    if (timelineTextLength(this.timeline) >= CARD_MARKDOWN_SOFT_CHAR_LIMIT) {
+    if (timelineTextSize(this.timeline) >= CARD_MARKDOWN_SOFT_CHAR_LIMIT) {
       this.timeline = this.compactEntriesKeepingTail(
         this.timeline,
         "final",
         CARD_MARKDOWN_SOFT_CHAR_LIMIT,
       );
     }
-    if (timelineTextLength(this.timeline) >= CARD_MARKDOWN_ELEMENT_CHAR_LIMIT) {
+    if (timelineTextSize(this.timeline) >= CARD_MARKDOWN_ELEMENT_CHAR_LIMIT) {
       this.timeline = this.compactEntriesKeepingTail(
         this.timeline,
         "emergency",
@@ -810,7 +815,7 @@ export class HummingClient implements acp.Client {
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const entry = entries[i];
       if (!entry) continue;
-      const nextLength = tailLength + entryTextLength(entry);
+      const nextLength = tailLength + entryTextSize(entry);
       if (nextLength > targetChars) break;
       kept.unshift(entry);
       tailLength = nextLength;
@@ -819,7 +824,7 @@ export class HummingClient implements acp.Client {
     if (kept.length === entries.length) return [...entries];
     const keptCount = kept.length;
     const removed = entries.slice(0, entries.length - keptCount);
-    const removedChars = timelineTextLength(removed);
+    const removedChars = timelineTextSize(removed);
     return [compactedEntry(removedChars, reason), ...kept];
   }
 
@@ -984,7 +989,7 @@ export class HummingClient implements acp.Client {
   }
 
   private previewEntriesForRender(): readonly TimelineEntry[] {
-    if (timelineTextLength(this.timeline) < CARD_MARKDOWN_ELEMENT_CHAR_LIMIT) return this.timeline;
+    if (timelineTextSize(this.timeline) < CARD_MARKDOWN_ELEMENT_CHAR_LIMIT) return this.timeline;
     return this.compactEntriesKeepingTail(
       this.timeline,
       "emergency",

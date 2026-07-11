@@ -6,7 +6,7 @@ import type { ChatRuntimeOptions } from "./chat-runtime.js";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
 import type { LarkPresenter, UnifiedCardState } from "../presenter/presenter.js";
 import type { SessionRecord, SessionStore } from "../session-store/session-store.js";
-import type { AgentProcess } from "../acp/agent-process.js";
+import type { AgentProcess, SpawnAgentOptions } from "../acp/agent-process.js";
 
 // The agent subprocess is the correct mock boundary: we replace `spawnAgent`
 // so no real process is spawned, then hand ChatRuntime a fake AgentProcess
@@ -15,14 +15,16 @@ import type { AgentProcess } from "../acp/agent-process.js";
 // `importOriginal`, so only the process-spawning side effect is stubbed.
 const spawnAgentMock = vi.fn<(opts: unknown) => Promise<AgentProcess>>();
 const spawnAndResumeAgentMock =
-  vi.fn<(opts: unknown, id: string) => Promise<{ agent: AgentProcess; resumed: boolean }>>();
+  vi.fn<
+    (opts: SpawnAgentOptions, id: string) => Promise<{ agent: AgentProcess; resumed: boolean }>
+  >();
 
 vi.mock("../acp/agent-process.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../acp/agent-process.js")>();
   return {
     ...actual,
     spawnAgent: (opts: unknown) => spawnAgentMock(opts),
-    spawnAndResumeAgent: (opts: unknown, id: string) => spawnAndResumeAgentMock(opts, id),
+    spawnAndResumeAgent: (opts: SpawnAgentOptions, id: string) => spawnAndResumeAgentMock(opts, id),
     killAgent: () => {},
   };
 });
@@ -1165,6 +1167,66 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     );
     expect(latest).toMatchObject({ controls: { modelId: "model-new" } });
     expect(latest?.pendingControls).toBeUndefined();
+  });
+
+  it("suppresses historical tool updates replayed while resuming a session", async () => {
+    const fake = makeFakeAgent();
+    spawnAndResumeAgentMock.mockImplementationOnce(async (spawnOptions) => {
+      await spawnOptions.client.sessionUpdate({
+        sessionId: "sess_fake",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "historical_tool",
+          title: "Historical tool",
+          kind: "read",
+          status: "completed",
+        },
+      });
+      return { agent: fake.agent, resumed: true };
+    });
+
+    const states: UnifiedCardState[] = [];
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter(states),
+      sessionStore: {
+        ...stubSessionStore(),
+        getLatest: async () => ({
+          chatId: "oc_test",
+          threadId: null,
+          sessionId: "sess_fake",
+          agentCommand: "node",
+          agentArgs: [],
+          cwd: "/tmp",
+          createdAt: 1,
+          updatedAt: 2,
+        }),
+      },
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "after restart" }],
+      messageId: "om_resume",
+      chatId: "oc_test",
+    });
+
+    await vi.waitFor(() => expect(fake.prompts()).toEqual(["after restart"]), {
+      timeout: 1_000,
+      interval: 20,
+    });
+    expect(
+      states.some((state) =>
+        state.entries.some(
+          (entry) => entry.kind === "tool" && entry.toolCallId === "historical_tool",
+        ),
+      ),
+    ).toBe(false);
+
+    fake.resolvePrompt("end_turn");
+    await vi.waitFor(() => expect(runtime.processing).toBe(false), {
+      timeout: 1_000,
+      interval: 20,
+    });
   });
 
   it("cleans invalid persisted controls before applying stored session settings", async () => {

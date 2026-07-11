@@ -968,6 +968,7 @@ export class ChatRuntime {
 
   private async runPrompt(state: ChatRuntimeState, pending: PendingMessage): Promise<void> {
     this.logger.info("sending prompt to agent");
+    state.client.beginPrompt();
     await state.client.showForwarded();
 
     const result = await this.promptOrDisconnect(state, pending);

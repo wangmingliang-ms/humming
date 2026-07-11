@@ -19,6 +19,8 @@ import {
 } from "../presenter/card-text-budget.js";
 
 const CARD_FLUSH_DEBOUNCE_MS = 100;
+/** Each timeline entry can add an element plus a divider; stay below Lark's card element cap. */
+const CARD_TIMELINE_ENTRY_LIMIT = 20;
 
 const CARD_COMPACTION_NOTICE_PREFIX = "_前面内容较长，已在安全边界折叠_";
 
@@ -380,6 +382,10 @@ export class HummingClient implements acp.Client {
     this.currentMessageId = messageId;
     this.currentChatId = chatId;
     this.currentThreadId = threadId;
+  }
+
+  /** Start accepting renderable ACP updates for the prompt about to be sent. */
+  beginPrompt(): void {
     this.acceptingRenderableUpdates = true;
   }
 
@@ -772,6 +778,7 @@ export class HummingClient implements acp.Client {
   private async rotateConversationCardAtBoundary(): Promise<void> {
     if (
       !this.needsBoundaryCompaction &&
+      this.timeline.length < CARD_TIMELINE_ENTRY_LIMIT &&
       timelineTextSize(this.timeline) < CARD_MARKDOWN_ROTATION_BYTE_LIMIT
     ) {
       return;
@@ -781,6 +788,7 @@ export class HummingClient implements acp.Client {
   }
 
   private compactTimelineForFinalCard(): void {
+    this.timeline = this.compactEntriesForStructure(this.timeline);
     if (timelineTextSize(this.timeline) >= CARD_MARKDOWN_ROTATION_BYTE_LIMIT) {
       this.timeline = this.compactEntriesKeepingTail(
         this.timeline,
@@ -819,6 +827,13 @@ export class HummingClient implements acp.Client {
     const removed = entries.slice(0, entries.length - keptCount);
     const removedBytes = timelineTextSize(removed);
     return [compactedEntry(removedBytes, reason), ...kept];
+  }
+
+  private compactEntriesForStructure(entries: readonly TimelineEntry[]): TimelineEntry[] {
+    if (entries.length <= CARD_TIMELINE_ENTRY_LIMIT) return [...entries];
+    const kept = entries.slice(-(CARD_TIMELINE_ENTRY_LIMIT - 1));
+    const removed = entries.slice(0, entries.length - kept.length);
+    return [compactedEntry(timelineTextSize(removed), "emergency"), ...kept];
   }
 
   private upsertTool(
@@ -962,9 +977,12 @@ export class HummingClient implements acp.Client {
     }, CARD_FLUSH_DEBOUNCE_MS);
   }
   private previewEntriesForRender(): readonly TimelineEntry[] {
-    if (timelineTextSize(this.timeline) < CARD_MARKDOWN_ELEMENT_BYTE_LIMIT) return this.timeline;
+    const structurallyCompacted = this.compactEntriesForStructure(this.timeline);
+    if (timelineTextSize(structurallyCompacted) < CARD_MARKDOWN_ELEMENT_BYTE_LIMIT) {
+      return structurallyCompacted;
+    }
     return this.compactEntriesKeepingTail(
-      this.timeline,
+      structurallyCompacted,
       "emergency",
       CARD_MARKDOWN_ROTATION_BYTE_LIMIT,
     );

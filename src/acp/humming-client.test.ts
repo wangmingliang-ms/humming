@@ -125,6 +125,7 @@ function makeClient(
       : {}),
   });
   client.setContext("om_user", "oc_chat", "omt_thread");
+  client.beginPrompt();
   return client;
 }
 
@@ -490,6 +491,39 @@ describe("HummingClient card-v2 conversation rendering", () => {
       },
       { kind: "text", text: "After tool." },
     ]);
+  });
+
+  it("rotates before short tool entries can exceed the card element budget", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    for (let index = 0; index < 25; index += 1) {
+      await client.sessionUpdate({
+        sessionId: "sess_1",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: `tool_${index}`,
+          title: `Tool ${index}`,
+          kind: "read",
+          status: "pending",
+        },
+      });
+    }
+    await waitForFlush();
+
+    const renderedStates = ops
+      .filter(
+        (op): op is Extract<RenderOp, { kind: "sendUnified" | "updateUnified" }> =>
+          op.kind === "sendUnified" || op.kind === "updateUnified",
+      )
+      .map((op) => op.state);
+    expect(renderedStates.length).toBeGreaterThan(0);
+    expect(renderedStates.every((state) => state.entries.length <= 20)).toBe(true);
+    expect(
+      renderedStates.some((state) =>
+        state.entries.some((entry) => entry.kind === "tool" && entry.toolCallId === "tool_24"),
+      ),
+    ).toBe(true);
   });
 
   it("logs when a prompt finalizes without renderable output", async () => {

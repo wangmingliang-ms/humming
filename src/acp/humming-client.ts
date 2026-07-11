@@ -857,7 +857,7 @@ export class HummingClient implements acp.Client {
   }
 
   private hasRenderableState(): boolean {
-    return this.timeline.length > 0 || this.cardDelivery.hasCard();
+    return this.timeline.length > 0 || this.cardDelivery.hasCardOrPendingDelivery();
   }
 
   private hasReusableStatusCard(): boolean {

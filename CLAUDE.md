@@ -42,6 +42,17 @@ humming proxy --agent claude    # 前台运行（占终端，Ctrl-C 停）
 
 ## humming 自身操作指南
 
+- `settings.json` 存机器/全局配置：
+  - `credentials`：飞书/Lark bot 凭据，不要打印。
+  - `runtime.agent`：没有继承 profile 时的新 chat/topic 默认 Agent。
+  - `runtime.defaultControls`：没有继承 profile 时的新 chat/topic 默认 Model / Mode / Permission / Config。
+  - `runtime.permissionMode`：Humming approval-card 全局策略。
+  - `runtime.lifecycleNotifyChatIds`：接收启动/停止/崩溃等 lifecycle 通知的 chats。
+  - `runtime.globalControlChatIds`：会把 Agent/Model/Mode/Permission/Config 变更写回全局默认的 DM 控制 chats。
+  - `runtime.cwd` / `runtime.unboundCwd`：默认/接待区工作目录。
+  - `agents`：内置 preset 覆盖和自定义 Agent presets。
+  - `bindings`：chat → repo 绑定，只存 `{ "cwd": "/absolute/path/to/repo" }`。
+  - per-topic session state 不写 `settings.json`，写 `sessions.json`。
 - Chat binding 只写 repo：`settings.json` 的 `bindings.<chatId>` 只保存 `{ "cwd": "/absolute/path/to/repo" }`。不要在 binding 里写 Agent / Model / Mode / Permission / Config。
 - 查看 Humming 状态只用这些命令，不要翻各 Agent 缓存目录：
   - `humming agents`

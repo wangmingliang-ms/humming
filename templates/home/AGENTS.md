@@ -12,6 +12,22 @@ Use this guide when the user asks to configure Humming, bind/rebind a repo, bind
 
 Do not print secrets, full chat IDs, full thread IDs, full session IDs, tokens, API keys, or connection strings in group chats.
 
+## Settings contents
+
+`settings.json` stores machine/global configuration:
+
+- `credentials`: Feishu/Lark bot app credentials. Do not print them.
+- `runtime.agent`: global default Agent for new chats/topics with no inherited profile.
+- `runtime.defaultControls`: global default Model / Mode / Permission / Config controls for new chats/topics with no inherited profile.
+- `runtime.permissionMode`: global Humming approval-card policy.
+- `runtime.lifecycleNotifyChatIds`: chats that receive bridge lifecycle notifications.
+- `runtime.globalControlChatIds`: DM control chats whose Agent/Model/Mode/Permission/Config changes write global defaults back to `settings.json`.
+- `runtime.cwd` / `runtime.unboundCwd`: default/reception working directories.
+- `agents`: built-in preset overrides and custom Agent presets.
+- `bindings`: per-chat repo bindings only: `{ "cwd": "/absolute/path/to/repo" }`.
+
+Do not store per-topic session state in `settings.json`; that belongs in `sessions.json`.
+
 ## Built-in commands handled by Humming
 
 If the user sends one of these slash commands, do not reinterpret it; Humming handles it before the Agent sees it:

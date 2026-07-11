@@ -425,9 +425,9 @@ export class LarkBridge {
   private readonly bindingStore: BindingStore;
   private readonly resolver: AgentResolver;
   private readonly availableAgents: readonly AgentListItem[];
-  private readonly defaultAgent: ResolvedAgentInvocation | null;
+  private defaultAgent: ResolvedAgentInvocation | null;
   private readonly defaultCwd: string | null;
-  private readonly defaultControls: SessionControls | undefined;
+  private defaultControls: SessionControls | undefined;
   private readonly display: DisplayOptions;
   private readonly idleTimeoutMs: number;
   private readonly maxConcurrentChats: number;
@@ -903,6 +903,9 @@ export class LarkBridge {
         noticeMessageId ?? null,
         pendingTask,
       );
+      if (this.globalDefaultControlChatIds.includes(chatId)) {
+        await this.persistGlobalDefaultPendingTargetProfile(profile, noticeMessageId ?? null);
+      }
       return {
         queued: true,
         agent: record.agentLabel ?? record.agentCommand,
@@ -946,6 +949,12 @@ export class LarkBridge {
       targetProfile: profile,
       queuedNoticeMessageId,
     });
+    if (this.globalDefaultControlChatIds.includes(chatId)) {
+      await this.persistGlobalDefaultPendingTargetProfile(
+        profile,
+        noticeMessageId ?? runtime.lastMessageId ?? null,
+      );
+    }
     return {
       queued: true,
       agent: baseRecord.agentLabel ?? baseRecord.agentCommand,
@@ -1961,6 +1970,7 @@ export class LarkBridge {
    * else the configured default, else `null` (chat must `/bind` first).
    */
   private async resolveBinding(chatId: string): Promise<EffectiveBinding | null> {
+    this.refreshRuntimeDefaultsFromSettings();
     const stored = await this.bindingStore.get(chatId);
     if (stored) {
       const unavailable = describeUnavailableCwd(stored.cwd);
@@ -2096,6 +2106,7 @@ export class LarkBridge {
     threadId: string | null,
     binding: EffectiveBinding,
   ): Promise<ChatRuntime> {
+    this.refreshRuntimeDefaultsFromSettings();
     const key = runtimeKey(chatId, threadId);
     const existing = this.chats.get(key);
     if (existing) return existing;
@@ -2303,6 +2314,27 @@ export class LarkBridge {
     );
   }
 
+  private async persistGlobalDefaultPendingTargetProfile(
+    profile: PendingTargetProfile,
+    messageId: string | null,
+  ): Promise<void> {
+    await this.mutateSettingsRuntime(
+      (runtime) => {
+        runtime["agent"] = profile.agentLabel ?? profile.agentCommand;
+        if (profile.controls) {
+          const existingControls = readSettingsControls(runtime["defaultControls"]);
+          const nextControls = mergeGlobalDefaultControls(existingControls, profile.controls);
+          runtime["defaultControls"] = nextControls;
+          if (profile.controls.bridgePermissionMode !== undefined) {
+            runtime["permissionMode"] = profile.controls.bridgePermissionMode;
+          }
+        }
+      },
+      messageId,
+      "Pending target profile",
+    );
+  }
+
   private async mutateSettingsRuntime(
     mutate: (runtime: Record<string, unknown>) => void,
     messageId: string | null,
@@ -2330,6 +2362,24 @@ export class LarkBridge {
           template: "orange",
         });
       }
+    }
+  }
+
+  private refreshRuntimeDefaultsFromSettings(): void {
+    if (!this.settingsPath) return;
+    try {
+      const root = readJsonObjectForSettingsWrite(this.settingsPath);
+      const runtime = readObjectFieldForSettingsWrite(root, "runtime");
+      const agentSelection = runtime["agent"];
+      if (agentSelection !== undefined) {
+        if (typeof agentSelection !== "string" || agentSelection.length === 0) {
+          throw new Error("settings file runtime.agent must be a non-empty string");
+        }
+        this.defaultAgent = this.resolver(agentSelection);
+      }
+      this.defaultControls = readSettingsControls(runtime["defaultControls"]);
+    } catch (err) {
+      this.logger.warn({ err }, "failed to refresh runtime defaults from settings.json");
     }
   }
 

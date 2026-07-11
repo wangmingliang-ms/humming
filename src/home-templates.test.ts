@@ -32,6 +32,9 @@ describe("installHomeTemplates", () => {
     expect(agents).toContain(settingsPath);
     expect(agents).toContain(sessionsPath);
     expect(agents).toContain(path.join(dir, "control.sock"));
+    expect(agents).toContain("## Settings contents");
+    expect(agents).toContain("runtime.defaultControls");
+    expect(agents).toContain("runtime.globalControlChatIds");
     expect(agents).toContain("Use Humming CLI/control commands for Agent/session state");
     expect(agents).toContain("Chat binding is repo-only");
     expect(agents).toContain("/agent <agent>");

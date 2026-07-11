@@ -1035,6 +1035,64 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
     }
   });
 
+  it("persists atomic pending target profile Agent and controls from the configured control chat into settings.json", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-global-default-target-profile-"));
+    try {
+      const settingsPath = path.join(dir, "settings.json");
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({ runtime: { agent: "claude", globalControlChatIds: ["oc_DM"] } }),
+      );
+      const store = new MemorySessionStore();
+      const events: PresenterEvents = {
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        unifiedCards: [],
+        noticeUpdates: [],
+      };
+      const bridge = makeBridge(store, recordingPresenter(events), {
+        settingsPath,
+        globalDefaultControlChatIds: ["oc_DM"],
+      });
+      const testable = bridge as unknown as {
+        controlSetPendingTargetProfile(
+          chatId: string,
+          threadId: string | null,
+          profile: PendingTargetProfile,
+          noticeMessageId?: string | null,
+        ): Promise<unknown>;
+      };
+
+      await testable.controlSetPendingTargetProfile(
+        "oc_DM",
+        null,
+        {
+          sessionId: "profile:codex-gpt",
+          profileOnly: true,
+          agentCommand: "npx",
+          agentArgs: ["-y", "@zed-industries/codex-acp"],
+          agentLabel: "codex",
+          cwd: "/tmp",
+          controls: { modelId: "gpt-5.5" },
+          createdAt: 10,
+          updatedAt: 10,
+        },
+        "om_dm_handoff",
+      );
+
+      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as {
+        runtime?: { agent?: string; defaultControls?: SessionControls };
+      };
+      expect(settings.runtime?.agent).toBe("codex");
+      expect(settings.runtime?.defaultControls).toMatchObject({ modelId: "gpt-5.5" });
+      expect(events.notices.some((notice) => notice.body.includes("全局默认"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("uses configured global default controls for a new topic with no pinned or inherited profile", async () => {
     const store = new MemorySessionStore();
     const events: PresenterEvents = {
@@ -1071,5 +1129,65 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
     expect(await store.getLatest("oc_A", "omt_new")).toMatchObject({
       controls: { bridgePermissionMode: "alwaysAllow" },
     });
+  });
+
+  it("uses hot-reloaded settings runtime Agent and default controls for a new topic", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-hot-reload-global-defaults-"));
+    try {
+      const settingsPath = path.join(dir, "settings.json");
+      fs.writeFileSync(settingsPath, JSON.stringify({ runtime: { agent: "claude" } }));
+      const store = new MemorySessionStore();
+      const events: PresenterEvents = {
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        unifiedCards: [],
+        noticeUpdates: [],
+      };
+      const bridge = makeBridge(store, recordingPresenter(events), { settingsPath });
+      const testable = bridge as unknown as {
+        resolveBinding(chatId: string): Promise<unknown>;
+        acquireRuntime(
+          chatId: string,
+          threadId: string | null,
+          binding: unknown,
+        ): Promise<{
+          enqueue(message: { prompt: []; messageId: string; chatId: string }): Promise<void>;
+        }>;
+      };
+
+      spawnAgentMock.mockResolvedValueOnce(
+        fakeAgentProcess("sess_codex_hot", {
+          models: {
+            currentModelId: "auto",
+            availableModels: [
+              { modelId: "auto", name: "Auto" },
+              { modelId: "gpt-5.6 solar", name: "GPT-5.6 Solar" },
+            ],
+          },
+        }),
+      );
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          runtime: {
+            agent: "codex",
+            defaultControls: { modelId: "gpt-5.6 solar" },
+          },
+        }),
+      );
+
+      const binding = await testable.resolveBinding("oc_A");
+      const runtime = await testable.acquireRuntime("oc_A", "omt_hot", binding);
+      await runtime.enqueue({ prompt: [], messageId: "om_hot", chatId: "oc_A" });
+
+      expect(await store.getLatest("oc_A", "omt_hot")).toMatchObject({
+        agentLabel: "codex",
+        controls: { modelId: "gpt-5.6 solar" },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

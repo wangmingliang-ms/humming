@@ -44,9 +44,15 @@ function cloneState(state: UnifiedCardState): UnifiedCardState {
 
 function recordingPresenter(
   ops: RenderOp[],
-  options: { failUpdates?: boolean; failPermissionUpdates?: boolean } = {},
+  options: {
+    updateResults?: boolean[];
+    sendResults?: Array<string | null>;
+    failPermissionUpdates?: boolean;
+  } = {},
 ): LarkPresenter {
   let cardSeq = 0;
+  let updateSeq = 0;
+  let sendSeq = 0;
   return {
     replyText: async () => {},
     sendInterruptCard: async (_messageId, params, requestId) => {
@@ -80,11 +86,15 @@ function recordingPresenter(
     sendUnifiedCard: async (_replyToMessageId, state) => {
       ops.push({ kind: "sendUnified", state: cloneState(state) });
       cardSeq += 1;
-      return `card_${cardSeq}`;
+      const result = options.sendResults?.[sendSeq];
+      sendSeq += 1;
+      return result === undefined ? `card_${cardSeq}` : result;
     },
     updateUnifiedCard: async (cardId, state) => {
       ops.push({ kind: "updateUnified", cardId, state: cloneState(state) });
-      return !options.failUpdates;
+      const result = options.updateResults?.[updateSeq];
+      updateSeq += 1;
+      return result ?? true;
     },
   };
 }
@@ -92,7 +102,8 @@ function recordingPresenter(
 function makeClient(
   ops: RenderOp[],
   options: {
-    failUpdates?: boolean;
+    updateResults?: boolean[];
+    sendResults?: Array<string | null>;
     failPermissionUpdates?: boolean;
     idleStatusCardMs?: number;
     onSessionInfoUpdate?: (
@@ -958,9 +969,9 @@ describe("HummingClient card-v2 conversation rendering", () => {
     ]);
   });
 
-  it("sends a fallback notice when patching the unified card fails", async () => {
+  it("moves the complete failed update to a replacement card and never reuses the rejected id", async () => {
     const ops: RenderOp[] = [];
-    const client = makeClient(ops, { failUpdates: true });
+    const client = makeClient(ops, { updateResults: [false, true] });
 
     await client.sessionUpdate({
       sessionId: "sess_1",
@@ -978,13 +989,103 @@ describe("HummingClient card-v2 conversation rendering", () => {
       },
     });
     await waitForFlush();
+    await client.sessionUpdate(textChunk("!"));
+    await waitForFlush();
 
-    const notice = ops.find(
-      (op): op is Extract<RenderOp, { kind: "notice" }> => op.kind === "notice",
+    const sends = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
     );
-    expect(notice).toMatchObject({
-      title: "⚠️ Humming 卡片暂时无法更新",
-      template: "grey",
+    expect(sends).toHaveLength(2);
+    expect(sends[0]?.state.entries).toEqual([{ kind: "text", text: "hello" }]);
+    expect(sends[1]?.state.entries).toEqual([{ kind: "text", text: "hello world" }]);
+
+    const updates = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(updates.map((op) => op.cardId)).toEqual(["card_1", "card_2"]);
+    expect(updates[1]?.state.entries).toEqual([{ kind: "text", text: "hello world!" }]);
+    expect(ops.some((op) => op.kind === "notice")).toBe(false);
+  });
+
+  it("replays terminal state to a replacement when final patch is rejected", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops, { updateResults: [false] });
+
+    await client.sessionUpdate(textChunk("Complete response."));
+    await waitForFlush();
+    await client.finalize("complete");
+
+    const updates = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      cardId: "card_1",
+      state: { status: "complete", cancellable: false },
     });
+
+    const replacement = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    )[1];
+    expect(replacement?.state).toMatchObject({
+      status: "complete",
+      cancellable: false,
+      entries: [{ kind: "text", text: "Complete response." }],
+    });
+  });
+
+  it("moves an adopted progress card to a replacement after its preparing patch is rejected", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops, { updateResults: [false, true, true] });
+
+    client.adoptProgressCard("progress_card_1");
+    await client.showPreparing();
+    await client.showForwarded();
+    await client.sessionUpdate(textChunk("Agent output."));
+    await waitForFlush();
+
+    const replacement = ops.find(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    expect(replacement?.state).toMatchObject({
+      status: "preparing",
+      entries: [],
+      cancellable: false,
+    });
+    const updates = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" }> => op.kind === "updateUnified",
+    );
+    expect(updates.map((op) => op.cardId)).toEqual(["progress_card_1", "card_1", "card_1"]);
+    expect(updates.at(-1)?.state.entries).toEqual([{ kind: "text", text: "Agent output." }]);
+  });
+
+  it("does not loop when replacement creation returns null and retries the newest state later", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops, {
+      updateResults: [false],
+      sendResults: ["card_1", null, "card_3"],
+    });
+
+    await client.sessionUpdate(textChunk("first"));
+    await waitForFlush();
+    await client.sessionUpdate(textChunk(" failed replacement"));
+    await waitForFlush();
+
+    let sends = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    expect(sends).toHaveLength(2);
+    expect(sends[1]?.state.entries).toEqual([{ kind: "text", text: "first failed replacement" }]);
+
+    await client.sessionUpdate(textChunk(" newest"));
+    await waitForFlush();
+
+    sends = ops.filter(
+      (op): op is Extract<RenderOp, { kind: "sendUnified" }> => op.kind === "sendUnified",
+    );
+    expect(sends).toHaveLength(3);
+    expect(sends[2]?.state.entries).toEqual([
+      { kind: "text", text: "first failed replacement newest" },
+    ]);
   });
 });

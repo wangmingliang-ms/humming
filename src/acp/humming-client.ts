@@ -9,7 +9,9 @@ import type {
   TimelineEntry,
   ToolStatus,
   SessionCardMeta,
+  UnifiedCardState,
 } from "../presenter/presenter.js";
+import { ConversationCardDelivery } from "./conversation-card-delivery.js";
 import {
   CARD_MARKDOWN_ELEMENT_BYTE_LIMIT,
   CARD_MARKDOWN_ROTATION_BYTE_LIMIT,
@@ -20,7 +22,6 @@ const CARD_FLUSH_DEBOUNCE_MS = 100;
 
 const CARD_COMPACTION_NOTICE_PREFIX = "_前面内容较长，已在安全边界折叠_";
 
-type CardUpdateFailurePhase = "running" | "terminal";
 type CardCompactionReason = "tool" | "final" | "emergency";
 
 const PERMISSION_TIMEOUT_REASON = "用户未在规定时间内响应，已自动取消";
@@ -333,15 +334,14 @@ export class HummingClient implements acp.Client {
   /** Tool metadata captured at approval boundaries; used to restore sparse post-approval updates. */
   private readonly sealedToolMeta = new Map<string, SealedToolMeta>();
 
-  private cardId: string | null = null;
-  private cardCreating: Promise<string | null> | null = null;
+  private readonly cardDelivery: ConversationCardDelivery;
   private idleStatusTimer: ReturnType<typeof setTimeout> | null = null;
   private idleStatusCardPending = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private flushing = false;
   private permissionBoundaryThisPrompt = false;
   private needsBoundaryCompaction = false;
-  private readonly cardFailureNoticePhases = new Set<CardUpdateFailurePhase>();
+
   /**
    * True only between {@link setContext} and terminal {@link finalize}. ACP
    * adapters can still deliver buffered session updates after a prompt has
@@ -361,6 +361,10 @@ export class HummingClient implements acp.Client {
     this.metaProvider = opts.metaProvider;
     this.onSessionInfoUpdate = opts.onSessionInfoUpdate;
     this.permissionMode = opts.permissionMode;
+    this.cardDelivery = new ConversationCardDelivery({
+      send: (state) => this.presenter.sendUnifiedCard(this.currentMessageId, state),
+      patch: (cardId, state) => this.presenter.updateUnifiedCard(cardId, state),
+    });
   }
 
   setPermissionMode(mode: PermissionMode): void {
@@ -376,15 +380,13 @@ export class HummingClient implements acp.Client {
     this.currentMessageId = messageId;
     this.currentChatId = chatId;
     this.currentThreadId = threadId;
-    this.cardFailureNoticePhases.clear();
     this.acceptingRenderableUpdates = true;
   }
 
   /** Continue rendering into a progress card the bridge already created for this prompt. */
   adoptProgressCard(cardMessageId: string | null | undefined): void {
     if (!cardMessageId) return;
-    this.cardId = cardMessageId;
-    this.cardCreating = null;
+    this.cardDelivery.adopt(cardMessageId);
   }
 
   /** Show that the runtime is bootstrapping or connecting to the target agent. */
@@ -515,8 +517,7 @@ export class HummingClient implements acp.Client {
     await this.renderCard({ cancellable: false });
 
     this.timeline = [];
-    this.cardId = null;
-    this.cardCreating = null;
+    this.cardDelivery.detach();
     this.needsBoundaryCompaction = false;
     this.status = "thinking";
   }
@@ -741,8 +742,7 @@ export class HummingClient implements acp.Client {
   private resetPromptState(): void {
     this.timeline = [];
     this.sealedToolMeta.clear();
-    this.cardId = null;
-    this.cardCreating = null;
+    this.cardDelivery.reset();
     this.idleStatusCardPending = false;
     this.permissionBoundaryThisPrompt = false;
     this.needsBoundaryCompaction = false;
@@ -857,19 +857,17 @@ export class HummingClient implements acp.Client {
   }
 
   private hasRenderableState(): boolean {
-    return this.timeline.length > 0 || this.cardId !== null || this.cardCreating !== null;
+    return this.timeline.length > 0 || this.cardDelivery.hasCard();
   }
 
   private hasReusableStatusCard(): boolean {
-    return this.idleStatusCardPending && this.timeline.length === 0 && this.cardId !== null;
+    return this.idleStatusCardPending && this.timeline.length === 0 && this.cardDelivery.hasCard();
   }
 
   private consumeIdleStatusCardId(): string | null {
     if (!this.hasReusableStatusCard()) return null;
-    const cardId = this.cardId;
+    const cardId = this.cardDelivery.takeActiveCardId();
     this.idleStatusCardPending = false;
-    this.cardId = null;
-    this.cardCreating = null;
     this.timeline = [];
     return cardId;
   }
@@ -927,12 +925,11 @@ export class HummingClient implements acp.Client {
     await this.renderCard({ cancellable: false });
 
     this.timeline = [];
-    this.cardId = null;
-    this.cardCreating = null;
+    this.cardDelivery.detach();
     this.status = "waiting";
     this.idleStatusCardPending = true;
     await this.renderCard({ cancellable: true });
-    if (this.cardId === null) this.idleStatusCardPending = false;
+    if (!this.cardDelivery.hasCard()) this.idleStatusCardPending = false;
   }
 
   private async createPostInteractionStatusCard(): Promise<void> {
@@ -945,12 +942,11 @@ export class HummingClient implements acp.Client {
     if (!this.acceptingRenderableUpdates || this.idleStatusCardPending) return;
 
     this.timeline = [];
-    this.cardId = null;
-    this.cardCreating = null;
+    this.cardDelivery.detach();
     this.status = "waiting";
     this.idleStatusCardPending = true;
     await this.renderCard({ cancellable: true });
-    if (this.cardId === null) this.idleStatusCardPending = false;
+    if (!this.cardDelivery.hasCard()) this.idleStatusCardPending = false;
   }
 
   // ----- Card flush -------------------------------------------------------
@@ -965,22 +961,6 @@ export class HummingClient implements acp.Client {
       );
     }, CARD_FLUSH_DEBOUNCE_MS);
   }
-
-  private async notifyCardUpdateFailure(phase: CardUpdateFailurePhase): Promise<void> {
-    if (!this.currentMessageId || this.cardFailureNoticePhases.has(phase)) return;
-    this.cardFailureNoticePhases.add(phase);
-    const terminal = phase === "terminal";
-    await this.presenter
-      .replyNoticeCard(this.currentMessageId, {
-        title: terminal ? "⚠️ Humming 卡片更新失败" : "⚠️ Humming 卡片暂时无法更新",
-        body: terminal
-          ? "Agent 任务已经结束，但飞书拒绝更新原始进度卡片。Humming 已写入日志；原卡片可能仍显示旧状态。"
-          : "Agent 任务仍在继续，但飞书拒绝更新当前进度卡片。Humming 已写入日志，后续仍会尝试更新。",
-        template: terminal ? "orange" : "grey",
-      })
-      .catch((err) => this.logger.warn({ err, phase }, "card update failure notice failed"));
-  }
-
   private previewEntriesForRender(): readonly TimelineEntry[] {
     if (timelineTextSize(this.timeline) < CARD_MARKDOWN_ELEMENT_BYTE_LIMIT) return this.timeline;
     return this.compactEntriesKeepingTail(
@@ -990,45 +970,25 @@ export class HummingClient implements acp.Client {
     );
   }
 
+  private buildUnifiedCardState(cancellable: boolean): UnifiedCardState {
+    return {
+      status: this.status,
+      entries: this.previewEntriesForRender(),
+      cancellable: cancellable && this.showCancelButton,
+      chatId: this.currentChatId,
+      threadId: this.currentThreadId,
+      meta: this.metaProvider?.(),
+    };
+  }
+
   private async renderCard(opts: { cancellable: boolean }): Promise<void> {
-    if (!this.currentMessageId && !this.cardId) return;
+    if (!this.currentMessageId && !this.cardDelivery.hasCard()) return;
     this.flushing = true;
     try {
-      const renderedEntries = this.previewEntriesForRender();
-      const state = {
-        status: this.status,
-        entries: renderedEntries,
-        cancellable: opts.cancellable && this.showCancelButton,
-        chatId: this.currentChatId,
-        threadId: this.currentThreadId,
-        meta: this.metaProvider?.(),
-      };
-
-      if (this.cardId) {
-        const updated = await this.presenter.updateUnifiedCard(this.cardId, state);
-        if (!updated) await this.notifyCardUpdateFailure(opts.cancellable ? "running" : "terminal");
-        this.scheduleIdleStatusTimer(renderedEntries, opts.cancellable);
-        return;
-      }
-      if (this.cardCreating) {
-        const id = await this.cardCreating;
-        if (id) {
-          this.cardId = id;
-          const updated = await this.presenter.updateUnifiedCard(id, state);
-          if (!updated)
-            await this.notifyCardUpdateFailure(opts.cancellable ? "running" : "terminal");
-          this.scheduleIdleStatusTimer(renderedEntries, opts.cancellable);
-        }
-        return;
-      }
-      const promise = this.presenter.sendUnifiedCard(this.currentMessageId, state);
-      this.cardCreating = promise;
-      try {
-        const id = await promise;
-        if (id) this.cardId = id;
-        this.scheduleIdleStatusTimer(renderedEntries, opts.cancellable);
-      } finally {
-        this.cardCreating = null;
+      const state = this.buildUnifiedCardState(opts.cancellable);
+      const result = await this.cardDelivery.deliver(state);
+      if (result.outcome === "visible") {
+        this.scheduleIdleStatusTimer(state.entries, opts.cancellable);
       }
     } finally {
       this.flushing = false;

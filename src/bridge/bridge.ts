@@ -161,6 +161,8 @@ function formatBootstrapError(err: unknown): string {
 }
 
 interface CardActionPayload {
+  /** Action schema version. Versioned actions are unsupported until v2 routing exists. */
+  v?: unknown;
   /** Permission request id (set on permission cards). */
   r?: string;
   /** Selected option id (set on permission cards). */
@@ -2613,6 +2615,10 @@ export class LarkBridge {
   private handleCardAction(event: Lark.CardActionEvent): void {
     const value = event.action.value as CardActionPayload | undefined;
     if (!value?.c) return;
+    if (value.cancel === true && Object.hasOwn(value, "v")) {
+      this.logger.info("unsupported versioned Cancel action ignored");
+      return;
+    }
 
     // Older cards (pre-topic) carry no `th`; `?? null` maps them to the chat's
     // main conversation, matching how those runtimes are keyed.

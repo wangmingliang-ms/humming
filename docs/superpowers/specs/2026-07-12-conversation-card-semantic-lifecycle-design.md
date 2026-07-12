@@ -1,5 +1,7 @@
 # Conversation Card Semantic Lifecycle
 
+> **Canonical source of truth:** [`conversation-card-lifecycle.md`](./conversation-card-lifecycle.md). The canonical specification defines the normative Topic → Turn → Request + Response → Card model, Response tail projection, Execution Owner handoff, Title/Metadata/Cancel rules, and change-control process. If this historical design conflicts with the canonical specification, the canonical specification wins.
+
 **Date:** 2026-07-12
 
 ## Context

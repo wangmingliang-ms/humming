@@ -174,11 +174,11 @@ Write only creation plus `queued -> starting` / `interrupting -> starting` tests
 
 - [ ] **Step 2: RED/GREEN — forwarded, archive, and terminal absorption**
 
-Add one failing behavior at a time: starting->active with action token, non-empty archive/open next segment, finish from each live phase, terminal absorbing, stale prompt/segment rejection. After each failing assertion, implement only that transition and rerun before adding the next test.
+Add one failing behavior at a time: starting->active with action token, non-empty archive/open next segment using event-supplied next segment/action tokens, finish from each live phase, terminal absorbing, stale prompt/segment rejection. After each failing assertion, implement only that transition and rerun before adding the next test.
 
 - [ ] **Step 3: RED/GREEN — ToolLedger matrix**
 
-Add matrix rows incrementally: absent/pending, pending->in_progress, direct pending->completed/failed, initial terminal, duplicate/conflicting terminal, cross-segment marker, then terminal normalization. Each row must fail for semantic output—not missing symbols—before its minimal implementation.
+Add matrix rows incrementally: absent/pending, pending->in_progress, direct pending->completed/failed, initial terminal, duplicate/conflicting terminal, cross-segment marker, then terminal normalization. Tool events update prompt-level ledger but carry `displaySegmentToken` for display placement; text/thought/archive tests prove stale segment tokens are rejected. Each row must fail for semantic output—not missing symbols—before its minimal implementation.
 
 - [ ] **Step 4: RED/GREEN — render timer and idle semantics**
 
@@ -212,6 +212,8 @@ Commit message: `feat(cards): add prompt semantic lifecycle reducer`.
 
 ```ts
 class PromptCallbackRouter implements acp.Client {
+  activateBootstrap(mode: "new" | "load" | "resume", callbacks: BootstrapCallbacks): BootstrapRouteHandle;
+  closeBootstrap(handle: BootstrapRouteHandle): void;
   activate(promptToken: PromptToken, callbacks: PromptScopedCallbacks): PromptRouteHandle;
   close(handle: PromptRouteHandle): void;
   isConnectionHealthy(): boolean;
@@ -222,27 +224,31 @@ class PromptCallbackRouter implements acp.Client {
 
 - `HummingClient` and `PromptCardController` are active-route callbacks, not second ACP clients.
 
-- [ ] **Step 1: RED/GREEN — entry-time route capture**
+- [ ] **Step 1: RED/GREEN — bootstrap replay isolation and session metadata**
+
+Add `loadSession` history replay tests first: user/agent/thought/plan/tool updates under `bootstrap/load` go only to `BootstrapCallbacks` and never to a PromptCardController; session-info/mode/config/commands/usage go to SessionCallbacks. Implement bootstrap activate/close and classification, rerunning after each update class. Add new/resume setup route tests.
+
+- [ ] **Step 2: RED/GREEN — entry-time active route capture**
 
 Write the route-capture test, run RED, implement only activate/close/sessionUpdate capture, then run GREEN. Use a deferred callback: enter `sessionUpdate` under prompt A, close A and activate B before the callback resolves, and assert the update still carries A. Then add/implement the session-metadata delegate case.
 
-- [ ] **Step 2: RED/GREEN — ACP response boundary and protocol violations**
+- [ ] **Step 3: RED/GREEN — ACP response boundary and protocol violations**
 
 Add update-after-close RED and implement unhealthy quarantine; then add permission-after-close RED and implement immediate `{ outcome: { outcome: "cancelled" } }`; rerun after each. No callback is assigned to the next prompt by current-token lookup.
 
-- [ ] **Step 3: RED/GREEN — cancellation ordering**
+- [ ] **Step 4: RED/GREEN — cancellation ordering**
 
 Add the trailing-update-after-cancel test, implement route retention until prompt response, rerun; then add unresolved-permission cancellation and implement it.
 
-- [ ] **Step 4: Implement router and connection construction**
+- [ ] **Step 5: Implement remaining router/connection construction**
 
 `spawnAndInit({ client: router })` installs exactly this object. Expose unhealthy state so ChatRuntime restarts the connection before another prompt. Do not use a quiescence timer.
 
-- [ ] **Step 5: Verify**
+- [ ] **Step 6: Verify**
 
 Run router + agent-process tests, build, and Prettier.
 
-- [ ] **Step 6: Review, commit, push**
+- [ ] **Step 7: Review, commit, push**
 
 Commit message: `feat(acp): scope callbacks to protocol prompt turns`.
 
@@ -354,7 +360,7 @@ Add separately and implement after each RED: content boundary, empty reuse, fail
 
 - [ ] **Step 4: RED/GREEN — acknowledgement lifecycle callbacks**
 
-Add first-visible callback RED and implement from `DeliveryResult.visible(cardId)`. Then add terminal-without-visible RED and implement its callback. Prove each fires once and unsubscribe works.
+Add first-visible feedback RED and implement the `acknowledgement_visible` reducer event emitted only from `DeliveryResult.visible(cardId)`. Then add terminal-without-visible RED and implement `acknowledgement_terminal_without_card`. Assert either event emits exactly one `remove_acknowledgement` effect, and removal success/failure feedback marks the attempt complete without retries.
 
 - [ ] **Step 5: Complete effect runner**
 

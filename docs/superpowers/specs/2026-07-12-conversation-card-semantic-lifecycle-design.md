@@ -244,15 +244,18 @@ interface PromptScopedCallbacks {
 
 type PromptRoute =
   | { phase: "idle" }
+  | { phase: "bootstrap"; mode: "new" | "load" | "resume"; callbacks: BootstrapCallbacks }
   | { phase: "active"; promptToken: PromptToken; callbacks: PromptScopedCallbacks }
   | { phase: "closed"; completedPromptToken: PromptToken };
 ```
 
-The router also receives a `SessionCallbacks` delegate for filesystem, terminal, and session-metadata operations that are not prompt-renderable. Construction is unambiguous: `spawnAndInit({ client: promptCallbackRouter })`; `HummingClient`/`PromptCardController` are callbacks owned by the active route, not a second ACP Client.
+The router also receives a `SessionCallbacks` delegate for filesystem, terminal, and session metadata. Construction is unambiguous: `spawnAndInit({ client: promptCallbackRouter })`; `HummingClient`/`PromptCardController` are callbacks owned by the active route, not a second ACP Client.
+
+ACP `loadSession` is special: it may replay historical `user_message_chunk`, `agent_message_chunk`, thought, plan, and tool notifications before returning. ChatRuntime installs a `bootstrap/load` route before calling `loadSession`. That route consumes replay notifications into bootstrap/session reconstruction only; it never forwards them to a current PromptCardLifecycle or renders new conversation cards. `session_info_update`, mode/config, commands, and usage updates go to `SessionCallbacks`. `newSession` and `resumeSession` use bootstrap routes too, although resume is expected not to replay history. The bootstrap route closes only when the corresponding setup response returns.
 
 Rules:
 
-1. `ChatRuntime` installs the active route immediately before `connection.prompt()`.
+1. `ChatRuntime` installs a bootstrap route around new/load/resume, closes it on setup response, and installs the active prompt route immediately before `connection.prompt()`.
 2. At the synchronous entry of every session-update or permission callback, the router captures the active route object and its prompt token. The callback continues using that captured route even if the prompt response is processed while asynchronous work is pending.
 3. The SDK reads JSON-RPC messages in stream order and invokes the handler for an earlier notification/request before processing the later prompt response. The prompt response therefore closes the active route only after every protocol-compliant update/request has entered with the old route captured.
 4. Immediately after `connection.prompt()` resolves, Humming atomically closes that route before terminal reduction. The next prompt may then install its route; no quiescence delay guesses attribution.
@@ -261,7 +264,7 @@ Rules:
 7. During explicit cancellation, Humming keeps the route active and accepts trailing updates until the required cancelled prompt response arrives. All unresolved permission requests are synchronously resolved as cancelled, as required by ACP.
 8. Humming supports ACP-compliant adapters. It never assigns a callback that entered after route closure to the next prompt merely because that prompt is current.
 
-Tests prove entry-time route capture, response-boundary closure, trailing updates before cancelled response, stale update rejection/connection quarantine, stale permission cancellation, and next-prompt activation only on a healthy route.
+Tests prove bootstrap replay isolation, session-metadata routing, entry-time active-route capture, response-boundary closure, trailing updates before cancelled response, stale update rejection/connection quarantine, stale permission cancellation, and next-prompt activation only on a healthy route.
 
 ## Event model
 
@@ -284,12 +287,28 @@ type ConversationCardEvent =
       profile: SessionCardMeta | null;
     }
   | { type: "forwarded"; promptToken: PromptToken; segmentToken: SegmentToken; actionToken: ActionToken }
-  | { type: "agent_text"; promptToken: PromptToken; text: string }
-  | { type: "agent_thought"; promptToken: PromptToken; text: string }
-  | { type: "tool_started"; promptToken: PromptToken; tool: ToolEvent }
-  | { type: "tool_updated"; promptToken: PromptToken; tool: ToolEvent }
-  | { type: "archive_segment"; promptToken: PromptToken; reason: ArchiveReason }
-  | { type: "open_idle_slot"; promptToken: PromptToken; timerGeneration: number }
+  | { type: "agent_text"; promptToken: PromptToken; segmentToken: SegmentToken; text: string }
+  | { type: "agent_thought"; promptToken: PromptToken; segmentToken: SegmentToken; text: string }
+  | { type: "tool_started"; promptToken: PromptToken; displaySegmentToken: SegmentToken; tool: ToolEvent }
+  | { type: "tool_updated"; promptToken: PromptToken; displaySegmentToken: SegmentToken | null; tool: ToolEvent }
+  | {
+      type: "archive_segment";
+      promptToken: PromptToken;
+      segmentToken: SegmentToken;
+      reason: ArchiveReason;
+      nextSegmentToken: SegmentToken;
+      nextActionToken: ActionToken;
+      nextProfile: SessionCardMeta | null;
+    }
+  | {
+      type: "open_idle_slot";
+      promptToken: PromptToken;
+      segmentToken: SegmentToken;
+      timerGeneration: number;
+      nextSegmentToken: SegmentToken;
+      nextActionToken: ActionToken;
+      nextProfile: SessionCardMeta | null;
+    }
   | {
       type: "permission_requested";
       promptToken: PromptToken;
@@ -297,10 +316,21 @@ type ConversationCardEvent =
       permissionToken: PermissionToken;
       permission: PermissionViewData;
     }
-  | { type: "permission_resolved"; promptToken: PromptToken; permissionToken: PermissionToken }
+  | {
+      type: "permission_resolved";
+      promptToken: PromptToken;
+      permissionToken: PermissionToken;
+      nextSegmentToken: SegmentToken;
+      nextActionToken: ActionToken;
+      nextProfile: SessionCardMeta | null;
+    }
   | { type: "queued"; promptToken: PromptToken }
   | { type: "interrupting"; promptToken: PromptToken }
   | { type: "flush_due"; promptToken: PromptToken; segmentToken: SegmentToken }
+  | { type: "acknowledgement_visible"; promptToken: PromptToken; cardId: string }
+  | { type: "acknowledgement_terminal_without_card"; promptToken: PromptToken }
+  | { type: "acknowledgement_removed"; promptToken: PromptToken }
+  | { type: "acknowledgement_remove_failed"; promptToken: PromptToken }
   | { type: "finish"; promptToken: PromptToken; outcome: TerminalOutcome };
 ```
 
@@ -308,7 +338,7 @@ The semantic queue processes one reducer event at a time, but **does not wait fo
 
 This distinction is required for liveness: a hung Feishu patch must not block `finish`, cancellation, a new segment, or a new prompt. Semantic order is preserved by event sequence and ownership tokens, not by awaiting arbitrary network I/O. Within one still-open ownership generation, Delivery serializes transport effects. Closing a segment uses the atomic close-and-detach operation described below.
 
-Every event carries the prompt token. Events with a stale token are ignored. Segment-scoped events also carry the segment token. Timer events additionally carry a timer generation so a callback that already started cannot create an idle card after cancellation or finalization.
+Every event carries the prompt token. Events with a stale token are ignored. Text, thought, archive, idle, forwarded, and flush events are segment-scoped and carry the current segment token. Tool events are prompt-ledger-scoped: they update `ToolLedger` by `toolCallId`; `displaySegmentToken` identifies where a new/compact marker may appear and is null when no active segment exists. Archive/idle/permission-resolution events carry fresh preallocated next segment/action tokens because the pure reducer never generates randomness. Timer events additionally carry a timer generation so a callback that already started cannot create an idle card after cancellation or finalization.
 
 ### Terminal priority
 
@@ -361,6 +391,7 @@ type CardEffect =
       permissionToken: PermissionToken;
       permission: PermissionViewData;
     }
+  | { type: "remove_acknowledgement"; promptToken: PromptToken; messageId: string; reactionId: string }
   | { type: "expire_permission"; promptToken: PromptToken; permissionToken: PermissionToken; reason: string }
   | { type: "reconcile_permission_artifact"; cardId: string; promptToken: PromptToken; permissionToken: PermissionToken; reason: string }
   | { type: "reconcile_superseded"; cardId: string; view: Extract<ConversationCardView, { kind: "orphaned" }> }
@@ -488,6 +519,8 @@ The accepted flow is:
 5. remove the acknowledgement reaction best-effort after the first authoritative card becomes visible or after the prompt reaches terminal without a card.
 
 A failed reaction add/remove is logged but does not affect prompt execution. A leaked reaction is inert and does not state that processing is still active. The bridge never creates a standalone receipt/progress card and never patches a conversation card directly.
+
+Removal has an explicit feedback path. The Delivery effect runner emits `acknowledgement_visible` only after `send` or replacement takeover returns a non-null authoritative card ID. If the prompt becomes terminal before any visible card exists, the controller emits `acknowledgement_terminal_without_card`. Either event makes the reducer emit exactly one `remove_acknowledgement` effect when a reaction ID exists. The reaction port reports `acknowledgement_removed` or `acknowledgement_remove_failed`; both mark the removal attempt complete, and neither retries in a loop. Merely submitting a render effect never removes the reaction.
 
 For busy follow-ups, the same `PromptCardLifecycle` creates an explicit queued/interrupting view because that message has durable queue semantics. Its delivery ownership later becomes active or terminal; the runtime must not leave it queued while creating a second authoritative terminal card.
 

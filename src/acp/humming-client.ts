@@ -358,6 +358,7 @@ export class HummingClient implements acp.Client {
   ) => void;
   private readonly lifecycleController?: HummingClientLifecycleController;
   private readonly callbackRouter?: HummingClientCallbackRouter;
+  private readonly lifecycleV2Enabled: boolean;
   private activePromptRoute: PromptRouteHandle | null = null;
   private permissionMode: PermissionMode;
   private timeline: TimelineEntry[] = [];
@@ -398,7 +399,8 @@ export class HummingClient implements acp.Client {
     this.metaProvider = opts.metaProvider;
     this.onSessionInfoUpdate = opts.onSessionInfoUpdate;
     this.permissionMode = opts.permissionMode;
-    if (opts.conversationCardFeature?.v2Enabled) {
+    this.lifecycleV2Enabled = opts.conversationCardFeature?.v2Enabled === true;
+    if (this.lifecycleV2Enabled) {
       if (opts.lifecycleController === undefined || opts.callbackRouter === undefined) {
         throw new TypeError("lifecycle v2 requires controller and router injection");
       }
@@ -428,12 +430,13 @@ export class HummingClient implements acp.Client {
 
   /** Start accepting renderable ACP updates for the prompt about to be sent. */
   beginPrompt(): void {
+    if (this.lifecycleV2Enabled) return;
     this.acceptingRenderableUpdates = true;
   }
 
   /** Continue rendering into a progress card the bridge already created for this prompt. */
   adoptProgressCard(cardMessageId: string | null | undefined): void {
-    if (!cardMessageId) return;
+    if (this.lifecycleV2Enabled || !cardMessageId) return;
     this.cardDelivery.adopt(cardMessageId);
   }
 
@@ -787,10 +790,10 @@ export class HummingClient implements acp.Client {
    */
   async finalize(status: AgentStatus): Promise<void> {
     if (this.lifecycleController !== undefined && this.callbackRouter !== undefined) {
-      this.lifecycleController.finish(toTerminalOutcome(status));
       const route = this.activePromptRoute;
       this.activePromptRoute = null;
       if (route !== null) this.callbackRouter.close(route);
+      this.lifecycleController.finish(toTerminalOutcome(status));
       return;
     }
     this.status = status;
@@ -823,6 +826,10 @@ export class HummingClient implements acp.Client {
    * just noisy and looks like a phantom cancellation.
    */
   async finalizeIfRenderable(status: AgentStatus): Promise<void> {
+    if (this.lifecycleV2Enabled) {
+      await this.finalize(status);
+      return;
+    }
     if (!this.hasRenderableState()) {
       this.resetPromptState();
       return;

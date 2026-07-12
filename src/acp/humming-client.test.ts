@@ -233,7 +233,9 @@ function lifecycleDelegates(
     close: vi.fn((handle: PromptRouteHandle) => {
       if (handle === routeHandle) callbacks = undefined;
     }),
-    cancel: vi.fn(),
+    cancel: vi.fn((handle: PromptRouteHandle) => {
+      if (handle === routeHandle) callbacks?.cancelPendingPermissions("prompt_cancelled");
+    }),
     sessionUpdate: vi.fn(async (params: acp.SessionNotification) => {
       if (!callbacks) throw new Error("route not active");
       await callbacks.sessionUpdate(params);
@@ -323,6 +325,9 @@ describe("HummingClient lifecycle-v2 delegation", () => {
 
     client.cancelPendingPermission();
     expect(delegates.router.cancel).toHaveBeenCalledExactlyOnceWith(delegates.routeHandle);
+    expect(delegates.controller.cancelPendingPermissions).toHaveBeenCalledExactlyOnceWith(
+      "prompt_cancelled",
+    );
   });
 
   it("keeps an unresolved Controller permission pending until it settles", async () => {
@@ -341,6 +346,33 @@ describe("HummingClient lifecycle-v2 delegation", () => {
 
     settle({ outcome: { outcome: "cancelled" } });
     await expect(waiting).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("closes route before terminal reduction and still closes if finish throws", async () => {
+    const order: string[] = [];
+    const delegates = lifecycleDelegates();
+    delegates.router.close.mockImplementation(() => order.push("close"));
+    delegates.controller.finish.mockImplementation(() => {
+      order.push("finish");
+      throw new Error("reducer failure");
+    });
+    const client = makeLifecycleClient([], delegates);
+    await client.showForwarded();
+
+    await expect(client.finalize("failed")).rejects.toThrow("reducer failure");
+    expect(order).toEqual(["close", "finish"]);
+  });
+
+  it("delegates preparing and finalizeIfRenderable without consulting legacy state", async () => {
+    const delegates = lifecycleDelegates();
+    const client = makeLifecycleClient([], delegates);
+    await client.showPreparing();
+    await client.showForwarded();
+    await client.finalizeIfRenderable("cancelled");
+
+    expect(delegates.controller.markPreparing).toHaveBeenCalledOnce();
+    expect(delegates.router.close).toHaveBeenCalledOnce();
+    expect(delegates.controller.finish).toHaveBeenCalledExactlyOnceWith("cancelled");
   });
 
   it("keeps the default gate on the legacy path even when delegates are injected", async () => {

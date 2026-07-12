@@ -390,6 +390,41 @@ describe("PromptCardController", () => {
     expect(remove).toHaveBeenCalledExactlyOnceWith("message", "late-reaction");
   });
 
+  it("removes ACK attached after visibility and deduplicates terminal late callbacks", async () => {
+    const remove = vi.fn(async () => true);
+    const subject = controller({ acknowledge: { add: vi.fn(), remove } });
+    subject.markForwarded();
+    await subject.awaitEffects(100);
+    subject.acknowledge({ messageId: "message", reactionId: "reaction" });
+    await subject.awaitEffects(100);
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    subject.finish("complete");
+    subject.acknowledge({ messageId: "message", reactionId: "reaction" });
+    subject.acknowledge({ messageId: "message", reactionId: "reaction" });
+    await subject.awaitEffects(100);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles and resumes when permission handoff rejects", async () => {
+    const failedPort = delivery({
+      handoffToPermission: vi.fn(async () => {
+        throw new Error("transport secret");
+      }),
+    });
+    const diagnostics = sink();
+    const subject = controller({ delivery: failedPort, diagnostics });
+    subject.markForwarded();
+    const pending = subject.requestPermission({
+      requestId: "rejected",
+      params: permissionParams(),
+    });
+
+    await expect(pending.response).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    await vi.waitFor(() => expect(failedPort.deliver).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(diagnostics.events)).not.toContain("transport secret");
+  });
+
   it("integrates with ConversationCardDelivery across a deferred content permission handoff", async () => {
     const archivePatch = deferred<boolean>();
     const patchView = vi.fn(() => archivePatch.promise);

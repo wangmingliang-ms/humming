@@ -133,6 +133,7 @@ export class PromptCardController {
   private readonly consumedActions = new Set<ActionToken>();
   private authoritativeRenderSubmitted = false;
   private visibleCardObserved = false;
+  private readonly removedAcknowledgementIds = new Set<string>();
   private readonly handoffSuccessors = new Map<OwnershipToken, OwnershipToken>();
   private segmentSequence = 1;
   private ownerSequence = 1;
@@ -164,7 +165,7 @@ export class PromptCardController {
 
   acknowledge(input: { messageId: string; reactionId?: string }): void {
     if (input.reactionId !== undefined) {
-      if (this.state.phase === "terminal") {
+      if (this.visibleCardObserved || this.state.phase === "terminal") {
         this.removeAcknowledgement(input.messageId, input.reactionId);
         return;
       }
@@ -486,6 +487,7 @@ export class PromptCardController {
   private async handleDelivery(owner: OwnershipToken, view: ConversationCardView): Promise<void> {
     const result = await this.options.delivery.deliver(owner, view);
     if (result.outcome === "visible") {
+      this.visibleCardObserved = true;
       this.dispatch({
         type: "acknowledgement_visible",
         promptToken: this.promptToken,
@@ -508,17 +510,23 @@ export class PromptCardController {
     const pending = this.pendingPermissions.get(effect.permissionToken);
     if (pending === undefined) return;
     const handoffOwner = this.handoffSuccessors.get(effect.ownershipToken) ?? effect.ownershipToken;
-    const result = await this.options.delivery.handoffToPermission(handoffOwner, {
-      promptToken: effect.promptToken,
-      segmentToken: effect.segmentToken,
-      permissionToken: effect.permissionToken,
-      permission: effect.permission,
-      reuseCard: previousEntriesEmpty(this.state),
-      isCurrent: () =>
-        !pending.settled &&
-        this.state.phase === "awaiting_permission" &&
-        this.state.permissionToken === effect.permissionToken,
-    });
+    let result: PermissionHandoffResult;
+    try {
+      result = await this.options.delivery.handoffToPermission(handoffOwner, {
+        promptToken: effect.promptToken,
+        segmentToken: effect.segmentToken,
+        permissionToken: effect.permissionToken,
+        permission: effect.permission,
+        reuseCard: previousEntriesEmpty(this.state),
+        isCurrent: () =>
+          !pending.settled &&
+          this.state.phase === "awaiting_permission" &&
+          this.state.permissionToken === effect.permissionToken,
+      });
+    } catch {
+      this.recordController("effect", "rejected");
+      result = { outcome: "failed" };
+    }
     if (result.outcome === "failed") this.settlePermission(pending, CANCELLED_PERMISSION, true);
     this.handoffSuccessors.delete(effect.ownershipToken);
   }
@@ -584,6 +592,9 @@ export class PromptCardController {
   }
 
   private removeAcknowledgement(messageId: string, reactionId: string): void {
+    const identity = `${messageId}\u0000${reactionId}`;
+    if (this.removedAcknowledgementIds.has(identity)) return;
+    this.removedAcknowledgementIds.add(identity);
     const port = this.options.acknowledgement;
     if (port === undefined) {
       this.dispatch({ type: "acknowledgement_remove_failed", promptToken: this.promptToken });

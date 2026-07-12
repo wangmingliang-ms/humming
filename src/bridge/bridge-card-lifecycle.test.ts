@@ -72,6 +72,33 @@ describe("LarkBridge prompt ingress ordering", () => {
     await Promise.all([b, c, other]);
     expect(calls.indexOf("end:b")).toBeLessThan(calls.indexOf("start:c"));
   });
+  it("continues the same topic after an ingress failure and releases the chain", async () => {
+    const bridge = makeBridge(true);
+    const calls: string[] = [];
+    const testable = bridge as unknown as {
+      enqueueWithContext(
+        event: unknown,
+        chatId: string,
+        threadId: string | null,
+        userId: string,
+        messageId: string,
+        segments: unknown[],
+      ): Promise<void>;
+      enqueueWithContextSerial: ReturnType<typeof vi.fn>;
+      promptIngress: Map<string, Promise<void>>;
+    };
+    testable.enqueueWithContextSerial = vi.fn(async (_event, _chat, _thread, _user, messageId) => {
+      calls.push(messageId);
+      if (messageId === "bad") throw new Error("hydrate failed");
+    });
+    const bad = testable
+      .enqueueWithContext({}, "chat", "topic", "user", "bad", [])
+      .catch(() => undefined);
+    const good = testable.enqueueWithContext({}, "chat", "topic", "user", "good", []);
+    await Promise.all([bad, good]);
+    expect(calls).toEqual(["bad", "good"]);
+    expect(testable.promptIngress.size).toBe(0);
+  });
 });
 
 describe("LarkBridge Cancel card compatibility", () => {

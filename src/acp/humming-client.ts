@@ -11,6 +11,14 @@ import type {
   SessionCardMeta,
   UnifiedCardState,
 } from "../presenter/presenter.js";
+import type { ConversationCardFeatureGate } from "../bridge/conversation-card-feature.js";
+import type { PromptCardController } from "./prompt-card-controller.js";
+import type { TerminalOutcome } from "./prompt-card-lifecycle.js";
+import type {
+  PromptCallbackRouter,
+  PromptRouteHandle,
+  PromptScopedCallbacks,
+} from "./prompt-callback-router.js";
 import { ConversationCardDelivery } from "./conversation-card-delivery.js";
 import {
   CARD_MARKDOWN_ELEMENT_BYTE_LIMIT,
@@ -43,6 +51,11 @@ function assertNeverToolStatus(x: never): never {
 
 function isTerminalStatus(status: AgentStatus): boolean {
   return status === "complete" || status === "cancelled" || status === "failed";
+}
+
+function toTerminalOutcome(status: AgentStatus): TerminalOutcome {
+  if (status === "complete" || status === "cancelled" || status === "failed") return status;
+  throw new TypeError(`lifecycle v2 cannot finalize with non-terminal status: ${status}`);
 }
 
 function normalizeToolStatus(status: ToolStatus): ToolStatus {
@@ -273,6 +286,21 @@ export const PERMISSION_MODES: readonly PermissionMode[] = [
   "alwaysDeny",
 ] as const;
 
+interface HummingClientLifecycleController extends Pick<
+  PromptCardController,
+  | "markPreparing"
+  | "markForwarded"
+  | "applyAgentUpdate"
+  | "requestPermission"
+  | "cancelPendingPermissions"
+  | "finish"
+> {}
+
+interface HummingClientCallbackRouter extends Pick<
+  PromptCallbackRouter,
+  "activate" | "close" | "cancel" | "sessionUpdate" | "requestPermission"
+> {}
+
 export interface HummingClientOptions {
   presenter: LarkPresenter;
   logger: LarkLogger;
@@ -300,6 +328,10 @@ export interface HummingClientOptions {
   onSessionInfoUpdate?: (
     update: Extract<acp.SessionUpdate, { sessionUpdate: "session_info_update" }>,
   ) => void;
+  /** Task 9 composition seam. Disabled unless all three values are explicitly injected. */
+  conversationCardFeature?: ConversationCardFeatureGate;
+  lifecycleController?: HummingClientLifecycleController;
+  callbackRouter?: HummingClientCallbackRouter;
 }
 
 /**
@@ -324,6 +356,9 @@ export class HummingClient implements acp.Client {
   private readonly onSessionInfoUpdate?: (
     update: Extract<acp.SessionUpdate, { sessionUpdate: "session_info_update" }>,
   ) => void;
+  private readonly lifecycleController?: HummingClientLifecycleController;
+  private readonly callbackRouter?: HummingClientCallbackRouter;
+  private activePromptRoute: PromptRouteHandle | null = null;
   private permissionMode: PermissionMode;
   private timeline: TimelineEntry[] = [];
   private status: AgentStatus = "thinking";
@@ -363,6 +398,13 @@ export class HummingClient implements acp.Client {
     this.metaProvider = opts.metaProvider;
     this.onSessionInfoUpdate = opts.onSessionInfoUpdate;
     this.permissionMode = opts.permissionMode;
+    if (opts.conversationCardFeature?.v2Enabled) {
+      if (opts.lifecycleController === undefined || opts.callbackRouter === undefined) {
+        throw new TypeError("lifecycle v2 requires controller and router injection");
+      }
+      this.lifecycleController = opts.lifecycleController;
+      this.callbackRouter = opts.callbackRouter;
+    }
     this.cardDelivery = new ConversationCardDelivery({
       send: (state) => this.presenter.sendUnifiedCard(this.currentMessageId, state),
       patch: (cardId, state) => this.presenter.updateUnifiedCard(cardId, state),
@@ -397,21 +439,49 @@ export class HummingClient implements acp.Client {
 
   /** Show that the runtime is bootstrapping or connecting to the target agent. */
   async showPreparing(): Promise<void> {
+    if (this.lifecycleController !== undefined) {
+      this.lifecycleController.markPreparing(this.metaProvider?.() ?? null);
+      return;
+    }
     this.status = "preparing";
     await this.renderCard({ cancellable: false });
   }
 
   /** Show that the user's message has been forwarded and Humming is waiting for agent output. */
   async showForwarded(): Promise<void> {
+    if (this.lifecycleController !== undefined && this.callbackRouter !== undefined) {
+      if (this.activePromptRoute !== null)
+        throw new Error("lifecycle prompt route is already active");
+      const identity = this.lifecycleController.markForwarded();
+      const callbacks: PromptScopedCallbacks = {
+        sessionUpdate: async (params) => this.lifecycleController?.applyAgentUpdate(params.update),
+        requestPermission: async (params) => this.requestLifecyclePermission(params),
+        cancelPendingPermissions: (reason) =>
+          this.lifecycleController?.cancelPendingPermissions(reason),
+      };
+      this.activePromptRoute = this.callbackRouter.activate(identity.promptToken, callbacks);
+      return;
+    }
     this.status = "thinking";
     await this.renderCard({ cancellable: true });
   }
 
   // ----- Permission flow --------------------------------------------------
 
+  private requestLifecyclePermission(
+    params: acp.RequestPermissionRequest,
+  ): Promise<acp.RequestPermissionResponse> {
+    const pending = this.lifecycleController?.requestPermission({
+      requestId: crypto.randomUUID(),
+      params,
+    });
+    return pending?.response ?? Promise.resolve({ outcome: { outcome: "cancelled" } });
+  }
+
   async requestPermission(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
+    if (this.callbackRouter !== undefined) return this.callbackRouter.requestPermission(params);
     if (isHummingCliPermissionRequest(params)) {
       return this.autoResolvePermission(params, "alwaysAllow");
     }
@@ -564,6 +634,10 @@ export class HummingClient implements acp.Client {
   }
 
   cancelPendingPermission(): void {
+    if (this.lifecycleController !== undefined && this.callbackRouter !== undefined) {
+      if (this.activePromptRoute !== null) this.callbackRouter.cancel(this.activePromptRoute);
+      return;
+    }
     for (const requestId of [...this.pendingPermissions.keys()]) {
       this.expirePendingPermission(requestId, PERMISSION_SHUTDOWN_REASON);
     }
@@ -593,6 +667,10 @@ export class HummingClient implements acp.Client {
   // ----- Session updates → timeline --------------------------------------
 
   async sessionUpdate(params: acp.SessionNotification): Promise<void> {
+    if (this.callbackRouter !== undefined) {
+      await this.callbackRouter.sessionUpdate(params);
+      return;
+    }
     const u = params.update;
     switch (u.sessionUpdate) {
       case "agent_message_chunk":
@@ -708,6 +786,13 @@ export class HummingClient implements acp.Client {
    * reset per-prompt state so the next prompt starts clean.
    */
   async finalize(status: AgentStatus): Promise<void> {
+    if (this.lifecycleController !== undefined && this.callbackRouter !== undefined) {
+      this.lifecycleController.finish(toTerminalOutcome(status));
+      const route = this.activePromptRoute;
+      this.activePromptRoute = null;
+      if (route !== null) this.callbackRouter.close(route);
+      return;
+    }
     this.status = status;
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);

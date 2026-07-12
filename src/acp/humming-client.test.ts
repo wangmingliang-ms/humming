@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type * as acp from "@agentclientprotocol/sdk";
 import { HummingClient } from "./humming-client.js";
+import type { PromptRouteHandle, PromptScopedCallbacks } from "./prompt-callback-router.js";
+import type {
+  ActionToken,
+  PermissionToken,
+  PromptToken,
+  SegmentToken,
+} from "../presenter/conversation-card-view.js";
 import {
   CARD_MARKDOWN_ELEMENT_BYTE_LIMIT,
   CARD_MARKDOWN_ROTATION_BYTE_LIMIT,
@@ -188,6 +195,174 @@ function textChunk(text: string): acp.SessionNotification {
     },
   };
 }
+
+function lifecycleDelegates(
+  permissionResponse: Promise<acp.RequestPermissionResponse> = Promise.resolve({
+    outcome: { outcome: "selected", optionId: "allow" },
+  }),
+) {
+  let permissionSequence = 0;
+  const controller = {
+    markPreparing: vi.fn(),
+    markForwarded: vi.fn(() => ({
+      promptToken: "prompt-v2" as PromptToken,
+      segmentToken: "segment-v2" as SegmentToken,
+      actionToken: "action-v2" as ActionToken,
+    })),
+    applyAgentUpdate: vi.fn(),
+    requestPermission: vi.fn(({ requestId }: { requestId: string }) => {
+      permissionSequence += 1;
+      return {
+        promptToken: "prompt-v2" as PromptToken,
+        permissionToken: `permission-${permissionSequence}` as PermissionToken,
+        requestId,
+        allowedOptionIds: new Set(["allow"]),
+        response: permissionResponse,
+      };
+    }),
+    cancelPendingPermissions: vi.fn(),
+    finish: vi.fn(),
+  };
+  let callbacks: PromptScopedCallbacks | undefined;
+  const routeHandle = {} as PromptRouteHandle;
+  const router = {
+    activate: vi.fn((_promptToken: PromptToken, next: PromptScopedCallbacks) => {
+      callbacks = next;
+      return routeHandle;
+    }),
+    close: vi.fn((handle: PromptRouteHandle) => {
+      if (handle === routeHandle) callbacks = undefined;
+    }),
+    cancel: vi.fn(),
+    sessionUpdate: vi.fn(async (params: acp.SessionNotification) => {
+      if (!callbacks) throw new Error("route not active");
+      await callbacks.sessionUpdate(params);
+    }),
+    requestPermission: vi.fn(async (params: acp.RequestPermissionRequest) => {
+      if (!callbacks) throw new Error("route not active");
+      return callbacks.requestPermission(params);
+    }),
+  };
+  return { controller, router, routeHandle };
+}
+
+function makeLifecycleClient(
+  ops: RenderOp[],
+  delegates: ReturnType<typeof lifecycleDelegates>,
+  options: { permissionTimeoutMs?: number } = {},
+): HummingClient {
+  const client = new HummingClient({
+    presenter: recordingPresenter(ops),
+    logger,
+    showThoughts: true,
+    showTools: true,
+    showCancelButton: true,
+    permissionTimeoutMs: options.permissionTimeoutMs ?? 0,
+    permissionMode: "alwaysAsk",
+    idleStatusCardMs: 0,
+    conversationCardFeature: { v2Enabled: true },
+    lifecycleController: delegates.controller,
+    callbackRouter: delegates.router,
+  });
+  client.setContext("om_user", "oc_chat", "omt_thread");
+  client.beginPrompt();
+  return client;
+}
+
+describe("HummingClient lifecycle-v2 delegation", () => {
+  it("routes an active agent update to PromptCardController", async () => {
+    const delegates = lifecycleDelegates();
+    const ops: RenderOp[] = [];
+    const client = makeLifecycleClient(ops, delegates);
+    await client.showForwarded();
+
+    const update = textChunk("semantic update");
+    await client.sessionUpdate(update);
+
+    expect(delegates.router.activate).toHaveBeenCalledWith(
+      "prompt-v2",
+      expect.objectContaining({
+        sessionUpdate: expect.any(Function),
+        requestPermission: expect.any(Function),
+        cancelPendingPermissions: expect.any(Function),
+      }),
+    );
+    expect(delegates.router.sessionUpdate).toHaveBeenCalledWith(update);
+    expect(delegates.controller.applyAgentUpdate).toHaveBeenCalledExactlyOnceWith(update.update);
+    expect(ops).toEqual([]);
+  });
+
+  it("finishes through Controller, closes the route, and absorbs later direct updates", async () => {
+    const delegates = lifecycleDelegates();
+    const client = makeLifecycleClient([], delegates);
+    await client.showForwarded();
+
+    await client.finalize("complete");
+    await expect(client.sessionUpdate(textChunk("late direct callback"))).rejects.toThrow(
+      "route not active",
+    );
+
+    expect(delegates.controller.finish).toHaveBeenCalledExactlyOnceWith("complete");
+    expect(delegates.router.close).toHaveBeenCalledExactlyOnceWith(delegates.routeHandle);
+    expect(delegates.router.sessionUpdate).toHaveBeenCalledTimes(1);
+    expect(delegates.controller.applyAgentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("bridges Router permission requests to the Controller-owned response", async () => {
+    const delegates = lifecycleDelegates();
+    const client = makeLifecycleClient([], delegates);
+    await client.showForwarded();
+
+    await expect(client.requestPermission(permissionRequest())).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow" },
+    });
+    expect(delegates.router.requestPermission).toHaveBeenCalledOnce();
+    expect(delegates.controller.requestPermission).toHaveBeenCalledWith(
+      expect.objectContaining({ params: permissionRequest(), requestId: expect.any(String) }),
+    );
+
+    client.cancelPendingPermission();
+    expect(delegates.router.cancel).toHaveBeenCalledExactlyOnceWith(delegates.routeHandle);
+  });
+
+  it("keeps an unresolved Controller permission pending until it settles", async () => {
+    let settle!: (response: acp.RequestPermissionResponse) => void;
+    const response = new Promise<acp.RequestPermissionResponse>((resolve) => (settle = resolve));
+    const delegates = lifecycleDelegates(response);
+    const client = makeLifecycleClient([], delegates);
+    await client.showForwarded();
+    let resolved = false;
+    const waiting = client.requestPermission(permissionRequest()).then((value) => {
+      resolved = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    settle({ outcome: { outcome: "cancelled" } });
+    await expect(waiting).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("keeps the default gate on the legacy path even when delegates are injected", async () => {
+    const delegates = lifecycleDelegates();
+    const client = new HummingClient({
+      presenter: recordingPresenter([]),
+      logger,
+      showThoughts: true,
+      showTools: true,
+      showCancelButton: true,
+      permissionTimeoutMs: 0,
+      permissionMode: "alwaysAsk",
+      idleStatusCardMs: 0,
+      lifecycleController: delegates.controller,
+      callbackRouter: delegates.router,
+    });
+    client.setContext("om", "oc", null);
+    client.beginPrompt();
+    await client.showForwarded();
+    expect(delegates.router.activate).not.toHaveBeenCalled();
+  });
+});
 
 describe("HummingClient card-v2 conversation rendering", () => {
   it("creates a reusable status card after visible content goes idle", async () => {

@@ -218,23 +218,27 @@ describe("TopicConversation canonical lifecycle", () => {
     expect(batch).toMatchObject({ carrierResponseId: c, state: "sealed" });
   });
 
-  it("topic /cancel cancels every unfinished Response but preserves merged history", () => {
+  it("topic /cancel revokes waiting work immediately but keeps owner until stop confirmation", () => {
     const topic = new TopicConversation();
     const a = accept(topic, "a");
     start(topic, a, "a");
     const b = accept(topic, "b");
     const c = append(topic, "c");
 
-    topic.cancelTopic();
+    topic.beginTopicCancel();
 
-    expect(response(topic, a).state).toEqual({ kind: "terminal", outcome: "cancelled" });
+    expect(response(topic, a).state).toMatchObject({ kind: "in_progress" });
     expect(response(topic, b).state).toEqual({ kind: "terminal", outcome: "merged" });
     expect(response(topic, c).state).toEqual({ kind: "terminal", outcome: "cancelled" });
     expect(topic.snapshot()).toMatchObject({
-      executionOwnerResponseId: null,
+      executionOwnerResponseId: a,
       pendingBatch: null,
       cancelAuthority: { kind: "none" },
     });
+
+    topic.confirmTopicCancel();
+    expect(response(topic, a).state).toEqual({ kind: "terminal", outcome: "cancelled" });
+    expect(topic.snapshot().executionOwnerResponseId).toBeNull();
   });
 
   it("creates a continuation tail with Cancel while Permission choices remain current", () => {
@@ -332,18 +336,21 @@ describe("TopicConversation canonical lifecycle", () => {
       continuationActionToken: id.action("action-a-2"),
     });
 
-    topic.permissionDisplayFailed(a);
+    topic.beginPermissionDisplayFailure(a);
 
-    expect(response(topic, a).state).toEqual({ kind: "terminal", outcome: "failed" });
+    expect(response(topic, a).state).toMatchObject({ kind: "in_progress" });
     expect(topic.snapshot()).toMatchObject({
-      executionOwnerResponseId: null,
+      executionOwnerResponseId: a,
       cancelAuthority: { kind: "none" },
       permission: { status: "display_failed" },
     });
     expect(response(topic, a).cards.at(-1)?.entries).toContainEqual({
       kind: "notice",
-      text: "权限请求无法显示，本次执行失败。",
+      text: "权限请求无法显示，正在停止本次执行。",
     });
+
+    topic.seal(a, "failed");
+    expect(response(topic, a).state).toEqual({ kind: "terminal", outcome: "failed" });
   });
 
   it("routes repeated accept calls into the same collecting batch", () => {

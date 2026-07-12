@@ -528,11 +528,11 @@ The button must not clear, cancel, or otherwise mutate B, C, or any other Respon
 The explicit `/cancel` command cancels all unfinished work in the Topic:
 
 ```text
-1. Cancel and seal the current Execution Owner as cancelled.
-2. Expire its current Permission request, if any.
-3. Discard any unsealed PendingRequestBatch.
+1. Revoke the current Execution Owner's Cancel and Permission authority immediately, then request Agent cancellation.
+2. Keep the current Execution Owner non-terminal and ownership intact until the Agent actually stops.
+3. Discard any unsealed PendingRequestBatch immediately.
 4. Seal its current carrier and every other waiting Response as cancelled, except former carriers already terminal(merged).
-5. Clear all Topic scheduling state.
+5. After Agent stop confirmation, seal the Execution Owner as cancelled and clear the remaining Topic scheduling state.
 ```
 
 This command is intentionally broader than a Card Cancel. The UI and tests must keep the two scopes distinct.

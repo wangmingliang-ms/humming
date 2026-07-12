@@ -130,83 +130,54 @@ describe("ChatRuntime prompt preparation", () => {
     expect(spawnAgentMock).toHaveBeenCalledOnce();
   });
 
-  it("allocates a real controller/router/delivery graph per prepared prompt", () => {
+  it("allocates distinct Responses in one shared Topic aggregate", () => {
     const runtime = new ChatRuntime({
       ...opts(),
       conversationCardFeature: { v2Enabled: true },
       lifecycleDiagnostics: new RingBufferLifecycleDiagnosticSink(),
     });
-    const context = {
-      chatId: "oc_test",
-      threadId: null,
+
+    const first = runtime.acceptResponse({
+      messageId: "om_first",
+      content: "first",
       profile: null,
-    } as const;
+    });
+    const second = runtime.acceptResponse({
+      messageId: "om_second",
+      content: "second",
+      profile: null,
+    });
 
-    const first = runtime.preparePrompt({ ...context, messageId: "om_first" });
-    const second = runtime.preparePrompt({ ...context, messageId: "om_second" });
-
-    expect(first.promptToken).not.toBe(second.promptToken);
-    expect(first.controller).not.toBe(second.controller);
+    expect(first.responseId).not.toBe(second.responseId);
+    expect(first.responseToken).not.toBe(second.responseToken);
   });
 
-  it("delegates action authority to the currently active semantic controller", () => {
+  it("routes stale token actions through the shared Topic authority", async () => {
     const runtime = new ChatRuntime({
       ...opts(),
       conversationCardFeature: { v2Enabled: true },
     });
-    const prepared = runtime.preparePrompt({
-      chatId: "oc_test",
-      threadId: null,
+    const response = runtime.acceptResponse({
       messageId: "om_test",
+      content: "test",
       profile: null,
     });
-    prepared.controller.markPreparing(null);
-    const cancelIdentity = prepared.controller.markForwarded();
-    (runtime as unknown as { activePreparedPrompt: typeof prepared }).activePreparedPrompt =
-      prepared;
 
     expect(
       runtime.consumeCancelAction({
         promptToken: "previous" as PromptToken,
-        segmentToken: cancelIdentity.segmentToken,
-        actionToken: cancelIdentity.actionToken,
+        segmentToken: "card" as SegmentToken,
+        actionToken: "action" as ActionToken,
       }),
     ).toBe("stale");
-    expect(runtime.consumeCancelAction(cancelIdentity)).toBe("accepted");
-    expect(runtime.consumeCancelAction(cancelIdentity)).toBe("duplicate");
-
-    const permission = prepared.controller.requestPermission({
-      requestId: "request",
-      params: {
-        sessionId: "session",
-        toolCall: { toolCallId: "tool", title: "Tool" },
-        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
-      },
-    });
     expect(
       runtime.consumePermissionAction({
-        promptToken: prepared.promptToken,
-        permissionToken: permission.permissionToken,
-        requestId: "request",
-        optionId: "other",
-      }),
-    ).toBe("invalid_option");
-    expect(
-      runtime.consumePermissionAction({
-        promptToken: prepared.promptToken,
-        permissionToken: permission.permissionToken,
+        promptToken: response.responseToken,
+        permissionToken: "permission" as PermissionToken,
         requestId: "request",
         optionId: "allow",
       }),
-    ).toBe("accepted");
-    expect(
-      runtime.consumePermissionAction({
-        promptToken: prepared.promptToken,
-        permissionToken: permission.permissionToken,
-        requestId: "request",
-        optionId: "allow",
-      }),
-    ).toBe("duplicate");
+    ).toBe("stale");
   });
 
   it("treats token actions as stale when no semantic prompt owns them", () => {
@@ -611,6 +582,62 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
     const routes = sendConversationCard.mock.calls.map(([, view]) => view.route.c);
     expect(routes).toEqual(expect.arrayContaining(["oc_test"]));
+  });
+
+  it("merges B and C into one Agent prompt while A is still interrupting", async () => {
+    const fake = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(fake.agent);
+    const sentViews: unknown[] = [];
+    const patchedViews: unknown[] = [];
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: {
+        ...recordingPresenter([]),
+        sendConversationCard: vi.fn(async (_messageId, view) => {
+          sentViews.push(view);
+          return `card-${sentViews.length}`;
+        }),
+        updateConversationCard: vi.fn(async (_cardId, view) => {
+          patchedViews.push(view);
+          return true;
+        }),
+      },
+      sessionStore: stubSessionStore(),
+      conversationCardFeature: { v2Enabled: true },
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "A" }],
+      messageId: "om_a",
+      chatId: "oc_test",
+    });
+    await vi.waitFor(() => expect(fake.prompts()).toHaveLength(1));
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "B" }],
+      messageId: "om_b",
+      chatId: "oc_test",
+    });
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "C correction" }],
+      messageId: "om_c",
+      chatId: "oc_test",
+    });
+
+    expect(fake.cancelCalls()).toBe(1);
+    fake.resolvePrompt("cancelled");
+    await vi.waitFor(() => expect(fake.prompts()).toHaveLength(2));
+    expect(fake.prompts()[1]).toContain("B");
+    expect(fake.prompts()[1]).toContain("C correction");
+    expect(fake.prompts()).toHaveLength(2);
+    await vi.waitFor(() =>
+      expect(
+        patchedViews.some(
+          (view) =>
+            (view as { kind?: string; header?: string }).kind === "terminal" &&
+            (view as { header?: string }).header === "merged",
+        ),
+      ).toBe(true),
+    );
   });
 
   it("interrupts an in-flight prompt when a follow-up user message is queued", async () => {

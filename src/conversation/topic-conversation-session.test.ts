@@ -42,7 +42,10 @@ function sequentialTokens(): TopicConversationTokenFactory {
   };
 }
 
-function fixture(overrides: Partial<LarkPresenter> = {}) {
+function fixture(
+  overrides: Partial<LarkPresenter> = {},
+  sessionOverrides: Partial<ConstructorParameters<typeof TopicConversationSession>[0]> = {},
+) {
   const sent: unknown[] = [];
   const patched: unknown[] = [];
   const permissions: PermissionCardView[] = [];
@@ -73,6 +76,8 @@ function fixture(overrides: Partial<LarkPresenter> = {}) {
     showCancelButton: true,
     permissionTimeoutMs: 0,
     onCancelResponse: cancel,
+    onPermissionDisplayFailure: cancel,
+    ...sessionOverrides,
   });
   return { session, presenter, sent, patched, permissions, cancel };
 }
@@ -130,6 +135,34 @@ describe("TopicConversationSession", () => {
     const handoff = await session.finishOwner("cancelled");
     expect(handoff.pendingBatch).toHaveLength(1);
     expect(session.snapshot.executionOwnerResponseId).toBeNull();
+    expect(session.snapshot.pendingBatch).toBeNull();
+  });
+
+  it("commits the sealed carrier synchronously before terminal Card I/O", async () => {
+    let releasePatch!: () => void;
+    const patchBlocked = new Promise<void>((resolve) => {
+      releasePatch = resolve;
+    });
+    const { session } = fixture({
+      updateConversationCard: vi.fn(async (_cardId, view) => {
+        if ((view as { kind?: string }).kind === "terminal") await patchBlocked;
+        return true;
+      }),
+    });
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    await session.prepare(a.responseId, profile);
+    await session.activate(a.responseId);
+    const c = session.accept({ sourceMessageId: "message-c", content: "C", profile });
+    const committed: ResponseId[] = [];
+    const finishing = session.finishOwner("interrupted", (handoff) =>
+      committed.push(handoff.carrierResponseId),
+    );
+    expect(committed).toEqual([c.responseId]);
+    expect(session.snapshot.pendingBatch).toBeNull();
+    const d = session.accept({ sourceMessageId: "message-d", content: "D", profile });
+    expect(d.responseId).not.toBe(c.responseId);
+    releasePatch();
+    await finishing;
   });
 
   it("expires Permission immediately when a new message arrives", async () => {
@@ -151,8 +184,139 @@ describe("TopicConversationSession", () => {
     expect(presenter.expirePermissionCard).toHaveBeenCalled();
   });
 
+  it("Card Cancel while awaiting Permission revokes both authorities immediately", async () => {
+    const { session } = fixture();
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    await session.prepare(a.responseId, profile);
+    await session.activate(a.responseId);
+    const permission = session.requestPermission(a.responseId, {
+      sessionId: "session",
+      toolCall: { toolCallId: "tool", title: "Edit", kind: "edit", status: "pending" },
+      options: [{ optionId: "allow", kind: "allow_once", name: "Allow" }],
+    });
+    await vi.waitFor(() => expect(session.snapshot.permission?.status).toBe("current"));
+    const authority = session.snapshot.cancelAuthority;
+    if (authority.kind !== "cancel") throw new Error("missing cancel authority");
+    expect(
+      session.consumeCancel({
+        responseToken: a.responseToken,
+        cardId: authority.cardId,
+        actionToken: authority.token,
+      }),
+    ).toBe("accepted");
+    await expect(permission).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    expect(session.snapshot.permission?.status).toBe("expired");
+    expect(session.snapshot.cancelAuthority).toEqual({ kind: "none" });
+    expect(session.snapshot.executionOwnerResponseId).toBe(a.responseId);
+  });
+
+  it("permission timeout revokes domain authority and resumes the Response", async () => {
+    vi.useFakeTimers();
+    try {
+      const { session } = fixture({}, { permissionTimeoutMs: 10 });
+      const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+      await session.prepare(a.responseId, profile);
+      await session.activate(a.responseId);
+      const permission = session.requestPermission(a.responseId, {
+        sessionId: "session",
+        toolCall: { toolCallId: "tool", title: "Edit", kind: "edit", status: "pending" },
+        options: [{ optionId: "allow", kind: "allow_once", name: "Allow" }],
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(permission).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+      expect(session.snapshot.permission?.status).toBe("expired");
+      expect(
+        session.snapshot.turns.find((turn) => turn.response.id === a.responseId)?.response.state,
+      ).toMatchObject({ kind: "in_progress", phase: "active" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries acknowledgement removal after a false transport result", async () => {
+    const remove = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const { session } = fixture({}, { acknowledgement: { add: vi.fn(), remove } });
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    session.attachAcknowledgement(a.responseId, "reaction-a");
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    await session.prepare(a.responseId, profile);
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
+  });
+
+  it("auto-resolves permission policy without displaying a Permission Card", async () => {
+    const allow = fixture({}, { permissionMode: () => "alwaysAllow" });
+    const a = allow.session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    await allow.session.prepare(a.responseId, profile);
+    await allow.session.activate(a.responseId);
+    await expect(
+      allow.session.requestPermission(a.responseId, {
+        sessionId: "session",
+        toolCall: { toolCallId: "tool", title: "Run", kind: "execute", status: "pending" },
+        options: [{ optionId: "yes", kind: "allow_once", name: "Allow" }],
+      }),
+    ).resolves.toEqual({ outcome: { outcome: "selected", optionId: "yes" } });
+    expect(allow.permissions).toEqual([]);
+  });
+
+  it("removes acknowledgement once after the first semantic Card becomes visible", async () => {
+    const acknowledgement = { add: vi.fn(), remove: vi.fn(async () => true) };
+    const { session } = fixture({}, { acknowledgement });
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    session.attachAcknowledgement(a.responseId, "reaction-a");
+    await vi.waitFor(() =>
+      expect(acknowledgement.remove).toHaveBeenCalledExactlyOnceWith("message-a", "reaction-a"),
+    );
+    await session.prepare(a.responseId, profile);
+    expect(acknowledgement.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("rotates an oversized tail and keeps only the new tail authoritative", async () => {
+    const { session } = fixture();
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    await session.prepare(a.responseId, profile);
+    await session.activate(a.responseId);
+    await session.applyAgentUpdate(a.responseId, {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "x".repeat(60_000) },
+    });
+    const response = session.snapshot.turns.find(
+      (turn) => turn.response.id === a.responseId,
+    )?.response;
+    expect(response?.cards.length).toBeGreaterThan(2);
+    expect(response?.cards.slice(0, -1).every((card) => !card.isTail)).toBe(true);
+    expect(response?.cards.at(-1)).toMatchObject({ isTail: true });
+    expect(session.snapshot.cancelAuthority).toMatchObject({
+      kind: "cancel",
+      responseId: a.responseId,
+      cardId: response?.cards.at(-1)?.id,
+    });
+  });
+
+  it("puts a patch-failure warning on the next valid tail", async () => {
+    const patched: unknown[] = [];
+    const { session } = fixture({
+      updateConversationCard: vi.fn(async (_cardId, view) => {
+        patched.push(view);
+        return false;
+      }),
+    });
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    await session.prepare(a.responseId, profile);
+    await session.activate(a.responseId);
+    await session.rotate(a.responseId, "size");
+    const tail = session.snapshot.turns
+      .find((turn) => turn.response.id === a.responseId)
+      ?.response.cards.at(-1);
+    expect(tail?.entries).toContainEqual({
+      kind: "notice",
+      text: "上一张 Card 更新失败，其旧 Cancel 按钮可能仍然可见，但已经失效。",
+    });
+  });
+
   it("fails Response when mandatory Permission Card is not visible", async () => {
-    const { session } = fixture({ sendPermissionRequestCard: vi.fn(async () => null) });
+    const { session, cancel } = fixture({
+      sendPermissionRequestCard: vi.fn(async () => null),
+    });
     const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
     await session.prepare(a.responseId, profile);
     await session.activate(a.responseId);
@@ -168,10 +332,17 @@ describe("TopicConversationSession", () => {
     const response = session.snapshot.turns.find(
       (turn) => turn.response.id === a.responseId,
     )?.response;
-    expect(response?.state).toEqual({ kind: "terminal", outcome: "failed" });
-    expect(response?.cards.at(-1)?.entries).toContainEqual({
+    expect(response?.state).toMatchObject({ kind: "in_progress" });
+    expect(session.snapshot.cancelAuthority).toEqual({ kind: "none" });
+    expect(cancel).toHaveBeenCalledWith(a.responseId);
+    await session.finishOwner("failed");
+    const failed = session.snapshot.turns.find(
+      (turn) => turn.response.id === a.responseId,
+    )?.response;
+    expect(failed?.state).toEqual({ kind: "terminal", outcome: "failed" });
+    expect(failed?.cards.at(-1)?.entries).toContainEqual({
       kind: "notice",
-      text: "权限请求无法显示，本次执行失败。",
+      text: "权限请求无法显示，正在停止本次执行。",
     });
   });
 });

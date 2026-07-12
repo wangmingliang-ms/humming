@@ -25,10 +25,7 @@ import type {
   SessionStore,
 } from "../session-store/session-store.js";
 import { hasSessionControls, mergeSessionControls } from "../session-store/session-controls.js";
-import {
-  LegacyConversationCardAdapter,
-  createSemanticConversationCardTransport,
-} from "../presenter/legacy-conversation-card-adapter.js";
+import { LegacyConversationCardAdapter } from "../presenter/legacy-conversation-card-adapter.js";
 import {
   DISABLED_CONVERSATION_CARD_FEATURE,
   type ConversationCardFeatureGate,
@@ -37,22 +34,12 @@ import {
   RingBufferLifecycleDiagnosticSink,
   type LifecycleDiagnosticSink,
 } from "../acp/lifecycle-diagnostics.js";
-import { ConversationCardDelivery } from "../acp/conversation-card-delivery.js";
-import {
-  PromptCardController,
-  type AcknowledgementPort,
-  type PromptCardTokenFactory,
-} from "../acp/prompt-card-controller.js";
+import type { AcknowledgementPort } from "../conversation/topic-conversation-session.js";
 import { PromptCallbackRouter } from "../acp/prompt-callback-router.js";
-import { PreparedPrompt } from "./prepared-prompt.js";
-import type {
-  ActionToken,
-  CardRoute,
-  OwnershipToken,
-  PermissionToken,
-  PromptToken,
-  SegmentToken,
-} from "../presenter/conversation-card-view.js";
+import { TopicConversationSession } from "../conversation/topic-conversation-session.js";
+import { ConversationResponseHandle } from "../conversation/conversation-response-handle.js";
+import type { ResponseId } from "../conversation/topic-conversation.js";
+import type { PromptToken } from "../presenter/conversation-card-view.js";
 import crypto from "node:crypto";
 
 const SHUTDOWN_FINALIZE_TIMEOUT_MS = 3_000;
@@ -62,8 +49,8 @@ export interface PendingMessage {
   /** Message used as reply/card anchor for this prompt. */
   messageId: string;
   chatId: string;
-  /** Prompt-scoped semantic lifecycle, present only on the explicit v2 path. */
-  prepared?: PreparedPrompt;
+  /** Response-scoped facade, present only on the semantic v2 path. */
+  response?: ConversationResponseHandle;
   /** Progress card created by the bridge as soon as it accepted the prompt. */
   progressCardId?: string | null;
 }
@@ -141,12 +128,17 @@ export class ChatRuntime {
   private readonly legacyCards: LegacyConversationCardAdapter;
   readonly conversationCardFeature: ConversationCardFeatureGate;
   private readonly lifecycleDiagnostics: LifecycleDiagnosticSink;
-  private activePreparedPrompt: PreparedPrompt | null = null;
-  private promptSequence = 0;
+  private readonly conversation: TopicConversationSession;
+  private activeResponse: ConversationResponseHandle | null = null;
+  private pendingCarrier: PendingMessage | null = null;
   private state: ChatRuntimeState | null = null;
   private aborted = false;
-  /** True after the user pressed Stop or sent /cancel for the in-flight prompt. */
-  private cancelRequested = false;
+  /** True after a topic-level /cancel or runtime shutdown requested cancellation. */
+  private topicCancelRequested = false;
+  /** Response whose tokenized Card Cancel requested cancellation. */
+  private responseCancelRequested: ResponseId | null = null;
+  /** Response whose mandatory Permission Card could not be displayed. */
+  private permissionDisplayFailureResponse: ResponseId | null = null;
   /** True after a busy follow-up requested a soft cancel of the current prompt. */
   private followupInterruptRequested = false;
   /** Suppress the prompt-error notice when this runtime is intentionally replaced. */
@@ -174,41 +166,41 @@ export class ChatRuntime {
       opts.conversationCardFeature ?? DISABLED_CONVERSATION_CARD_FEATURE;
     this.lifecycleDiagnostics =
       opts.lifecycleDiagnostics ?? new RingBufferLifecycleDiagnosticSink();
+    this.conversation = new TopicConversationSession({
+      presenter: opts.presenter,
+      logger: this.logger,
+      route: {
+        c: opts.chatId,
+        ...(opts.threadId === null ? {} : { th: opts.threadId }),
+      },
+      showThoughts: opts.showThoughts,
+      showTools: opts.showTools,
+      showCancelButton: opts.showCancelButton,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      permissionMode: () => this.state?.client.getPermissionMode() ?? opts.permissionMode,
+      acknowledgement: opts.acknowledgement,
+      onCancelResponse: async (responseId) => this.cancelResponse(responseId),
+      onPermissionDisplayFailure: async (responseId) =>
+        this.cancelResponse(responseId, "permission_display_failed"),
+    });
   }
 
-  preparePrompt(context: {
+  acceptResponse(context: {
     messageId: string;
-    chatId: string;
-    threadId: string | null;
+    content: unknown;
     profile: SessionCardMeta | null;
-  }): PreparedPrompt {
-    const route: CardRoute = {
-      c: context.chatId,
-      ...(context.threadId === null ? {} : { th: context.threadId }),
-    };
-    const tokens = runtimeTokenFactory();
-    const delivery = new ConversationCardDelivery(
-      { send: async () => null, patch: async () => false },
-      this.lifecycleDiagnostics,
-      tokens.ownership,
-      createSemanticConversationCardTransport(this.opts.presenter, context.messageId),
-    );
-    const controller = new PromptCardController({
-      initialPhase: "queued",
+  }): ConversationResponseHandle {
+    const accepted = this.conversation.accept({
+      sourceMessageId: context.messageId,
+      content: context.content,
       profile: context.profile,
-      route,
-      correlation: { runtimeSequence: 1, promptSequence: ++this.promptSequence },
-      tokens,
-      delivery,
-      diagnostics: this.lifecycleDiagnostics,
-      deliveryContext: { messageSequence: this.promptSequence },
-      acknowledgement: this.opts.acknowledgement,
-      cancel: () => {
-        void this.cancel();
-      },
-      permissionTimeoutMs: this.opts.permissionTimeoutMs,
     });
-    return new PreparedPrompt(controller, context.messageId);
+    return new ConversationResponseHandle(
+      accepted.responseId,
+      accepted.responseToken,
+      context.messageId,
+      this.conversation,
+    );
   }
 
   get chatId(): string {
@@ -242,33 +234,32 @@ export class ChatRuntime {
    *         The runtime is left in an unusable state — caller must drop it.
    */
   async enqueue(message: PendingMessage): Promise<void> {
-    const pending =
-      this.conversationCardFeature.v2Enabled && message.prepared === undefined
+    const pending: PendingMessage =
+      this.conversationCardFeature.v2Enabled && message.response === undefined
         ? {
             ...message,
-            prepared: this.preparePrompt({
+            response: this.acceptResponse({
               messageId: message.messageId,
-              chatId: message.chatId,
-              threadId: this.opts.threadId,
+              content: message.prompt,
               profile: null,
             }),
           }
         : message;
-    if (pending.prepared !== undefined && pending.progressCardId) {
-      pending.prepared.controller.adoptCard(pending.progressCardId);
-    }
-    pending.prepared?.markEnqueued();
     if (!this.state) {
       // A previous agent crash / idle exit tears down `state`; the next user
       // message should spawn a fresh agent, not inherit the old aborted flag.
       this.aborted = false;
-      this.cancelRequested = false;
+      this.topicCancelRequested = false;
       this.followupInterruptRequested = false;
       this.booting = true;
       try {
         this.state = await this.bootstrap(pending);
       } catch (err) {
-        pending.prepared?.failBeforeEnqueue("bootstrap_failed");
+        if (pending.response !== undefined) {
+          await pending.response
+            .fail("Agent 启动失败，本轮 Response 未能开始。")
+            .catch(() => undefined);
+        }
         this.aborted = true;
         throw err;
       } finally {
@@ -277,17 +268,49 @@ export class ChatRuntime {
     }
 
     this.state.lastActivity = Date.now();
+    if (
+      this.conversationCardFeature.v2Enabled &&
+      this.conversation.snapshot.executionOwnerResponseId !== null &&
+      (this.state.processing || this.promptInFlight) &&
+      pending.response !== undefined
+    ) {
+      const previousCarrier = this.pendingCarrier;
+      if (previousCarrier !== null) {
+        pending.prompt = [
+          ...previousCarrier.prompt,
+          { type: "text", text: "[用户补充/修正了上一条尚未发送的消息，以下内容属于同一请求批次]" },
+          ...pending.prompt,
+        ];
+      }
+      this.pendingCarrier = pending;
+      await this.interruptCurrentPromptForFollowup(this.state, pending);
+      return;
+    }
     this.state.queue.push(pending);
 
     if (this.state.processing || this.promptInFlight) {
       await this.updatePendingMessageCard(pending, "queued");
-      if (!this.followupInterruptRequested) pending.prepared?.controller.markInterrupting();
-      await this.interruptCurrentPromptForFollowup(this.state, pending);
+      if (!this.conversationCardFeature.v2Enabled) {
+        await this.interruptCurrentPromptForFollowup(this.state, pending);
+      }
       return;
     }
 
     this.state.processing = true;
     this.processQueue().catch((err) => this.logger.error({ err }, "queue processor crashed"));
+  }
+
+  private commitPendingCarrier(handoff: {
+    readonly pendingBatch: readonly unknown[] | null;
+    readonly carrierResponseId: ResponseId | null;
+  }): void {
+    if (handoff.pendingBatch === null || handoff.carrierResponseId === null) return;
+    const carrier = this.pendingCarrier;
+    if (carrier?.response?.responseId !== handoff.carrierResponseId) {
+      throw new Error("domain pending batch carrier does not match runtime carrier");
+    }
+    this.pendingCarrier = null;
+    this.state?.queue.push(carrier);
   }
 
   /**
@@ -310,6 +333,24 @@ export class ChatRuntime {
     }
   }
 
+  private async cancelResponse(
+    responseId: ResponseId,
+    reason: "card_cancel" | "permission_display_failed" = "card_cancel",
+  ): Promise<void> {
+    const state = this.state;
+    if (state === null || this.activeResponse?.responseId !== responseId) return;
+    if (reason === "permission_display_failed") {
+      this.permissionDisplayFailureResponse = responseId;
+    } else {
+      this.responseCancelRequested = responseId;
+    }
+    try {
+      await state.agent.connection.cancel({ sessionId: state.agent.sessionId });
+    } catch (err) {
+      this.logger.warn({ err, responseId }, "Response cancel notification rejected");
+    }
+  }
+
   /**
    * Cancel the current prompt (if any) and clear the queue. Keeps the
    * agent process alive so the next message can resume the same session.
@@ -321,7 +362,10 @@ export class ChatRuntime {
       return;
     }
     this.logger.info("cancelling current task");
-    this.cancelRequested = true;
+    this.topicCancelRequested = true;
+    if (this.conversationCardFeature.v2Enabled) {
+      await this.conversation.beginTopicCancel();
+    }
     state.client.cancelPendingPermission();
     await this.finalizePendingMessages(state.queue, "排队的新消息已取消。");
     try {
@@ -329,6 +373,7 @@ export class ChatRuntime {
     } catch (err) {
       this.logger.warn({ err }, "cancel notification rejected");
     }
+    this.pendingCarrier = null;
     state.queue.length = 0;
   }
 
@@ -341,15 +386,19 @@ export class ChatRuntime {
       return;
     }
     this.logger.info("shutting down chat runtime");
+    if (this.conversationCardFeature.v2Enabled) {
+      await this.conversation.interruptTopic();
+      this.pendingCarrier = null;
+    }
     state.client.cancelPendingPermission();
     await this.finalizePendingMessages(state.queue, "Bridge 已停止，排队的新消息未处理。");
-    if (finalStatus !== null) {
-      await withTimeout(
-        this.promptInFlight
-          ? state.client.finalize(finalStatus)
-          : state.client.finalizeIfRenderable(finalStatus),
-        SHUTDOWN_FINALIZE_TIMEOUT_MS,
-      ).catch((err) => this.logger.warn({ err }, "shutdown card finalize failed"));
+    if (finalStatus !== null && !this.conversationCardFeature.v2Enabled) {
+      const finalize: Promise<unknown> = this.promptInFlight
+        ? state.client.finalize(finalStatus)
+        : state.client.finalizeIfRenderable(finalStatus);
+      await withTimeout(finalize, SHUTDOWN_FINALIZE_TIMEOUT_MS).catch((err) =>
+        this.logger.warn({ err }, "shutdown card finalize failed"),
+      );
     }
     this.state = null;
     killAgent(state.agent.process);
@@ -368,7 +417,11 @@ export class ChatRuntime {
     if (!state) return;
     this.logger.info("superseding chat runtime");
     this.suppressPromptErrorNotice = true;
-    this.cancelRequested = true;
+    this.topicCancelRequested = true;
+    if (this.conversationCardFeature.v2Enabled) {
+      await this.conversation.interruptTopic();
+      this.pendingCarrier = null;
+    }
     state.client.cancelPendingPermission();
     await this.finalizePendingMessages(state.queue, "Session 已被替换，排队的新消息未处理。");
     await withTimeout(
@@ -385,8 +438,8 @@ export class ChatRuntime {
     state: ChatRuntimeState,
     outcome: "complete" | "cancelled" | "failed" | "superseded" | "abandoned",
   ): Promise<void> {
-    if (this.conversationCardFeature.v2Enabled && outcome === "superseded") {
-      state.client.finishLifecycle("superseded");
+    if (this.conversationCardFeature.v2Enabled) {
+      await this.conversation.finishOwner("interrupted");
       return;
     }
     await state.client.finalize(
@@ -398,8 +451,8 @@ export class ChatRuntime {
     state: ChatRuntimeState,
     outcome: "complete" | "cancelled" | "failed" | "superseded" | "abandoned",
   ): Promise<void> {
-    if (this.conversationCardFeature.v2Enabled && outcome === "superseded") {
-      state.client.finishLifecycle("superseded");
+    if (this.conversationCardFeature.v2Enabled) {
+      await this.conversation.finishOwner("interrupted");
       return;
     }
     await state.client.finalizeIfRenderable(
@@ -411,13 +464,11 @@ export class ChatRuntime {
     promptToken: string;
     segmentToken: string;
     actionToken: string;
-  }): "accepted" | "stale" | "duplicate" {
-    const prepared = this.activePreparedPrompt;
-    if (prepared === null) return "stale";
-    return prepared.controller.consumeCancel({
-      promptToken: input.promptToken as PromptToken,
-      segmentToken: input.segmentToken as SegmentToken,
-      actionToken: input.actionToken as ActionToken,
+  }): "accepted" | "stale" {
+    return this.conversation.consumeCancel({
+      responseToken: input.promptToken,
+      cardId: input.segmentToken,
+      actionToken: input.actionToken,
     });
   }
 
@@ -426,12 +477,10 @@ export class ChatRuntime {
     permissionToken: string;
     requestId: string;
     optionId: string;
-  }): "accepted" | "stale" | "duplicate" | "invalid_option" {
-    const prepared = this.activePreparedPrompt;
-    if (prepared === null) return "stale";
-    return prepared.controller.consumePermission({
-      promptToken: input.promptToken as PromptToken,
-      permissionToken: input.permissionToken as PermissionToken,
+  }): "accepted" | "stale" {
+    return this.conversation.consumePermission({
+      responseToken: input.promptToken,
+      permissionToken: input.permissionToken,
       requestId: input.requestId,
       optionId: input.optionId,
     });
@@ -534,7 +583,6 @@ export class ChatRuntime {
       showCancelButton: this.conversationCardFeature.v2Enabled && this.opts.showCancelButton,
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
       idleStatusCardMs: this.opts.idleStatusCardMs,
-      conversationCardFeature: this.conversationCardFeature,
       permissionMode:
         latest?.controls?.bridgePermissionMode ??
         this.opts.inheritedControls?.bridgePermissionMode ??
@@ -565,14 +613,10 @@ export class ChatRuntime {
         },
       }) ?? null;
     client.setContext(firstMessage.messageId, firstMessage.chatId, this.opts.threadId);
-    client.adoptProgressCard(firstMessage.progressCardId);
-    if (firstMessage.prepared !== undefined) {
-      const semanticRouter = router;
-      if (semanticRouter === null)
-        throw new Error("prepared semantic prompt requires a callback router");
-      client.bindPromptLifecycle(firstMessage.prepared.controller, semanticRouter);
+    if (!this.conversationCardFeature.v2Enabled) {
+      client.adoptProgressCard(firstMessage.progressCardId);
+      await client.showPreparing();
     }
-    await client.showPreparing();
 
     const spawnOpts: SpawnAgentOptions = {
       command: this.opts.agentCommand,
@@ -593,7 +637,11 @@ export class ChatRuntime {
         agent = await spawnAgent(spawnOpts);
       }
     } catch (err) {
-      firstMessage.prepared?.failBeforeEnqueue("bootstrap_failed");
+      if (firstMessage.response !== undefined) {
+        await firstMessage.response
+          .fail("Agent 启动失败，本轮 Response 未能开始。")
+          .catch(() => undefined);
+      }
       throw err;
     } finally {
       if (router !== null && bootstrapRoute !== null) router.closeBootstrap(bootstrapRoute);
@@ -931,8 +979,8 @@ export class ChatRuntime {
           await this.handlePromptError(state, pending, err);
           if (!this.state) return; // shut down by error handler
         } finally {
-          if (pending.prepared !== undefined && this.activePreparedPrompt === pending.prepared) {
-            this.activePreparedPrompt = null;
+          if (pending.response !== undefined && this.activeResponse === pending.response) {
+            this.activeResponse = null;
           }
           const router = state.router;
           if (router !== null && !router.isConnectionHealthy()) {
@@ -944,7 +992,9 @@ export class ChatRuntime {
             this.state = null;
           }
           this.promptInFlight = false;
-          this.cancelRequested = false;
+          this.topicCancelRequested = false;
+          this.responseCancelRequested = null;
+          this.permissionDisplayFailureResponse = null;
           this.followupInterruptRequested = false;
         }
       }
@@ -961,7 +1011,7 @@ export class ChatRuntime {
     message: PendingMessage,
     status: "queued" | "interrupting",
   ): Promise<void> {
-    if (message.prepared !== undefined) return;
+    if (message.response !== undefined) return;
     if (!message.progressCardId) return;
     const updated = await this.legacyCards.update(
       message.progressCardId,
@@ -981,10 +1031,7 @@ export class ChatRuntime {
   ): Promise<void> {
     await Promise.all(
       [...messages, ...this.queuedAfterRespawn].map(async (message) => {
-        if (message.prepared !== undefined) {
-          message.prepared.controller.finish("cancelled");
-          return;
-        }
+        if (message.response !== undefined) return;
         if (!message.progressCardId) return;
         const updated = await this.legacyCards.update(message.progressCardId, {
           ...this.pendingMessageCardState(message, "cancelled"),
@@ -1089,10 +1136,9 @@ export class ChatRuntime {
       chatId: this.opts.chatId,
       ...(this.conversationCardFeature.v2Enabled
         ? {
-            prepared: this.preparePrompt({
+            response: this.acceptResponse({
               messageId,
-              chatId: this.opts.chatId,
-              threadId: this.opts.threadId,
+              content: promptText,
               profile: sessionMetaFromSnapshot({
                 ...state.sessionCapabilities,
                 bridgePermissionMode: state.client.getPermissionMode(),
@@ -1101,7 +1147,6 @@ export class ChatRuntime {
           }
         : {}),
     };
-    injected.prepared?.markEnqueued();
     state.queue.unshift(injected);
   }
 
@@ -1164,26 +1209,39 @@ export class ChatRuntime {
 
   private async runPrompt(state: ChatRuntimeState, pending: PendingMessage): Promise<void> {
     this.logger.info("sending prompt to agent");
-    if (pending.prepared !== undefined) {
+    let routeHandle: import("../acp/prompt-callback-router.js").PromptRouteHandle | null = null;
+    if (pending.response !== undefined) {
       const router = state.router;
-      if (router === null) throw new Error("semantic prompt requires an ACP callback router");
-      this.activePreparedPrompt = pending.prepared;
-      pending.prepared.markStarted();
-      state.client.bindPromptLifecycle(pending.prepared.controller, router);
-      pending.prepared.controller.markPreparing(
+      if (router === null) throw new Error("semantic Response requires an ACP callback router");
+      this.activeResponse = pending.response;
+      await pending.response.prepare(
         sessionMetaFromSnapshot({
           ...state.sessionCapabilities,
           bridgePermissionMode: state.client.getPermissionMode(),
         }),
       );
+      await pending.response.activate();
+      routeHandle = router.activate(pending.response.responseToken as PromptToken, {
+        sessionUpdate: async (params) => pending.response?.applyAgentUpdate(params.update),
+        requestPermission: async (params) =>
+          pending.response?.requestPermission(params) ??
+          Promise.resolve({ outcome: { outcome: "cancelled" } }),
+        cancelPendingPermissions: () => pending.response?.cancelPendingPermissions(),
+      });
+    } else {
+      state.client.beginPrompt();
+      await state.client.showForwarded();
     }
-    state.client.beginPrompt();
-    await state.client.showForwarded();
 
-    const result = await this.promptOrDisconnect(state, pending);
+    let result: Awaited<ReturnType<typeof state.agent.connection.prompt>>;
+    try {
+      result = await this.promptOrDisconnect(state, pending);
+    } finally {
+      if (routeHandle !== null) state.router?.close(routeHandle);
+    }
 
-    if (pending.prepared !== undefined && this.activePreparedPrompt === pending.prepared) {
-      this.activePreparedPrompt = null;
+    if (pending.response !== undefined && this.activeResponse === pending.response) {
+      this.activeResponse = null;
     }
 
     if (this.suppressPromptErrorNotice || this.aborted || this.state !== state) {
@@ -1192,7 +1250,29 @@ export class ChatRuntime {
     }
 
     this.logger.info({ stopReason: result.stopReason, usage: result.usage ?? null }, "prompt done");
-    await state.client.finalize(stopReasonToStatus(result.stopReason));
+    if (pending.response !== undefined) {
+      const status = stopReasonToStatus(result.stopReason);
+      if (this.topicCancelRequested) {
+        await this.conversation.confirmTopicCancel();
+      } else {
+        await this.conversation.finishOwner(
+          this.responseCancelRequested === pending.response.responseId
+            ? "cancelled"
+            : this.permissionDisplayFailureResponse === pending.response.responseId
+              ? "failed"
+              : this.followupInterruptRequested
+                ? "interrupted"
+                : status === "complete"
+                  ? "complete"
+                  : status === "failed"
+                    ? "failed"
+                    : "cancelled",
+          (handoff) => this.commitPendingCarrier(handoff),
+        );
+      }
+    } else {
+      await state.client.finalize(stopReasonToStatus(result.stopReason));
+    }
     await this.persistSession(state.agent.sessionId);
     const pendingControlsApplied = await this.applyPendingControlsBeforePrompt(
       state,
@@ -1241,23 +1321,44 @@ export class ChatRuntime {
     const isAuthError = isAuthenticationError(err);
     const disconnected = err instanceof AgentDisconnectedError;
     const procDead = state.agent.process.killed || state.agent.process.exitCode !== null;
-    const cancelRequested = this.cancelRequested;
+    const topicCancelRequested = this.topicCancelRequested;
+    const responseCancelRequested = this.responseCancelRequested === pending.response?.responseId;
+    const permissionDisplayFailed =
+      this.permissionDisplayFailureResponse === pending.response?.responseId;
     const followupInterruptRequested = this.followupInterruptRequested;
     const suppressNotice = this.suppressPromptErrorNotice;
     const exitCode = state.agent.process.exitCode;
     const signal = state.agent.process.signalCode;
     const stderrTail = procDead ? state.agent.getRecentStderr() : [];
     const terminalStatus: AgentStatus =
-      (cancelRequested || followupInterruptRequested || suppressNotice) && !isAuthError
+      (topicCancelRequested ||
+        responseCancelRequested ||
+        followupInterruptRequested ||
+        suppressNotice) &&
+      !isAuthError
         ? "cancelled"
         : "failed";
 
-    // Always finalize the unified card so the in-progress state doesn't get
-    // stuck. Best-effort — if presenter rejects we still surface the error via
-    // a notice card below.
-    await state.client
-      .finalize(terminalStatus)
-      .catch((finalErr) => this.logger.debug({ err: finalErr }, "finalize after error rejected"));
+    if (this.conversationCardFeature.v2Enabled) {
+      if (topicCancelRequested) {
+        await this.conversation.confirmTopicCancel();
+      } else {
+        const outcome = responseCancelRequested
+          ? "cancelled"
+          : permissionDisplayFailed
+            ? "failed"
+            : followupInterruptRequested || suppressNotice
+              ? "interrupted"
+              : "failed";
+        await this.conversation.finishOwner(outcome, (handoff) =>
+          this.commitPendingCarrier(handoff),
+        );
+      }
+    } else {
+      await state.client
+        .finalize(terminalStatus)
+        .catch((finalErr) => this.logger.debug({ err: finalErr }, "finalize after error rejected"));
+    }
 
     if (suppressNotice) {
       this.suppressPromptErrorNotice = false;
@@ -1269,7 +1370,7 @@ export class ChatRuntime {
     // the next queue iteration, and avoid surfacing a scary crash notice: the
     // user already saw the "interrupting" acknowledgement for this transition.
     if (followupInterruptRequested && !isAuthError && (procDead || disconnected)) {
-      if (cancelRequested) {
+      if (topicCancelRequested) {
         this.logger.info({ err, disconnected }, "agent closed while cancelling busy follow-up");
         state.queue.length = 0;
         this.queuedAfterRespawn.length = 0;
@@ -1282,7 +1383,7 @@ export class ChatRuntime {
       this.queuedAfterRespawn.push(...queuedFollowups);
       this.state = null;
       this.followupInterruptRequested = false;
-      this.cancelRequested = false;
+      this.topicCancelRequested = false;
       return;
     }
 
@@ -1292,12 +1393,12 @@ export class ChatRuntime {
       await this.shutdown(null);
       const title = isAuthError
         ? "⚠️ Agent 认证失败"
-        : cancelRequested
+        : topicCancelRequested
           ? "⛔ Agent 已中断"
           : "⚠️ Agent 异常退出";
       const body = isAuthError
         ? formatExitBody(`Agent authentication failed: ${errMsg}`, stderrTail)
-        : cancelRequested
+        : topicCancelRequested
           ? formatExitBody(
               `已请求中断，agent 连接已关闭。${formatExitCode(exitCode, signal)}`,
               stderrTail,
@@ -1306,12 +1407,12 @@ export class ChatRuntime {
               `Agent crashed: ${errMsg}. ${formatExitCode(exitCode, signal)}`,
               stderrTail,
             );
-      this.logger.error({ err, isAuthError, disconnected, cancelRequested }, "agent died");
+      this.logger.error({ err, isAuthError, disconnected, topicCancelRequested }, "agent died");
       await this.opts.presenter
         .replyNoticeCard(pending.messageId, {
           title,
           body,
-          template: cancelRequested && !isAuthError ? "grey" : "red",
+          template: topicCancelRequested && !isAuthError ? "grey" : "red",
         })
         .catch((sendErr) => this.logger.warn({ err: sendErr }, "error reply failed"));
       return;
@@ -1365,16 +1466,6 @@ export class ChatRuntime {
       this.logger.warn({ err }, "session store save failed");
     }
   }
-}
-
-function runtimeTokenFactory(): PromptCardTokenFactory {
-  return {
-    prompt: () => crypto.randomUUID() as PromptToken,
-    segment: () => crypto.randomUUID() as SegmentToken,
-    action: () => crypto.randomUUID() as ActionToken,
-    permission: () => crypto.randomUUID() as PermissionToken,
-    ownership: () => crypto.randomUUID() as OwnershipToken,
-  };
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

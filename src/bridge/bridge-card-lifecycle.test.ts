@@ -62,6 +62,20 @@ describe("LarkBridge Cancel card compatibility", () => {
 });
 
 describe("LarkBridge semantic card actions", () => {
+  it("passes the production v2 gate to the default Lark presenter", () => {
+    const bridge = new LarkBridge({
+      lark: { appId: "test", appSecret: "test" },
+      agent: { resolver: () => ({ command: "test", args: [], label: "test" }) },
+      bindingStore: {} as BindingStore,
+      sessionStore: {} as SessionStore,
+      logger,
+      conversationCardFeature: { v2Enabled: true },
+    });
+    const presenter = (bridge as unknown as { presenter: { feature: { v2Enabled: boolean } } })
+      .presenter;
+    expect(presenter.feature.v2Enabled).toBe(true);
+  });
+
   it("routes only the exact v2 Cancel schema to runtime token authority", () => {
     const bridge = makeBridge(true);
     const consumeCancelAction = vi.fn(() => "accepted" as const);

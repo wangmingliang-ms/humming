@@ -82,6 +82,20 @@ describe("ConversationCardViewMapper", () => {
     });
   });
 
+  it.each(["complete", "cancelled", "failed", "interrupted"] as const)(
+    "gives an empty %s terminal tail truthful content",
+    (outcome) => {
+      const conversation = topic();
+      conversation.prepare(responseId);
+      conversation.activate(responseId, action1);
+      conversation.seal(responseId, outcome);
+      const mapped = view(conversation, card1);
+      expect(mapped).toMatchObject({ kind: "terminal", header: outcome, body: "content" });
+      if (mapped.kind !== "terminal") throw new Error("expected terminal view");
+      expect(mapped.entries).toHaveLength(1);
+    },
+  );
+
   it("keeps terminal tail title and metadata without Cancel", () => {
     const conversation = topic();
     conversation.prepare(responseId);

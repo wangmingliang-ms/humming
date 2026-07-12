@@ -43,7 +43,7 @@ import {
 import { DEFAULT_INBOUND_DIR, sweepInboundDir } from "./inbound-store.js";
 import { hydratePrompt } from "./prompt-hydrator.js";
 import type { PermissionMode } from "../acp/humming-client.js";
-import type { AcknowledgementPort } from "../acp/prompt-card-controller.js";
+import type { AcknowledgementPort } from "../conversation/topic-conversation-session.js";
 import {
   AgentAuthError,
   probeAgentSessionCapabilities,
@@ -559,8 +559,15 @@ export class LarkBridge {
       logger: this.logger,
     });
 
+    this.conversationCardFeature =
+      opts.conversationCardFeature ?? DISABLED_CONVERSATION_CARD_FEATURE;
     this.presenter =
-      opts.presenter ?? new LarkCardPresenter({ http: this.http, logger: this.logger });
+      opts.presenter ??
+      new LarkCardPresenter({
+        http: this.http,
+        logger: this.logger,
+        feature: this.conversationCardFeature,
+      });
 
     this.resolver = opts.agent.resolver;
     this.availableAgents = opts.agent.availableAgents ?? [];
@@ -588,8 +595,6 @@ export class LarkBridge {
     this.restartMarkerPath = opts.lifecycle?.restartMarkerPath ?? null;
     this.lifecycleCodeRevision = opts.lifecycle?.codeRevision;
     this.lifecycleNoticeTimeoutMs = opts.lifecycle?.noticeTimeoutMs;
-    this.conversationCardFeature =
-      opts.conversationCardFeature ?? DISABLED_CONVERSATION_CARD_FEATURE;
     this.acknowledgement = {
       add: async (messageId) => {
         try {
@@ -2113,10 +2118,10 @@ export class LarkBridge {
 
     const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
     const runtime = await this.acquireRuntime(chatId, threadId, binding);
-    const prepared = this.conversationCardFeature.v2Enabled
-      ? runtime.preparePrompt({ messageId, chatId, threadId, profile: null })
+    const response = this.conversationCardFeature.v2Enabled
+      ? runtime.acceptResponse({ messageId, content: segments, profile: null })
       : undefined;
-    const reaction = prepared
+    const reaction = response
       ? this.http.addMessageReaction(messageId, "OnIt").catch((err) => {
           this.logger.debug({ err }, "prompt acknowledgement reaction failed");
           return null;
@@ -2136,11 +2141,13 @@ export class LarkBridge {
         isGroup ? this.http.getChatName(chatId) : Promise.resolve(""),
       ]);
     } catch (err) {
-      prepared?.attachAcknowledgement(await reaction);
-      prepared?.failBeforeEnqueue("hydrate_failed");
+      response?.attachAcknowledgement(await reaction);
+      if (response !== undefined) {
+        await response.fail("消息内容读取失败，本轮 Response 未能开始。").catch(() => undefined);
+      }
       throw err;
     }
-    prepared?.attachAcknowledgement(await reaction);
+    response?.attachAcknowledgement(await reaction);
 
     const context = isGroup
       ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`
@@ -2160,12 +2167,11 @@ export class LarkBridge {
       messageId,
       chatId,
       progressCardId,
-      ...(prepared ? { prepared } : {}),
+      ...(response ? { response } : {}),
     };
     try {
       await runtime.enqueue(pending);
     } catch (err) {
-      prepared?.failBeforeEnqueue("enqueue_failed");
       // bootstrap (spawn / initialize / newSession / resume) failed — the
       // ChatRuntime never registered itself as active, so drop it and let
       // the next message try again from scratch.

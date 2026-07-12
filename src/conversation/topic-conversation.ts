@@ -273,6 +273,9 @@ export class TopicConversation {
     if (this.pendingBatchValue?.state === "collecting") {
       return this.appendCollectingBatch(input);
     }
+    if (this.pendingBatchValue?.state === "sealed") {
+      throw new Error("cannot accept a new turn while a sealed batch is committing");
+    }
     const phase = this.executionOwner === null ? "received" : "interrupting";
     const response = new ResponseLifecycle(
       input.responseId,
@@ -426,7 +429,25 @@ export class TopicConversation {
     this.assertInvariants();
   }
 
-  permissionDisplayFailed(responseId: ResponseId): void {
+  expirePermission(permissionToken: PermissionToken): "accepted" | "stale" {
+    const permission = this.currentPermission;
+    if (
+      permission === null ||
+      permission.status !== "current" ||
+      permission.token !== permissionToken
+    ) {
+      return "stale";
+    }
+    this.currentPermission = { ...permission, status: "expired" };
+    const response = this.response(permission.responseId);
+    if (response.state.kind === "in_progress" && response.state.phase === "awaiting_permission") {
+      response.transition("active");
+    }
+    this.assertInvariants();
+    return "accepted";
+  }
+
+  beginPermissionDisplayFailure(responseId: ResponseId): void {
     const permission = this.currentPermission;
     if (permission !== null && permission.responseId === responseId) {
       this.currentPermission = { ...permission, status: "display_failed" };
@@ -434,9 +455,22 @@ export class TopicConversation {
     const response = this.response(responseId);
     response.append({
       kind: "notice",
-      text: "权限请求无法显示，本次执行失败。",
+      text: "权限请求无法显示，正在停止本次执行。",
     });
-    this.seal(responseId, "failed");
+    this.revokeCancelFor(responseId);
+    this.assertInvariants();
+  }
+
+  failWaiting(responseId: ResponseId, text: string): void {
+    if (this.executionOwner === responseId)
+      throw new Error("execution owner must use the owner terminal path");
+    const response = this.response(responseId);
+    if (response.state.kind === "terminal") return;
+    response.append({ kind: "notice", text });
+    response.seal("failed");
+    const batch = this.pendingBatchValue;
+    if (batch?.carrierResponseId === responseId) this.pendingBatchValue = null;
+    this.assertInvariants();
   }
 
   seal(responseId: ResponseId, outcome: TerminalOutcome): void {
@@ -468,6 +502,12 @@ export class TopicConversation {
       return "stale";
     }
     this.cancel = { kind: "none" };
+    if (
+      this.currentPermission?.status === "current" &&
+      this.currentPermission.responseId === input.responseId
+    ) {
+      this.currentPermission = { ...this.currentPermission, status: "expired" };
+    }
     this.assertInvariants();
     return "accepted";
   }
@@ -483,7 +523,9 @@ export class TopicConversation {
     return this.batchSnapshot(batch);
   }
 
-  sealOwnerForPendingBatch(outcome: "interrupted" | "cancelled"): PendingRequestBatchSnapshot {
+  sealOwnerForPendingBatch(
+    outcome: Exclude<TerminalOutcome, "merged">,
+  ): PendingRequestBatchSnapshot {
     const owner = this.executionOwner;
     const batch = this.pendingBatchValue;
     if (owner === null || batch === null || batch.state !== "collecting") {
@@ -498,17 +540,41 @@ export class TopicConversation {
     this.pendingBatchValue = null;
   }
 
-  cancelTopic(): void {
-    const unfinished = this.turns
-      .map((turn) => turn.response)
-      .filter((response) => response.state.kind === "in_progress");
+  interruptTopic(): readonly ResponseId[] {
+    const interrupted: ResponseId[] = [];
     this.pendingBatchValue = null;
     this.cancel = { kind: "none" };
+    for (const response of this.turns.map((turn) => turn.response)) {
+      if (response.state.kind !== "in_progress") continue;
+      response.seal("interrupted");
+      interrupted.push(response.id);
+    }
     this.executionOwner = null;
-    for (const response of unfinished) response.seal("cancelled");
     if (this.currentPermission?.status === "current") {
       this.currentPermission = { ...this.currentPermission, status: "expired" };
     }
+    this.assertInvariants();
+    return Object.freeze(interrupted);
+  }
+
+  beginTopicCancel(): ResponseId | null {
+    const owner = this.executionOwner;
+    const unfinishedWaiting = this.turns
+      .map((turn) => turn.response)
+      .filter((response) => response.id !== owner && response.state.kind === "in_progress");
+    this.pendingBatchValue = null;
+    this.cancel = { kind: "none" };
+    for (const response of unfinishedWaiting) response.seal("cancelled");
+    if (this.currentPermission?.status === "current") {
+      this.currentPermission = { ...this.currentPermission, status: "expired" };
+    }
+    this.assertInvariants();
+    return owner;
+  }
+
+  confirmTopicCancel(): void {
+    const owner = this.executionOwner;
+    if (owner !== null) this.seal(owner, "cancelled");
     this.assertInvariants();
   }
 

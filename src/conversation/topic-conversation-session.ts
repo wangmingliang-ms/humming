@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import type * as acp from "@agentclientprotocol/sdk";
+import type { PermissionMode } from "../acp/humming-client.js";
 import type { LarkLogger } from "../logger/logger.js";
+import {
+  CARD_MARKDOWN_ROTATION_BYTE_LIMIT,
+  splitUtf8,
+  utf8PartsByteLength,
+} from "../presenter/card-text-budget.js";
 import type {
   CardRoute,
   PermissionToken as WirePermissionToken,
@@ -67,6 +73,11 @@ interface MutablePermission {
   timeout?: ReturnType<typeof setTimeout>;
 }
 
+export interface AcknowledgementPort {
+  add(messageId: string): Promise<string | null>;
+  remove(messageId: string, reactionId: string): Promise<boolean>;
+}
+
 export interface TopicConversationSessionOptions {
   readonly presenter: LarkPresenter;
   readonly logger: LarkLogger;
@@ -76,7 +87,10 @@ export interface TopicConversationSessionOptions {
   readonly showTools: boolean;
   readonly showCancelButton: boolean;
   readonly permissionTimeoutMs: number;
+  readonly permissionMode?: () => PermissionMode;
+  readonly acknowledgement?: AcknowledgementPort;
   onCancelResponse(responseId: ResponseId): Promise<void> | void;
+  onPermissionDisplayFailure(responseId: ResponseId): Promise<void> | void;
 }
 
 /**
@@ -92,8 +106,15 @@ export class TopicConversationSession {
   private readonly cardAnchors = new Map<ResponseCardId, string>();
   private readonly renderQueues = new Map<ResponseCardId, Promise<void>>();
   private readonly accepted = new Map<ResponseId, AcceptedConversationTurn>();
+  private readonly acknowledgements = new Map<
+    ResponseId,
+    { messageId: string; reactionId: string }
+  >();
+  private readonly removedAcknowledgements = new Set<string>();
+  private readonly removingAcknowledgements = new Set<string>();
+  private readonly acknowledgementRetryRequested = new Set<string>();
   private currentPermission: MutablePermission | null = null;
-  private patchFailureNoticePending = false;
+  private patchFailureCardId: ResponseCardId | null = null;
 
   constructor(private readonly options: TopicConversationSessionOptions) {
     this.tokens = options.tokens ?? randomConversationTokenFactory();
@@ -138,6 +159,16 @@ export class TopicConversationSession {
     return turn;
   }
 
+  attachAcknowledgement(responseId: ResponseId, reactionId: string | null): void {
+    if (reactionId === null) return;
+    const turn = this.acceptedTurn(responseId);
+    this.acknowledgements.set(responseId, { messageId: turn.sourceMessageId, reactionId });
+    const hasVisibleCard = this.response(responseId).cards.some((card) =>
+      this.cardMessageIds.has(card.id),
+    );
+    if (hasVisibleCard) this.removeAcknowledgement(responseId);
+  }
+
   async prepare(responseId: ResponseId, profile: SessionCardMeta | null): Promise<void> {
     this.aggregate.setProfile(responseId, profile);
     this.aggregate.prepare(responseId);
@@ -147,20 +178,40 @@ export class TopicConversationSession {
   async activate(responseId: ResponseId): Promise<ActionToken> {
     const token = this.tokens.action();
     this.aggregate.activate(responseId, token);
+    const pending = this.snapshot.pendingBatch;
+    if (pending?.state === "sealed" && pending.carrierResponseId !== responseId) {
+      throw new Error("only the sealed batch carrier may activate");
+    }
+    if (pending?.state === "sealed" && pending.carrierResponseId === responseId) {
+      this.aggregate.clearSealedBatch();
+    }
     await this.renderTail(responseId);
     return token;
+  }
+
+  async rotate(responseId: ResponseId, reason: "size" | "tool_boundary"): Promise<void> {
+    const token = this.options.showCancelButton ? this.tokens.action() : null;
+    this.aggregate.rotateTail(responseId, this.tokens.card(), "content_rotation", token);
+    const cards = this.response(responseId).cards;
+    const previous = cards.at(-2);
+    const tail = cards.at(-1);
+    if (previous !== undefined) await this.renderCard(responseId, previous.id);
+    if (tail !== undefined) {
+      this.cardAnchors.set(tail.id, this.acceptedTurn(responseId).sourceMessageId);
+      await this.renderCard(responseId, tail.id);
+    }
   }
 
   async applyAgentUpdate(responseId: ResponseId, update: acp.SessionUpdate): Promise<void> {
     switch (update.sessionUpdate) {
       case "agent_message_chunk":
         if (update.content.type !== "text") return;
-        this.aggregate.append(responseId, { kind: "text", text: update.content.text });
+        await this.appendTextChunks(responseId, "text", update.content.text);
         this.aggregate.setActivity(responseId, "responding");
         break;
       case "agent_thought_chunk":
         if (!this.options.showThoughts || update.content.type !== "text") return;
-        this.aggregate.append(responseId, { kind: "thought", text: update.content.text });
+        await this.appendTextChunks(responseId, "thought", update.content.text);
         this.aggregate.setActivity(responseId, "thinking");
         break;
       case "tool_call":
@@ -193,6 +244,7 @@ export class TopicConversationSession {
       default:
         return;
     }
+    await this.rotateIfNeeded(responseId);
     await this.renderTail(responseId);
   }
 
@@ -200,6 +252,8 @@ export class TopicConversationSession {
     responseId: ResponseId,
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
+    const auto = autoResolvePermission(params, this.options.permissionMode?.() ?? "alwaysAsk");
+    if (auto !== null) return auto;
     if (this.currentPermission !== null && !this.currentPermission.settled) {
       this.expirePermission("新的权限请求已替代上一条权限请求");
     }
@@ -256,9 +310,10 @@ export class TopicConversationSession {
       permissionView,
     );
     if (permissionCardId === null) {
-      this.aggregate.permissionDisplayFailed(responseId);
-      this.expirePermission("权限请求无法显示，本次执行失败");
+      this.aggregate.beginPermissionDisplayFailure(responseId);
+      this.expirePermission("权限请求无法显示，本次执行失败", "display_failed");
       await this.renderTail(responseId);
+      await this.options.onPermissionDisplayFailure(responseId);
       return permissionResponse;
     }
     const pending = this.currentPermission;
@@ -269,6 +324,10 @@ export class TopicConversationSession {
     }
     await this.renderTail(responseId);
     return permissionResponse;
+  }
+
+  cancelPendingPermissions(reason = "Response 已结束，权限请求已失效"): void {
+    this.expirePermission(reason);
   }
 
   consumePermission(input: {
@@ -316,13 +375,34 @@ export class TopicConversationSession {
       token: input.actionToken as ActionToken,
     });
     if (result === "accepted") {
+      this.expirePermissionIfDomainRevoked();
       void this.renderTail(response.id);
       void this.options.onCancelResponse(response.id);
     }
     return result;
   }
 
-  async finishOwner(outcome: Exclude<TerminalOutcome, "merged">): Promise<{
+  async failResponse(responseId: ResponseId, text: string): Promise<void> {
+    const response = this.response(responseId);
+    if (response.state.kind === "terminal") return;
+    const owner = this.snapshot.executionOwnerResponseId;
+    if (owner === responseId) {
+      this.aggregate.append(responseId, { kind: "notice", text });
+      await this.finishOwner("failed");
+      return;
+    }
+    this.aggregate.failWaiting(responseId, text);
+    this.removeAcknowledgement(responseId);
+    await this.renderTail(responseId);
+  }
+
+  async finishOwner(
+    outcome: Exclude<TerminalOutcome, "merged">,
+    commit?: (handoff: {
+      readonly pendingBatch: readonly RequestMessage[];
+      readonly carrierResponseId: ResponseId;
+    }) => void,
+  ): Promise<{
     readonly pendingBatch: readonly RequestMessage[] | null;
     readonly carrierResponseId: ResponseId | null;
   }> {
@@ -330,14 +410,17 @@ export class TopicConversationSession {
     if (owner === null) return { pendingBatch: null, carrierResponseId: null };
     const pending = this.snapshot.pendingBatch;
     if (pending?.state === "collecting") {
-      const sealed = this.aggregate.sealOwnerForPendingBatch(
-        outcome === "cancelled" ? "cancelled" : "interrupted",
-      );
+      const sealed = this.aggregate.sealOwnerForPendingBatch(outcome);
+      this.aggregate.clearSealedBatch();
+      commit?.({ pendingBatch: sealed.messages, carrierResponseId: sealed.carrierResponseId });
+      this.expirePermission("Response 已结束，权限请求已失效");
+      this.removeAcknowledgement(owner);
       await this.renderTail(owner);
       return { pendingBatch: sealed.messages, carrierResponseId: sealed.carrierResponseId };
     }
     this.aggregate.seal(owner, outcome);
     this.expirePermission("Response 已结束，权限请求已失效");
+    this.removeAcknowledgement(owner);
     await this.renderTail(owner);
     return { pendingBatch: null, carrierResponseId: null };
   }
@@ -346,15 +429,40 @@ export class TopicConversationSession {
     this.aggregate.clearSealedBatch();
   }
 
-  async cancelTopic(): Promise<void> {
+  async interruptTopic(): Promise<void> {
+    const interrupted = this.aggregate.interruptTopic();
+    this.expirePermission("Session 已中断，权限请求已失效");
+    await Promise.all(
+      interrupted.map(async (responseId) => {
+        this.removeAcknowledgement(responseId);
+        await this.renderTail(responseId);
+      }),
+    );
+  }
+
+  async beginTopicCancel(): Promise<ResponseId | null> {
     const before = this.snapshot;
-    this.aggregate.cancelTopic();
+    const owner = this.aggregate.beginTopicCancel();
     this.expirePermission("Topic 已取消，权限请求已失效");
     await Promise.all(
       before.turns
-        .filter((turn) => turn.response.state.kind === "in_progress")
-        .map((turn) => this.renderTail(turn.response.id)),
+        .filter((turn) => turn.response.id !== owner && turn.response.state.kind === "in_progress")
+        .map(async (turn) => {
+          this.removeAcknowledgement(turn.response.id);
+          await this.renderTail(turn.response.id);
+        }),
     );
+    if (owner !== null) await this.renderTail(owner);
+    return owner;
+  }
+
+  async confirmTopicCancel(): Promise<void> {
+    const owner = this.snapshot.executionOwnerResponseId;
+    this.aggregate.confirmTopicCancel();
+    if (owner !== null) {
+      this.removeAcknowledgement(owner);
+      await this.renderTail(owner);
+    }
   }
 
   private response(responseId: ResponseId) {
@@ -376,6 +484,17 @@ export class TopicConversationSession {
   }
 
   private async renderCard(responseId: ResponseId, cardId: ResponseCardId): Promise<void> {
+    if (
+      this.patchFailureCardId !== null &&
+      this.patchFailureCardId !== cardId &&
+      this.snapshot.executionOwnerResponseId === responseId
+    ) {
+      this.patchFailureCardId = null;
+      this.aggregate.append(responseId, {
+        kind: "notice",
+        text: "上一张 Card 更新失败，其旧 Cancel 按钮可能仍然可见，但已经失效。",
+      });
+    }
     const snapshot = this.snapshot;
     const projection = this.projector.project(snapshot, responseId, cardId);
     const mapped = this.mapper.toView(snapshot, projection, this.options.route);
@@ -388,13 +507,22 @@ export class TopicConversationSession {
       if (externalId === undefined) {
         const anchor =
           this.cardAnchors.get(cardId) ?? this.acceptedTurn(responseId).sourceMessageId;
-        const sent = await this.options.presenter.sendConversationCard(anchor, mapped);
-        if (sent !== null) this.cardMessageIds.set(cardId, sent);
+        const send = this.options.presenter.sendConversationCard;
+        if (typeof send !== "function") return;
+        const sent = await send.call(this.options.presenter, anchor, mapped);
+        if (sent !== null) {
+          this.cardMessageIds.set(cardId, sent);
+          this.removeAcknowledgement(responseId);
+        }
         return;
       }
-      const updated = await this.options.presenter.updateConversationCard(externalId, mapped);
-      if (!updated) {
-        this.patchFailureNoticePending = true;
+      const update = this.options.presenter.updateConversationCard;
+      if (typeof update !== "function") return;
+      const updated = await update.call(this.options.presenter, externalId, mapped);
+      if (updated) {
+        this.removeAcknowledgement(responseId);
+      } else {
+        this.patchFailureCardId = cardId;
         this.options.logger.warn({ responseId, cardId }, "conversation Card patch failed");
       }
     });
@@ -403,13 +531,58 @@ export class TopicConversationSession {
       render.catch(() => undefined),
     );
     await render;
-    if (this.patchFailureNoticePending && this.snapshot.executionOwnerResponseId === responseId) {
-      this.patchFailureNoticePending = false;
-      this.aggregate.append(responseId, {
-        kind: "notice",
-        text: "上一张 Card 更新失败，其旧 Cancel 按钮可能仍然可见，但已经失效。",
-      });
+  }
+
+  private async appendTextChunks(
+    responseId: ResponseId,
+    kind: "text" | "thought",
+    text: string,
+  ): Promise<void> {
+    const chunks = splitUtf8(text, CARD_MARKDOWN_ROTATION_BYTE_LIMIT);
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index];
+      if (chunk === undefined || chunk.length === 0) continue;
+      this.aggregate.append(responseId, { kind, text: chunk });
+      if (index < chunks.length - 1) await this.rotate(responseId, "size");
     }
+  }
+
+  private async rotateIfNeeded(responseId: ResponseId): Promise<void> {
+    const tail = this.response(responseId).cards.at(-1);
+    if (tail === undefined) return;
+    const bytes = tail.entries.reduce((total, entry) => total + timelineEntryBytes(entry), 0);
+    if (tail.entries.length < 20 && bytes <= CARD_MARKDOWN_ROTATION_BYTE_LIMIT) return;
+    if (tail.entries.length === 0) return;
+    await this.rotate(responseId, "size");
+  }
+
+  private removeAcknowledgement(responseId: ResponseId): void {
+    const acknowledgement = this.acknowledgements.get(responseId);
+    const port = this.options.acknowledgement;
+    if (acknowledgement === undefined || port === undefined) return;
+    const identity = `${acknowledgement.messageId}\u0000${acknowledgement.reactionId}`;
+    if (this.removedAcknowledgements.has(identity)) return;
+    if (this.removingAcknowledgements.has(identity)) {
+      this.acknowledgementRetryRequested.add(identity);
+      return;
+    }
+    this.removingAcknowledgements.add(identity);
+    void port
+      .remove(acknowledgement.messageId, acknowledgement.reactionId)
+      .then((removed) => {
+        if (!removed) return;
+        this.removedAcknowledgements.add(identity);
+        this.acknowledgements.delete(responseId);
+      })
+      .catch((error) =>
+        this.options.logger.debug({ error, responseId }, "acknowledgement removal failed"),
+      )
+      .finally(() => {
+        this.removingAcknowledgements.delete(identity);
+        if (this.acknowledgementRetryRequested.delete(identity)) {
+          this.removeAcknowledgement(responseId);
+        }
+      });
   }
 
   private expirePermissionIfDomainRevoked(): void {
@@ -420,9 +593,13 @@ export class TopicConversationSession {
     }
   }
 
-  private expirePermission(reason: string): void {
+  private expirePermission(
+    reason: string,
+    domainStatus: "expired" | "display_failed" = "expired",
+  ): void {
     const pending = this.currentPermission;
     if (pending === null || pending.settled) return;
+    if (domainStatus === "expired") this.aggregate.expirePermission(pending.token);
     pending.settled = true;
     if (pending.timeout !== undefined) clearTimeout(pending.timeout);
     pending.resolve({ outcome: { outcome: "cancelled" } });
@@ -432,4 +609,44 @@ export class TopicConversationSession {
       void this.options.presenter.expirePermissionCard(permissionCardId, reason);
     }
   }
+}
+
+function timelineEntryBytes(entry: TimelineEntry): number {
+  switch (entry.kind) {
+    case "text":
+    case "thought":
+    case "notice":
+      return utf8PartsByteLength([entry.text]);
+    case "tool":
+      return utf8PartsByteLength([entry.toolCallId, entry.title, entry.status]);
+  }
+}
+
+function autoResolvePermission(
+  params: acp.RequestPermissionRequest,
+  mode: PermissionMode,
+): acp.RequestPermissionResponse | null {
+  const effective = isHummingPermission(params) ? "alwaysAllow" : mode;
+  if (effective === "alwaysAsk") return null;
+  const prefix = effective === "alwaysAllow" ? "allow_" : "reject_";
+  const option = params.options.find((candidate) => candidate.kind.startsWith(prefix));
+  return option === undefined
+    ? { outcome: { outcome: "cancelled" } }
+    : { outcome: { outcome: "selected", optionId: option.optionId } };
+}
+
+function isHummingPermission(params: acp.RequestPermissionRequest): boolean {
+  const raw = params.toolCall?.rawInput;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const record = raw as Record<string, unknown>;
+  const direct = ["command", "cmd", "commandLine", "shellCommand", "script"]
+    .map((key) => record[key])
+    .find((value): value is string => typeof value === "string");
+  const args = [record["args"], record["argv"]].find(
+    (value): value is string[] =>
+      Array.isArray(value) && value.every((item) => typeof item === "string"),
+  );
+  const first = (direct ?? args?.[0] ?? "").trim().split(/\s+/)[0] ?? "";
+  const binary = first.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  return binary === "humming" || binary === "humming.cmd" || binary === "humming.ps1";
 }

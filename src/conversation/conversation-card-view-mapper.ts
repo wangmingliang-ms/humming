@@ -98,14 +98,30 @@ export class ConversationCardViewMapper {
 
     const state = projection.state;
     if (state.kind === "terminal") {
-      const body =
-        timeline.length === 0 && state.outcome === "complete" ? "empty_complete" : "content";
+      const terminalTimeline =
+        timeline.length > 0
+          ? timeline
+          : [
+              {
+                kind: "text" as const,
+                text:
+                  state.outcome === "complete"
+                    ? "Agent 本轮已正常结束。"
+                    : state.outcome === "failed"
+                      ? "本轮执行失败。"
+                      : state.outcome === "interrupted"
+                        ? "本轮 Response 已被中断。"
+                        : state.outcome === "cancelled"
+                          ? "本轮 Response 已取消。"
+                          : "本条消息已合并到下一条消息，将一同发送给 Agent。",
+              },
+            ];
       return {
         kind: "terminal",
         header: state.outcome,
-        entries: timeline as TerminalTimelineEntry[],
+        entries: terminalTimeline as TerminalTimelineEntry[],
         profile: projection.metadata,
-        body,
+        body: "content",
         route,
       };
     }

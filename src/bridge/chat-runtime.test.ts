@@ -584,6 +584,48 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     expect(routes).toEqual(expect.arrayContaining(["oc_test"]));
   });
 
+  it("waits for an accepted carrier that finishes hydration after the owner stops", async () => {
+    const fake = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(fake.agent);
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([]),
+      sessionStore: stubSessionStore(),
+      conversationCardFeature: { v2Enabled: true },
+    });
+    const a = runtime.acceptResponse({ messageId: "om_a", content: "A", profile: null });
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "A" }],
+      messageId: "om_a",
+      chatId: "oc_test",
+      response: a,
+    });
+    await vi.waitFor(() => expect(fake.prompts()).toHaveLength(1));
+    const b = runtime.acceptResponse({ messageId: "om_b", content: "B", profile: null });
+    const c = runtime.acceptResponse({ messageId: "om_c", content: "C", profile: null });
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "B" }],
+      messageId: "om_b",
+      chatId: "oc_test",
+      response: b,
+    });
+    fake.resolvePrompt("cancelled");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fake.prompts()).toHaveLength(1);
+    await runtime.enqueue({
+      prompt: [
+        { type: "text", text: "B" },
+        { type: "text", text: "C" },
+      ],
+      messageId: "om_c",
+      chatId: "oc_test",
+      response: c,
+    });
+    await vi.waitFor(() => expect(fake.prompts()).toHaveLength(2));
+    expect(fake.prompts()[1]).toContain("B");
+    expect(fake.prompts()[1]).toContain("C");
+  });
+
   it("merges B and C into one Agent prompt while A is still interrupting", async () => {
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);

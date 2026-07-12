@@ -131,6 +131,7 @@ export class ChatRuntime {
   private readonly conversation: TopicConversationSession;
   private activeResponse: ConversationResponseHandle | null = null;
   private pendingCarrier: PendingMessage | null = null;
+  private committedCarrierResponseId: ResponseId | null = null;
   private state: ChatRuntimeState | null = null;
   private aborted = false;
   /** True after a topic-level /cancel or runtime shutdown requested cancellation. */
@@ -268,6 +269,24 @@ export class ChatRuntime {
     }
 
     this.state.lastActivity = Date.now();
+    if (pending.response !== undefined && !pending.response.isRunnable()) return;
+    if (
+      this.conversationCardFeature.v2Enabled &&
+      pending.response !== undefined &&
+      this.committedCarrierResponseId !== null
+    ) {
+      if (pending.response.responseId !== this.committedCarrierResponseId) {
+        throw new Error("hydrated Response does not match committed batch carrier");
+      }
+      this.committedCarrierResponseId = null;
+      this.pendingCarrier = null;
+      this.state.queue.push(pending);
+      if (!this.state.processing) {
+        this.state.processing = true;
+        this.processQueue().catch((err) => this.logger.error({ err }, "queue processor crashed"));
+      }
+      return;
+    }
     if (
       this.conversationCardFeature.v2Enabled &&
       this.conversation.snapshot.executionOwnerResponseId !== null &&
@@ -306,7 +325,11 @@ export class ChatRuntime {
   }): void {
     if (handoff.pendingBatch === null || handoff.carrierResponseId === null) return;
     const carrier = this.pendingCarrier;
-    if (carrier?.response?.responseId !== handoff.carrierResponseId) {
+    if (carrier === null) {
+      this.committedCarrierResponseId = handoff.carrierResponseId;
+      return;
+    }
+    if (carrier.response?.responseId !== handoff.carrierResponseId) {
       throw new Error("domain pending batch carrier does not match runtime carrier");
     }
     this.pendingCarrier = null;
@@ -374,6 +397,7 @@ export class ChatRuntime {
       this.logger.warn({ err }, "cancel notification rejected");
     }
     this.pendingCarrier = null;
+    this.committedCarrierResponseId = null;
     state.queue.length = 0;
   }
 
@@ -389,6 +413,7 @@ export class ChatRuntime {
     if (this.conversationCardFeature.v2Enabled) {
       await this.conversation.interruptTopic();
       this.pendingCarrier = null;
+      this.committedCarrierResponseId = null;
     }
     state.client.cancelPendingPermission();
     await this.finalizePendingMessages(state.queue, "Bridge 已停止，排队的新消息未处理。");
@@ -421,6 +446,7 @@ export class ChatRuntime {
     if (this.conversationCardFeature.v2Enabled) {
       await this.conversation.interruptTopic();
       this.pendingCarrier = null;
+      this.committedCarrierResponseId = null;
     }
     state.client.cancelPendingPermission();
     await this.finalizePendingMessages(state.queue, "Session 已被替换，排队的新消息未处理。");
@@ -458,6 +484,11 @@ export class ChatRuntime {
     await state.client.finalizeIfRenderable(
       outcome === "superseded" ? "complete" : outcome === "abandoned" ? "failed" : outcome,
     );
+  }
+
+  abandonHydration(responseId: ResponseId): void {
+    if (this.pendingCarrier?.response?.responseId === responseId) this.pendingCarrier = null;
+    if (this.committedCarrierResponseId === responseId) this.committedCarrierResponseId = null;
   }
 
   consumeCancelAction(input: {

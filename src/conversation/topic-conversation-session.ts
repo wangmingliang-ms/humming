@@ -159,6 +159,10 @@ export class TopicConversationSession {
     return turn;
   }
 
+  isResponseRunnable(responseId: ResponseId): boolean {
+    return this.response(responseId).state.kind === "in_progress";
+  }
+
   attachAcknowledgement(responseId: ResponseId, reactionId: string | null): void {
     if (reactionId === null) return;
     const turn = this.acceptedTurn(responseId);

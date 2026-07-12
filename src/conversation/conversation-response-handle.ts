@@ -28,6 +28,10 @@ export class ConversationResponseHandle {
     return this.session.applyAgentUpdate(this.responseId, update);
   }
 
+  isRunnable(): boolean {
+    return this.session.isResponseRunnable(this.responseId);
+  }
+
   fail(text: string): Promise<void> {
     return this.session.failResponse(this.responseId, text);
   }

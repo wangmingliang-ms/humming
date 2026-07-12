@@ -38,11 +38,11 @@ function dispatchCardAction(bridge: LarkBridge, value: object): void {
 }
 
 describe("LarkBridge prompt ingress ordering", () => {
-  it("serializes hydration and enqueue per topic while keeping topics independent", async () => {
+  it("serializes admission per topic while allowing hydration to finish out of order", async () => {
     const bridge = makeBridge(true);
-    let releaseFirst!: () => void;
-    const firstBlocked = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
+    let releaseB!: () => void;
+    const bHydration = new Promise<void>((resolve) => {
+      releaseB = resolve;
     });
     const calls: string[] = [];
     const testable = bridge as unknown as {
@@ -56,23 +56,27 @@ describe("LarkBridge prompt ingress ordering", () => {
       ): Promise<void>;
       enqueueWithContextSerial: ReturnType<typeof vi.fn>;
     };
-    testable.enqueueWithContextSerial = vi.fn(async (_event, _chat, _thread, _user, messageId) => {
-      calls.push(`start:${messageId}`);
-      if (messageId === "b") await firstBlocked;
-      calls.push(`end:${messageId}`);
-    });
+    testable.enqueueWithContextSerial = vi.fn(
+      async (_event, _chat, _thread, _user, messageId, _segments, admit) => {
+        calls.push(`admit:${messageId}`);
+        admit();
+        if (messageId === "b") await bHydration;
+        calls.push(`done:${messageId}`);
+      },
+    );
 
-    const event = {};
-    const b = testable.enqueueWithContext(event, "chat", "topic", "user", "b", []);
-    const c = testable.enqueueWithContext(event, "chat", "topic", "user", "c", []);
-    const other = testable.enqueueWithContext(event, "chat", "other", "user", "x", []);
-    await vi.waitFor(() => expect(calls).toContain("end:x"));
-    expect(calls).not.toContain("start:c");
-    releaseFirst();
+    const b = testable.enqueueWithContext({}, "chat", "topic", "user", "b", []);
+    const c = testable.enqueueWithContext({}, "chat", "topic", "user", "c", []);
+    const other = testable.enqueueWithContext({}, "chat", "other", "user", "x", []);
+    await vi.waitFor(() => expect(calls).toEqual(expect.arrayContaining(["done:c", "done:x"])));
+    expect(calls.slice(0, 2)).toContain("admit:b");
+    expect(calls.indexOf("admit:b")).toBeLessThan(calls.indexOf("admit:c"));
+    expect(calls).not.toContain("done:b");
+    releaseB();
     await Promise.all([b, c, other]);
-    expect(calls.indexOf("end:b")).toBeLessThan(calls.indexOf("start:c"));
   });
-  it("continues the same topic after an ingress failure and releases the chain", async () => {
+
+  it("continues the same topic after an admission failure and releases the chain", async () => {
     const bridge = makeBridge(true);
     const calls: string[] = [];
     const testable = bridge as unknown as {
@@ -87,10 +91,13 @@ describe("LarkBridge prompt ingress ordering", () => {
       enqueueWithContextSerial: ReturnType<typeof vi.fn>;
       promptIngress: Map<string, Promise<void>>;
     };
-    testable.enqueueWithContextSerial = vi.fn(async (_event, _chat, _thread, _user, messageId) => {
-      calls.push(messageId);
-      if (messageId === "bad") throw new Error("hydrate failed");
-    });
+    testable.enqueueWithContextSerial = vi.fn(
+      async (_event, _chat, _thread, _user, messageId, _segments, admit) => {
+        calls.push(messageId);
+        if (messageId === "bad") throw new Error("admission failed");
+        admit();
+      },
+    );
     const bad = testable
       .enqueueWithContext({}, "chat", "topic", "user", "bad", [])
       .catch(() => undefined);

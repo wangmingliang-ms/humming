@@ -2087,18 +2087,48 @@ export class LarkBridge {
     messageId: string,
     segments: PromptSegment[],
   ): Promise<void> {
+    if (!this.conversationCardFeature.v2Enabled) {
+      return this.enqueueWithContextSerial(
+        event,
+        chatId,
+        threadId,
+        userId,
+        messageId,
+        segments,
+        () => undefined,
+      );
+    }
     const key = runtimeKey(chatId, threadId);
     const prior = this.promptIngress.get(key) ?? Promise.resolve();
-    const current = prior
+    const start = prior
       .catch(() => undefined)
-      .then(() =>
-        this.enqueueWithContextSerial(event, chatId, threadId, userId, messageId, segments),
-      );
-    const tracked = current.finally(() => {
+      .then(() => {
+        let admit!: () => void;
+        let rejectAdmission!: (error: unknown) => void;
+        const admission = new Promise<void>((resolve, reject) => {
+          admit = resolve;
+          rejectAdmission = reject;
+        });
+        const completion = this.enqueueWithContextSerial(
+          event,
+          chatId,
+          threadId,
+          userId,
+          messageId,
+          segments,
+          admit,
+        ).catch((error) => {
+          rejectAdmission(error);
+          throw error;
+        });
+        return { admission, completion };
+      });
+    const barrier = start.then(({ admission }) => admission);
+    const tracked = barrier.finally(() => {
       if (this.promptIngress.get(key) === tracked) this.promptIngress.delete(key);
     });
     this.promptIngress.set(key, tracked);
-    return tracked;
+    return start.then(({ completion }) => completion);
   }
 
   private async enqueueWithContextSerial(
@@ -2108,9 +2138,11 @@ export class LarkBridge {
     userId: string,
     messageId: string,
     segments: PromptSegment[],
+    admit: () => void,
   ): Promise<void> {
     const binding = await this.resolveBinding(chatId);
     if (!binding) {
+      admit();
       this.logger.info({ chatId }, "message in unbound chat — reception disabled, prompting /bind");
       await this.presenter.replyNoticeCard(messageId, {
         title: "⚠️ 尚未绑定仓库",
@@ -2144,6 +2176,7 @@ export class LarkBridge {
     const response = this.conversationCardFeature.v2Enabled
       ? runtime.acceptResponse({ messageId, content: segments, profile: null })
       : undefined;
+    admit();
     const reaction = response
       ? this.http.addMessageReaction(messageId, "OnIt").catch((err) => {
           this.logger.debug({ err }, "prompt acknowledgement reaction failed");
@@ -2166,6 +2199,7 @@ export class LarkBridge {
     } catch (err) {
       response?.attachAcknowledgement(await reaction);
       if (response !== undefined) {
+        runtime.abandonHydration(response.responseId);
         await response.fail("消息内容读取失败，本轮 Response 未能开始。").catch(() => undefined);
       }
       throw err;

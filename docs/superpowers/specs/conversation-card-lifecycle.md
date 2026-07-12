@@ -533,6 +533,10 @@ Restart is intentionally simple and non-durable.
 Rotation and content compaction are separate concerns.
 
 - Rotating a Response creates a new tail and demotes the previous tail to an intermediate Card according to Section 5.2.
+- If a tool is still pending or running when the tail rotates, its entry in the old tail is normalized once to a truthful sealed marker such as "continues in the next Card".
+- The old intermediate Card is immutable after that seal; do not patch it when the tool later changes state.
+- A later completion or failure for that tool is rendered once as a compact completion/failure entry in the current tail.
+- Do not duplicate the full tool transcript across Cards.
 - Compaction copy must describe what was actually compacted:
   - response text -> earlier response content;
   - tool entries -> earlier tool activity;
@@ -562,32 +566,33 @@ I14. During interrupt handoff, all messages collected before the handoff boundar
 I15. The newest message's Response is the batch carrier; every previous carrier terminates as merged.
 I16. A tokenized Card Cancel affects only its bound Response; `/cancel` cancels all unfinished work in the Topic.
 I17. A new Request immediately revokes any Permission authority owned by the Response it will interrupt, while Response-level Cancel remains valid until that Response stops.
+I18. Running tools in a rotated tail are sealed as continuing; their later terminal result is rendered only in the current tail.
 ```
 
 ## 13. Conformance matrix
 
-| Situation                               | Previous Response tail                                                             | New Response tail                                 | Cancel owner                        |
-| --------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------- | ----------------------------------- |
-| Idle Request accepted                   | none                                                                               | received/preparing                                | none                                |
-| Response active                         | active Title + Metadata                                                            | none                                              | active Response                     |
-| New Request arrives                     | A active Title + Metadata                                                          | B interrupting Title + Metadata                   | A only                              |
-| C arrives before A is sealed            | B becomes merged terminal; batch becomes [B,C]                                     | C interrupting as newest carrier                  | A only                              |
-| More messages arrive before A is sealed | each former carrier becomes merged terminal                                        | newest Response carries the growing ordered batch | A only                              |
-| A interruption confirmed                | A interrupted Title + Metadata                                                     | B preparing Title + Metadata                      | none                                |
-| B starts                                | A interrupted Title + Metadata                                                     | B active Title + Metadata                         | B only                              |
-| Same Response rotates                   | old tail becomes plain intermediate                                                | successor tail Title + Metadata                   | successor only if owner in progress |
-| Permission requested                    | old tail becomes plain intermediate; Permission Card shows choices                 | continuation tail waiting + Metadata              | continuation tail                   |
-| Consecutive Permission requested        | prior continuation becomes intermediate; next Permission Card shows choices        | next continuation tail waiting + Metadata         | next continuation tail              |
-| Response ends during Permission         | Permission Card expires; prior Cards unchanged                                     | continuation terminal Title + Metadata            | none                                |
-| New Request during Permission           | old Permission Card expires immediately; A continuation remains current until stop | B interrupting without Cancel                     | A until stopped                     |
-| Feishu rejects old-tail seal patch      | domain treats old tail as intermediate; stale visual button may remain inert       | following tail includes patch-failure notice      | current valid owner tail            |
-| Response completes                      | final tail complete Title + Metadata                                               | none                                              | none                                |
-| Response fails                          | final tail failed Title + Metadata                                                 | none                                              | none                                |
-| Response is cancelled                   | final tail cancelled Title + Metadata                                              | none                                              | none                                |
-| Card Cancel on A while [B,C] waits      | A cancelled Title + Metadata                                                       | carrier C continues preparing/active              | C once active                       |
-| `/cancel` with unfinished work          | owner and waiting carrier tails become cancelled; merged tails stay merged         | no successor starts                               | none                                |
-| Bridge restarts                         | final tail interrupted Title + Metadata                                            | optional non-actionable notice only               | none                                |
-| Late callback arrives                   | no change                                                                          | no new Card                                       | none                                |
+| Situation                               | Previous Response tail                                                             | New Response tail                                               | Cancel owner                        |
+| --------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------- |
+| Idle Request accepted                   | none                                                                               | received/preparing                                              | none                                |
+| Response active                         | active Title + Metadata                                                            | none                                                            | active Response                     |
+| New Request arrives                     | A active Title + Metadata                                                          | B interrupting Title + Metadata                                 | A only                              |
+| C arrives before A is sealed            | B becomes merged terminal; batch becomes [B,C]                                     | C interrupting as newest carrier                                | A only                              |
+| More messages arrive before A is sealed | each former carrier becomes merged terminal                                        | newest Response carries the growing ordered batch               | A only                              |
+| A interruption confirmed                | A interrupted Title + Metadata                                                     | B preparing Title + Metadata                                    | none                                |
+| B starts                                | A interrupted Title + Metadata                                                     | B active Title + Metadata                                       | B only                              |
+| Same Response rotates                   | old tail becomes plain intermediate; running tools become "continues in next Card" | successor tail Title + Metadata; later tool result appears here | successor only if owner in progress |
+| Permission requested                    | old tail becomes plain intermediate; Permission Card shows choices                 | continuation tail waiting + Metadata                            | continuation tail                   |
+| Consecutive Permission requested        | prior continuation becomes intermediate; next Permission Card shows choices        | next continuation tail waiting + Metadata                       | next continuation tail              |
+| Response ends during Permission         | Permission Card expires; prior Cards unchanged                                     | continuation terminal Title + Metadata                          | none                                |
+| New Request during Permission           | old Permission Card expires immediately; A continuation remains current until stop | B interrupting without Cancel                                   | A until stopped                     |
+| Feishu rejects old-tail seal patch      | domain treats old tail as intermediate; stale visual button may remain inert       | following tail includes patch-failure notice                    | current valid owner tail            |
+| Response completes                      | final tail complete Title + Metadata                                               | none                                                            | none                                |
+| Response fails                          | final tail failed Title + Metadata                                                 | none                                                            | none                                |
+| Response is cancelled                   | final tail cancelled Title + Metadata                                              | none                                                            | none                                |
+| Card Cancel on A while [B,C] waits      | A cancelled Title + Metadata                                                       | carrier C continues preparing/active                            | C once active                       |
+| `/cancel` with unfinished work          | owner and waiting carrier tails become cancelled; merged tails stay merged         | no successor starts                                             | none                                |
+| Bridge restarts                         | final tail interrupted Title + Metadata                                            | optional non-actionable notice only                             | none                                |
+| Late callback arrives                   | no change                                                                          | no new Card                                                     | none                                |
 
 ## 14. Change-control rule
 

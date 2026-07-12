@@ -115,6 +115,7 @@ const HANDOFF_TASK_HINT =
 
 interface ChatRuntimeState {
   client: HummingClient;
+  router: PromptCallbackRouter;
   agent: AgentProcess;
   sessionCapabilities: SessionCapabilitiesSnapshot;
   sessionTitle?: string;
@@ -192,25 +193,6 @@ export class ChatRuntime {
       tokens.ownership,
       createSemanticConversationCardTransport(this.opts.presenter, context.messageId),
     );
-    const router = new PromptCallbackRouter(
-      {
-        readTextFile: async (params) => ({
-          content: await import("node:fs/promises").then((fs) => fs.readFile(params.path, "utf8")),
-        }),
-        writeTextFile: async (params) => {
-          await import("node:fs/promises").then((fs) =>
-            fs.writeFile(params.path, params.content, "utf8"),
-          );
-          return {};
-        },
-        onSessionInfo: () => undefined,
-        onMode: () => undefined,
-        onConfig: () => undefined,
-        onCommands: () => undefined,
-        onUsage: () => undefined,
-      },
-      this.lifecycleDiagnostics,
-    );
     const controller = new PromptCardController({
       initialPhase: "queued",
       profile: context.profile,
@@ -226,7 +208,7 @@ export class ChatRuntime {
       },
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
     });
-    return new PreparedPrompt(controller, context.messageId, router);
+    return new PreparedPrompt(controller, context.messageId);
   }
 
   get chatId(): string {
@@ -275,6 +257,7 @@ export class ChatRuntime {
     if (pending.prepared !== undefined && pending.progressCardId) {
       pending.prepared.controller.adoptCard(pending.progressCardId);
     }
+    pending.prepared?.markEnqueued();
     if (!this.state) {
       // A previous agent crash / idle exit tears down `state`; the next user
       // message should spawn a fresh agent, not inherit the old aborted flag.
@@ -298,7 +281,7 @@ export class ChatRuntime {
 
     if (this.state.processing || this.promptInFlight) {
       await this.updatePendingMessageCard(pending, "queued");
-      pending.prepared?.controller.markInterrupting();
+      if (!this.followupInterruptRequested) pending.prepared?.controller.markInterrupting();
       await this.interruptCurrentPromptForFollowup(this.state, pending);
       return;
     }
@@ -528,6 +511,21 @@ export class ChatRuntime {
             model: "—",
             permission: bridgePermissionLabel(currentClient.getPermissionMode()),
           };
+    const applySessionInfo = (update: acp.SessionInfoUpdate): void => {
+      if (stateRef === null) return;
+      if (update.title !== undefined) {
+        if (update.title === null) delete stateRef.sessionTitle;
+        else {
+          const title = sanitizeSessionTitle(update.title);
+          if (title === undefined) delete stateRef.sessionTitle;
+          else stateRef.sessionTitle = title;
+        }
+      }
+      if (update.updatedAt !== undefined) {
+        if (update.updatedAt === null) delete stateRef.sessionUpdatedAt;
+        else stateRef.sessionUpdatedAt = update.updatedAt;
+      }
+    };
     const client = new HummingClient({
       presenter: this.opts.presenter,
       logger: this.logger,
@@ -542,27 +540,29 @@ export class ChatRuntime {
         this.opts.inheritedControls?.bridgePermissionMode ??
         this.opts.permissionMode,
       metaProvider,
-      onSessionInfoUpdate: (update) => {
-        if (stateRef === null) return;
-        if (update.title !== undefined) {
-          if (update.title === null) delete stateRef.sessionTitle;
-          else {
-            const title = sanitizeSessionTitle(update.title);
-            if (title === undefined) delete stateRef.sessionTitle;
-            else stateRef.sessionTitle = title;
-          }
-        }
-        if (update.updatedAt !== undefined) {
-          if (update.updatedAt === null) delete stateRef.sessionUpdatedAt;
-          else stateRef.sessionUpdatedAt = update.updatedAt;
-        }
-      },
+      onSessionInfoUpdate: applySessionInfo,
     });
     currentClient = client;
+    const router = new PromptCallbackRouter(
+      {
+        readTextFile: (params) => client.readTextFile(params),
+        writeTextFile: (params) => client.writeTextFile(params),
+        onSessionInfo: applySessionInfo,
+        onMode: () => undefined,
+        onConfig: () => undefined,
+        onCommands: () => undefined,
+        onUsage: () => undefined,
+      },
+      this.lifecycleDiagnostics,
+    );
+    const bootstrapRoute = router.activateBootstrap(
+      latest && !latest.profileOnly ? "resume" : "new",
+      { sessionUpdate: (params) => client.sessionUpdate(params) },
+    );
     client.setContext(firstMessage.messageId, firstMessage.chatId, this.opts.threadId);
     client.adoptProgressCard(firstMessage.progressCardId);
-    if (firstMessage.prepared?.router !== undefined) {
-      client.bindPromptLifecycle(firstMessage.prepared.controller, firstMessage.prepared.router);
+    if (firstMessage.prepared !== undefined) {
+      client.bindPromptLifecycle(firstMessage.prepared.controller, router);
     }
     await client.showPreparing();
 
@@ -571,7 +571,7 @@ export class ChatRuntime {
       args: this.opts.agentArgs,
       cwd: this.opts.agentCwd,
       env: this.opts.agentEnv,
-      client,
+      client: router,
       logger: this.logger,
     };
 
@@ -585,10 +585,10 @@ export class ChatRuntime {
         agent = await spawnAgent(spawnOpts);
       }
     } catch (err) {
-      await client
-        .finalize("failed")
-        .catch((finalErr) => this.logger.warn({ err: finalErr }, "bootstrap card finalize failed"));
+      firstMessage.prepared?.failBeforeEnqueue("bootstrap_failed");
       throw err;
+    } finally {
+      router.closeBootstrap(bootstrapRoute);
     }
 
     await this.persistSession(agent.sessionId);
@@ -596,6 +596,7 @@ export class ChatRuntime {
     const persistedTitle = sanitizeSessionTitle(latest?.title);
     const state: ChatRuntimeState = {
       client,
+      router,
       agent,
       sessionCapabilities: this.buildCapabilitiesSnapshot(agent, client),
       ...(persistedTitle !== undefined ? { sessionTitle: persistedTitle } : {}),
@@ -943,6 +944,7 @@ export class ChatRuntime {
     message: PendingMessage,
     status: "queued" | "interrupting",
   ): Promise<void> {
+    if (message.prepared !== undefined) return;
     if (!message.progressCardId) return;
     const updated = await this.legacyCards.update(
       message.progressCardId,
@@ -962,6 +964,10 @@ export class ChatRuntime {
   ): Promise<void> {
     await Promise.all(
       [...messages, ...this.queuedAfterRespawn].map(async (message) => {
+        if (message.prepared !== undefined) {
+          message.prepared.controller.finish("cancelled");
+          return;
+        }
         if (!message.progressCardId) return;
         const updated = await this.legacyCards.update(message.progressCardId, {
           ...this.pendingMessageCardState(message, "cancelled"),
@@ -1057,14 +1063,29 @@ export class ChatRuntime {
     }
     const promptText = consumed.pendingTask?.prompt.trim();
     if (!promptText) return;
-    state.queue.unshift({
+    const injected: PendingMessage = {
       prompt: [
         { type: "text", text: promptText },
         { type: "text", text: HANDOFF_TASK_HINT },
       ],
       messageId,
       chatId: this.opts.chatId,
-    });
+      ...(this.conversationCardFeature.v2Enabled
+        ? {
+            prepared: this.preparePrompt({
+              messageId,
+              chatId: this.opts.chatId,
+              threadId: this.opts.threadId,
+              profile: sessionMetaFromSnapshot({
+                ...state.sessionCapabilities,
+                bridgePermissionMode: state.client.getPermissionMode(),
+              }),
+            }),
+          }
+        : {}),
+    };
+    injected.prepared?.markEnqueued();
+    state.queue.unshift(injected);
   }
 
   private async notifyPendingControlFailure(
@@ -1127,11 +1148,9 @@ export class ChatRuntime {
   private async runPrompt(state: ChatRuntimeState, pending: PendingMessage): Promise<void> {
     this.logger.info("sending prompt to agent");
     if (pending.prepared !== undefined) {
-      if (pending.prepared.router === undefined)
-        throw new Error("prepared prompt is missing its callback router");
       this.activePreparedPrompt = pending.prepared;
-      state.client.bindPromptLifecycle(pending.prepared.controller, pending.prepared.router);
-      pending.prepared.markEnqueued();
+      pending.prepared.markStarted();
+      state.client.bindPromptLifecycle(pending.prepared.controller, state.router);
       pending.prepared.controller.markPreparing(
         sessionMetaFromSnapshot({
           ...state.sessionCapabilities,

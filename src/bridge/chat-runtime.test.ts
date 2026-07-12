@@ -113,8 +113,6 @@ describe("ChatRuntime prompt preparation", () => {
 
     expect(first.promptToken).not.toBe(second.promptToken);
     expect(first.controller).not.toBe(second.controller);
-    expect(first.router).toBeDefined();
-    expect(first.router).not.toBe(second.router);
   });
 
   it("delegates action authority to the currently active semantic controller", () => {

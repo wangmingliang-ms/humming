@@ -1,5 +1,4 @@
 import type { PromptCardController } from "../acp/prompt-card-controller.js";
-import type { PromptCallbackRouter } from "../acp/prompt-callback-router.js";
 import type { TerminalOutcome } from "../acp/prompt-card-lifecycle.js";
 import type { PromptToken } from "../presenter/conversation-card-view.js";
 
@@ -11,13 +10,12 @@ export type PreEnqueueFailure = "hydrate_failed" | "bootstrap_failed" | "enqueue
  */
 export class PreparedPrompt {
   readonly promptToken: PromptToken;
-  private phase: "created" | "enqueued" | "failed" = "created";
+  private phase: "created" | "enqueued" | "started" | "failed" = "created";
   private acknowledgementAttached = false;
 
   constructor(
     readonly controller: PromptCardController,
     readonly messageId: string,
-    readonly router?: PromptCallbackRouter,
   ) {
     this.promptToken = controller.identity;
   }
@@ -34,8 +32,13 @@ export class PreparedPrompt {
     this.controller.markQueued();
   }
 
+  markStarted(): void {
+    if (this.phase === "failed" || this.phase === "started") return;
+    this.phase = "started";
+  }
+
   failBeforeEnqueue(_reason: PreEnqueueFailure): void {
-    if (this.phase !== "created") return;
+    if (this.phase === "failed" || this.phase === "started") return;
     this.phase = "failed";
     this.controller.finish("abandoned" satisfies TerminalOutcome);
   }

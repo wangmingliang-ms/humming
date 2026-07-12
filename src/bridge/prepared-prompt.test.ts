@@ -28,16 +28,17 @@ describe("PreparedPrompt", () => {
     });
   });
 
-  it("marks queued exactly once and cannot fail after enqueue", () => {
+  it("marks queued exactly once and abandons an accepted prompt when enqueue fails", () => {
     const owner = controller();
     const prepared = new PreparedPrompt(owner, "message-1");
 
     prepared.markEnqueued();
     prepared.markEnqueued();
     prepared.failBeforeEnqueue("enqueue_failed");
+    prepared.failBeforeEnqueue("enqueue_failed");
 
     expect(owner.markQueued).toHaveBeenCalledOnce();
-    expect(owner.finish).not.toHaveBeenCalled();
+    expect(owner.finish).toHaveBeenCalledExactlyOnceWith("abandoned");
   });
 
   it.each(["hydrate_failed", "bootstrap_failed", "enqueue_failed"] as const)(

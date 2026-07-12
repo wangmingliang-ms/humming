@@ -730,6 +730,10 @@ export class LarkBridge {
           this.onShutdownRequested();
           return { accepted: true };
         },
+        status: async () => ({
+          cardActionSchemaVersion: 2,
+          conversationCardLifecycleV2Enabled: this.conversationCardFeature.v2Enabled,
+        }),
         capabilities: (chatId, threadId) => this.controlCapabilities(chatId, threadId),
         setControls: async (chatId, threadId, controls) => {
           const result = await this.controlSetControls(chatId, threadId, controls);

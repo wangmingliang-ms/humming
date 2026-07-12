@@ -1,12 +1,17 @@
 import type { ChildProcess } from "node:child_process";
+import type * as acp from "@agentclientprotocol/sdk";
 import { describe, it, expect, vi } from "vitest";
 import type { AgentProcess, SpawnAgentOptions } from "./agent-process.js";
 import {
+  ACP_CLIENT_CAPABILITIES,
   AgentAuthError,
   buildAgentSpawnOptions,
+  createClientSideConnection,
   restartAgentAfterResumeFailure,
   sanitizeChildEnv,
 } from "./agent-process.js";
+import { PromptCallbackRouter, type SessionCallbacks } from "./prompt-callback-router.js";
+import { RingBufferLifecycleDiagnosticSink } from "./lifecycle-diagnostics.js";
 
 describe("AgentAuthError", () => {
   it("builds an actionable message carrying label + hint", () => {
@@ -86,6 +91,42 @@ describe("buildAgentSpawnOptions", () => {
     expect(opts.env.PATH).toBe("C:\\Windows");
     expect(opts.env.EXTRA).toBe("1");
     expect(opts.env).not.toHaveProperty("CLAUDECODE");
+  });
+});
+
+describe("ACP client construction", () => {
+  it("supplies the exact PromptCallbackRouter instance and exact advertised capabilities", () => {
+    const session: SessionCallbacks = {
+      readTextFile: vi.fn(async () => ({ content: "" })),
+      writeTextFile: vi.fn(async () => ({})),
+      onSessionInfo: vi.fn(),
+      onMode: vi.fn(),
+      onConfig: vi.fn(),
+      onCommands: vi.fn(),
+      onUsage: vi.fn(),
+    };
+    const router = new PromptCallbackRouter(session, new RingBufferLifecycleDiagnosticSink());
+    let suppliedClient: acp.Client | undefined;
+    const stream = {} as acp.Stream;
+    const connection = { marker: "connection" } as unknown as acp.ClientSideConnection;
+    const Connection = vi.fn(function (
+      this: acp.ClientSideConnection,
+      toClient: (agent: acp.Agent) => acp.Client,
+      actualStream: acp.Stream,
+    ) {
+      suppliedClient = toClient({} as acp.Agent);
+      expect(actualStream).toBe(stream);
+      return connection;
+    });
+
+    const result = createClientSideConnection(router, stream, Connection);
+
+    expect(result).toBe(connection);
+    expect(suppliedClient).toBe(router);
+    expect(ACP_CLIENT_CAPABILITIES).toEqual({
+      fs: { readTextFile: true, writeTextFile: true },
+    });
+    expect(ACP_CLIENT_CAPABILITIES).not.toHaveProperty("terminal");
   });
 });
 

@@ -13,6 +13,10 @@ const STDERR_BUFFER_LINES = 50;
 const DEFAULT_AGENT_INITIALIZE_TIMEOUT_MS = 60_000;
 const DEFAULT_AGENT_SESSION_TIMEOUT_MS = 60_000;
 
+export const ACP_CLIENT_CAPABILITIES = {
+  fs: { readTextFile: true, writeTextFile: true },
+} satisfies acp.ClientCapabilities;
+
 /**
  * Environment variables Claude Code sets for its own child processes. The
  * `claude` CLI refuses to launch nested inside another Claude Code session
@@ -105,6 +109,19 @@ export interface AgentChildProcessOptions {
   readonly stdio: ["pipe", "pipe", "pipe"];
   readonly shell: boolean;
   readonly windowsHide: boolean;
+}
+
+type ClientSideConnectionConstructor = new (
+  toClient: (agent: acp.Agent) => acp.Client,
+  stream: acp.Stream,
+) => acp.ClientSideConnection;
+
+export function createClientSideConnection(
+  client: acp.Client,
+  stream: acp.Stream,
+  Connection: ClientSideConnectionConstructor = acp.ClientSideConnection,
+): acp.ClientSideConnection {
+  return new Connection(() => client, stream);
 }
 
 export function buildAgentSpawnOptions(
@@ -477,16 +494,14 @@ async function spawnAndInit(opts: SpawnAgentOptions): Promise<SpawnInternal> {
   const output = Readable.toWeb(proc.stdout!);
   const stream = acp.ndJsonStream(input, output);
 
-  const connection = new acp.ClientSideConnection(() => client, stream);
+  const connection = createClientSideConnection(client, stream);
 
   let initResult: Awaited<ReturnType<typeof connection.initialize>>;
   try {
     initResult = await withAgentRequest(
       connection.initialize({
         protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: {
-          fs: { readTextFile: true, writeTextFile: true },
-        },
+        clientCapabilities: ACP_CLIENT_CAPABILITIES,
       }),
       connection,
       DEFAULT_AGENT_INITIALIZE_TIMEOUT_MS,

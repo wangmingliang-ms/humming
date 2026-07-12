@@ -1,6 +1,8 @@
 export { HummingClient, PERMISSION_MODES } from "./humming-client.js";
 export type { HummingClientOptions, PermissionMode } from "./humming-client.js";
 export {
+  ACP_CLIENT_CAPABILITIES,
+  createClientSideConnection,
   spawnAgent,
   spawnAndResumeAgent,
   listAgentSessions,
@@ -20,6 +22,14 @@ export {
   projectLifecycleDiagnostic,
   RingBufferLifecycleDiagnosticSink,
 } from "./lifecycle-diagnostics.js";
+export { PromptCallbackRouter } from "./prompt-callback-router.js";
+export type {
+  BootstrapCallbacks,
+  BootstrapRouteHandle,
+  PromptRouteHandle,
+  PromptScopedCallbacks,
+  SessionCallbacks,
+} from "./prompt-callback-router.js";
 export type {
   AcknowledgementState,
   ArchiveReason,

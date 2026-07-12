@@ -359,8 +359,6 @@ interface PromptCardController {
     actionToken: ActionToken;
   }): "accepted" | "stale" | "duplicate";
   finish(outcome: TerminalOutcome): void;
-  onFirstVisibleCard(listener: (cardId: string) => void): () => void;
-  onTerminalWithoutVisibleCard(listener: () => void): () => void;
   awaitEffects(timeoutMs: number): Promise<void>;
 }
 ```
@@ -379,9 +377,9 @@ Add multiple-chunks-one-delivery RED, implement timer wiring, rerun; then add te
 
 Add separately and implement after each RED: content boundary, empty reuse, failed handoff, cross-boundary tool completion, selected permission resolves response once, invalid/stale/duplicate action leaves response pending, and handoff failure/timeout/finish/cancel/shutdown/supersede each resolves cancelled exactly once. Then add consumeCancel duplicate/stale.
 
-- [ ] **Step 4: RED/GREEN — acknowledgement lifecycle callbacks**
+- [ ] **Step 4: RED/GREEN — acknowledgement substate and terminal races**
 
-Add first-visible feedback RED and implement the `acknowledgement_visible` reducer event emitted only from `DeliveryResult.visible(cardId)`. Then add terminal-without-visible RED and implement `acknowledgement_terminal_without_card`. Assert either event emits exactly one `remove_acknowledgement` effect, and removal success/failure feedback marks the attempt complete without retries.
+Add first-visible feedback RED: `attached -> removal_pending` and exactly one remove effect; implement and rerun. Add finish-before-visible RED: finish itself emits the same one removal while semantic phase becomes terminal; implement. Add deletion-in-flight-then-finish, late-visible-after-terminal, removal-success-after-terminal, and removal-failure-after-terminal one at a time. Assert semantic terminal never changes, feedback never renders, and every ordering invokes removal at most once.
 
 - [ ] **Step 5: Complete effect runner**
 

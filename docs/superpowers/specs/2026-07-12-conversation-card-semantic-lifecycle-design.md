@@ -150,7 +150,17 @@ type ConversationCardModel =
 
 The runtime also has internal, non-renderable `idle` and `awaiting_permission` states. They are not card models because no conversation card is current while the prompt is between segments or no prompt exists.
 
-The lifecycle aggregate stores the current prompt state separately from immutable archived-segment records. `ConversationCardModel` describes one renderable card snapshot; the aggregate may retain archived snapshots for diagnostics but never mutates or re-renders them through the active ownership.
+The lifecycle aggregate stores two orthogonal pieces: an absorbing conversation semantic phase and a non-rendering acknowledgement bookkeeping substate:
+
+```ts
+type AcknowledgementState =
+  | { phase: "none" }
+  | { phase: "attached"; messageId: string; reactionId: string; visibleCard: false }
+  | { phase: "removal_pending"; messageId: string; reactionId: string }
+  | { phase: "removal_attempted"; outcome: "removed" | "failed" };
+```
+
+Terminal absorption applies to the conversation phase and all render/action/tool events. After terminal, only `acknowledgement_removed` and `acknowledgement_remove_failed` may advance this bookkeeping substate; they cannot change semantic phase, entries, views, actions, timers, permissions, or delivery ownership. `ConversationCardModel` describes one renderable card snapshot; archived snapshots never mutate.
 
 ### State invariants
 
@@ -328,7 +338,6 @@ type ConversationCardEvent =
   | { type: "interrupting"; promptToken: PromptToken }
   | { type: "flush_due"; promptToken: PromptToken; segmentToken: SegmentToken }
   | { type: "acknowledgement_visible"; promptToken: PromptToken; cardId: string }
-  | { type: "acknowledgement_terminal_without_card"; promptToken: PromptToken }
   | { type: "acknowledgement_removed"; promptToken: PromptToken }
   | { type: "acknowledgement_remove_failed"; promptToken: PromptToken }
   | { type: "finish"; promptToken: PromptToken; outcome: TerminalOutcome };
@@ -348,8 +357,9 @@ When `finish` enters the queue:
 2. revoke the current action token synchronously before any transport wait;
 3. invalidate idle/flush generations;
 4. transition to terminal and mark the prompt generation absorbing;
-5. atomically close the current delivery owner with the immutable terminal view;
-6. reject later events for that prompt token.
+5. if acknowledgement is still `attached`, atomically set it to `removal_pending` and emit one `remove_acknowledgement` effect in the same finish transition;
+6. atomically close the current delivery owner with the immutable terminal view;
+7. reject later semantic/render/action/tool events for that prompt token. Allow only acknowledgement removal success/failure bookkeeping feedback, which cannot produce views or actions.
 
 No reset to a default `thinking` state occurs. The next prompt explicitly creates a new generation.
 
@@ -520,7 +530,7 @@ The accepted flow is:
 
 A failed reaction add/remove is logged but does not affect prompt execution. A leaked reaction is inert and does not state that processing is still active. The bridge never creates a standalone receipt/progress card and never patches a conversation card directly.
 
-Removal has an explicit feedback path. The Delivery effect runner emits `acknowledgement_visible` only after `send` or replacement takeover returns a non-null authoritative card ID. If the prompt becomes terminal before any visible card exists, the controller emits `acknowledgement_terminal_without_card`. Either event makes the reducer emit exactly one `remove_acknowledgement` effect when a reaction ID exists. The reaction port reports `acknowledgement_removed` or `acknowledgement_remove_failed`; both mark the removal attempt complete, and neither retries in a loop. Merely submitting a render effect never removes the reaction.
+Removal has an explicit single-owner feedback path. Delivery emits `acknowledgement_visible` only after `send` or replacement takeover returns a non-null authoritative card ID. If acknowledgement is `attached`, that event atomically changes it to `removal_pending` and emits exactly one `remove_acknowledgement` effect. If `finish` wins first, the finish transition itself performs the same atomic bookkeeping/effect emission; there is no separate terminal-without-card callback/event. A visible result arriving after terminal is diagnostic-only and cannot emit a second removal. The reaction port reports `acknowledgement_removed` or `acknowledgement_remove_failed`; these are the only post-terminal events allowed, update only bookkeeping to `removal_attempted`, and never retry. Merely submitting a render effect never removes the reaction.
 
 For busy follow-ups, the same `PromptCardLifecycle` creates an explicit queued/interrupting view because that message has durable queue semantics. Its delivery ownership later becomes active or terminal; the runtime must not leave it queued while creating a second authoritative terminal card.
 

@@ -13,7 +13,7 @@ const logger: LarkLogger = {
   child: () => logger,
 };
 
-function makeBridge(): LarkBridge {
+function makeBridge(v2Enabled = false): LarkBridge {
   return new LarkBridge({
     lark: { appId: "test", appSecret: "test" },
     agent: {
@@ -23,6 +23,7 @@ function makeBridge(): LarkBridge {
     sessionStore: {} as SessionStore,
     presenter: {} as LarkPresenter,
     logger,
+    conversationCardFeature: { v2Enabled },
   });
 }
 
@@ -56,5 +57,86 @@ describe("LarkBridge Cancel card compatibility", () => {
     dispatchCardAction(bridge, { cancel: true, c: "chat", th: "topic" });
 
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  });
+});
+
+describe("LarkBridge semantic card actions", () => {
+  it("routes only the exact v2 Cancel schema to runtime token authority", () => {
+    const bridge = makeBridge(true);
+    const consumeCancelAction = vi.fn(() => "accepted" as const);
+    const get = vi.fn(() => ({ consumeCancelAction }));
+    (bridge as unknown as { chats: { get: typeof get } }).chats = { get };
+
+    dispatchCardAction(bridge, {
+      v: 2,
+      c: "chat",
+      th: "topic",
+      cancel: true,
+      p: "prompt",
+      s: "segment",
+      a: "action",
+    });
+
+    expect(consumeCancelAction).toHaveBeenCalledExactlyOnceWith({
+      promptToken: "prompt",
+      segmentToken: "segment",
+      actionToken: "action",
+    });
+    for (const invalid of [
+      { v: 3, c: "chat", cancel: true, p: "prompt", s: "segment", a: "action" },
+      { v: 2, c: "chat", cancel: true },
+      { v: 2, c: "chat", cancel: true, p: "prompt", s: "segment", a: "action", x: 1 },
+    ]) {
+      dispatchCardAction(bridge, invalid);
+    }
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes only the exact v2 permission schema to runtime token authority", () => {
+    const bridge = makeBridge(true);
+    const consumePermissionAction = vi.fn(() => "accepted" as const);
+    const get = vi.fn(() => ({ consumePermissionAction }));
+    (bridge as unknown as { chats: { get: typeof get } }).chats = { get };
+
+    dispatchCardAction(bridge, {
+      v: 2,
+      c: "chat",
+      p: "prompt",
+      q: "permission",
+      r: "request",
+      o: "option",
+    });
+
+    expect(consumePermissionAction).toHaveBeenCalledExactlyOnceWith({
+      promptToken: "prompt",
+      permissionToken: "permission",
+      requestId: "request",
+      optionId: "option",
+    });
+    for (const invalid of [
+      { v: 99, c: "chat", p: "prompt", q: "permission", r: "request", o: "option" },
+      { v: 2, c: "chat", r: "request", o: "option" },
+      { v: 2, c: "chat", p: "prompt", q: "permission", r: "request", o: "option", n: "old" },
+    ]) {
+      dispatchCardAction(bridge, invalid);
+    }
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps semantic routing disabled by default", () => {
+    const bridge = makeBridge();
+    const get = vi.fn();
+    (bridge as unknown as { chats: { get: typeof get } }).chats = { get };
+
+    dispatchCardAction(bridge, {
+      v: 2,
+      c: "chat",
+      cancel: true,
+      p: "prompt",
+      s: "segment",
+      a: "action",
+    });
+
+    expect(get).not.toHaveBeenCalled();
   });
 });

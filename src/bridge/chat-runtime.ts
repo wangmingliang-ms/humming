@@ -40,6 +40,7 @@ import {
 import { ConversationCardDelivery } from "../acp/conversation-card-delivery.js";
 import {
   PromptCardController,
+  type AcknowledgementPort,
   type PromptCardTokenFactory,
 } from "../acp/prompt-card-controller.js";
 import { PromptCallbackRouter } from "../acp/prompt-callback-router.js";
@@ -106,6 +107,7 @@ export interface ChatRuntimeOptions {
   onTurnComplete?: (messageId: string) => Promise<void>;
   conversationCardFeature?: ConversationCardFeatureGate;
   lifecycleDiagnostics?: LifecycleDiagnosticSink;
+  acknowledgement?: AcknowledgementPort;
 }
 
 const HANDOFF_TASK_HINT =
@@ -138,6 +140,7 @@ export class ChatRuntime {
   private readonly legacyCards: LegacyConversationCardAdapter;
   readonly conversationCardFeature: ConversationCardFeatureGate;
   private readonly lifecycleDiagnostics: LifecycleDiagnosticSink;
+  private activePreparedPrompt: PreparedPrompt | null = null;
   private promptSequence = 0;
   private state: ChatRuntimeState | null = null;
   private aborted = false;
@@ -217,6 +220,7 @@ export class ChatRuntime {
       delivery,
       diagnostics: this.lifecycleDiagnostics,
       deliveryContext: { messageSequence: this.promptSequence },
+      acknowledgement: this.opts.acknowledgement,
       cancel: () => {
         void this.cancel();
       },
@@ -418,6 +422,36 @@ export class ChatRuntime {
     await state.client.finalizeIfRenderable(
       outcome === "superseded" ? "complete" : outcome === "abandoned" ? "failed" : outcome,
     );
+  }
+
+  consumeCancelAction(input: {
+    promptToken: string;
+    segmentToken: string;
+    actionToken: string;
+  }): "accepted" | "stale" | "duplicate" {
+    const prepared = this.activePreparedPrompt;
+    if (prepared === null) return "stale";
+    return prepared.controller.consumeCancel({
+      promptToken: input.promptToken as PromptToken,
+      segmentToken: input.segmentToken as SegmentToken,
+      actionToken: input.actionToken as ActionToken,
+    });
+  }
+
+  consumePermissionAction(input: {
+    promptToken: string;
+    permissionToken: string;
+    requestId: string;
+    optionId: string;
+  }): "accepted" | "stale" | "duplicate" | "invalid_option" {
+    const prepared = this.activePreparedPrompt;
+    if (prepared === null) return "stale";
+    return prepared.controller.consumePermission({
+      promptToken: input.promptToken as PromptToken,
+      permissionToken: input.permissionToken as PermissionToken,
+      requestId: input.requestId,
+      optionId: input.optionId,
+    });
   }
 
   /** Forward a card-action event to the underlying ACP client. */
@@ -888,6 +922,9 @@ export class ChatRuntime {
           await this.handlePromptError(state, pending, err);
           if (!this.state) return; // shut down by error handler
         } finally {
+          if (pending.prepared !== undefined && this.activePreparedPrompt === pending.prepared) {
+            this.activePreparedPrompt = null;
+          }
           this.promptInFlight = false;
           this.cancelRequested = false;
           this.followupInterruptRequested = false;
@@ -1092,6 +1129,7 @@ export class ChatRuntime {
     if (pending.prepared !== undefined) {
       if (pending.prepared.router === undefined)
         throw new Error("prepared prompt is missing its callback router");
+      this.activePreparedPrompt = pending.prepared;
       state.client.bindPromptLifecycle(pending.prepared.controller, pending.prepared.router);
       pending.prepared.markEnqueued();
       pending.prepared.controller.markPreparing(
@@ -1105,6 +1143,10 @@ export class ChatRuntime {
     await state.client.showForwarded();
 
     const result = await this.promptOrDisconnect(state, pending);
+
+    if (pending.prepared !== undefined && this.activePreparedPrompt === pending.prepared) {
+      this.activePreparedPrompt = null;
+    }
 
     if (this.suppressPromptErrorNotice || this.aborted || this.state !== state) {
       this.logger.info("prompt completed after runtime was superseded; skipping session persist");

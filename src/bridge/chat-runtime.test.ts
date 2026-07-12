@@ -9,6 +9,12 @@ import type { SessionRecord, SessionStore } from "../session-store/session-store
 import type { AgentProcess, SpawnAgentOptions } from "../acp/agent-process.js";
 import { DISABLED_CONVERSATION_CARD_FEATURE } from "./conversation-card-feature.js";
 import { RingBufferLifecycleDiagnosticSink } from "../acp/lifecycle-diagnostics.js";
+import type {
+  ActionToken,
+  PermissionToken,
+  PromptToken,
+  SegmentToken,
+} from "../presenter/conversation-card-view.js";
 
 // The agent subprocess is the correct mock boundary: we replace `spawnAgent`
 // so no real process is spawned, then hand ChatRuntime a fake AgentProcess
@@ -109,6 +115,85 @@ describe("ChatRuntime prompt preparation", () => {
     expect(first.controller).not.toBe(second.controller);
     expect(first.router).toBeDefined();
     expect(first.router).not.toBe(second.router);
+  });
+
+  it("delegates action authority to the currently active semantic controller", () => {
+    const runtime = new ChatRuntime({
+      ...opts(),
+      conversationCardFeature: { v2Enabled: true },
+    });
+    const prepared = runtime.preparePrompt({
+      chatId: "oc_test",
+      threadId: null,
+      messageId: "om_test",
+      profile: null,
+    });
+    prepared.controller.markPreparing(null);
+    const cancelIdentity = prepared.controller.markForwarded();
+    (runtime as unknown as { activePreparedPrompt: typeof prepared }).activePreparedPrompt =
+      prepared;
+
+    expect(
+      runtime.consumeCancelAction({
+        promptToken: "previous" as PromptToken,
+        segmentToken: cancelIdentity.segmentToken,
+        actionToken: cancelIdentity.actionToken,
+      }),
+    ).toBe("stale");
+    expect(runtime.consumeCancelAction(cancelIdentity)).toBe("accepted");
+    expect(runtime.consumeCancelAction(cancelIdentity)).toBe("duplicate");
+
+    const permission = prepared.controller.requestPermission({
+      requestId: "request",
+      params: {
+        sessionId: "session",
+        toolCall: { toolCallId: "tool", title: "Tool" },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      },
+    });
+    expect(
+      runtime.consumePermissionAction({
+        promptToken: prepared.promptToken,
+        permissionToken: permission.permissionToken,
+        requestId: "request",
+        optionId: "other",
+      }),
+    ).toBe("invalid_option");
+    expect(
+      runtime.consumePermissionAction({
+        promptToken: prepared.promptToken,
+        permissionToken: permission.permissionToken,
+        requestId: "request",
+        optionId: "allow",
+      }),
+    ).toBe("accepted");
+    expect(
+      runtime.consumePermissionAction({
+        promptToken: prepared.promptToken,
+        permissionToken: permission.permissionToken,
+        requestId: "request",
+        optionId: "allow",
+      }),
+    ).toBe("duplicate");
+  });
+
+  it("treats token actions as stale when no semantic prompt owns them", () => {
+    const runtime = new ChatRuntime(opts());
+    expect(
+      runtime.consumeCancelAction({
+        promptToken: "prompt" as PromptToken,
+        segmentToken: "segment" as SegmentToken,
+        actionToken: "action" as ActionToken,
+      }),
+    ).toBe("stale");
+    expect(
+      runtime.consumePermissionAction({
+        promptToken: "prompt" as PromptToken,
+        permissionToken: "permission" as PermissionToken,
+        requestId: "request",
+        optionId: "option",
+      }),
+    ).toBe("stale");
   });
 });
 

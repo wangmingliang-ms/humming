@@ -15,6 +15,10 @@ import { LarkWsConnection } from "../lark/lark-ws.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
 import { LegacyConversationCardAdapter } from "../presenter/legacy-conversation-card-adapter.js";
 import {
+  DISABLED_CONVERSATION_CARD_FEATURE,
+  type ConversationCardFeatureGate,
+} from "./conversation-card-feature.js";
+import {
   createWipNoticeCard,
   finalizeWipNoticeCard,
   updateWipNoticeCard,
@@ -162,8 +166,16 @@ function formatBootstrapError(err: unknown): string {
 }
 
 interface CardActionPayload {
-  /** Action schema version. Versioned actions are unsupported until v2 routing exists. */
+  /** Action schema version. */
   v?: unknown;
+  /** Prompt lifecycle token (v2 only). */
+  p?: string;
+  /** Segment lifecycle token (v2 Cancel only). */
+  s?: string;
+  /** One-shot action token (v2 Cancel only). */
+  a?: string;
+  /** Permission lifecycle token (v2 permission only). */
+  q?: string;
   /** Permission request id (set on permission cards). */
   r?: string;
   /** Selected option id (set on permission cards). */
@@ -190,6 +202,64 @@ interface CardActionPayload {
   sw?: string;
   /** Agent switch warning action. */
   swa?: "confirm" | "cancel";
+}
+
+interface StrictCancelV2 {
+  readonly v: 2;
+  readonly c: string;
+  readonly th?: string;
+  readonly cancel: true;
+  readonly p: string;
+  readonly s: string;
+  readonly a: string;
+}
+
+interface StrictPermissionV2 {
+  readonly v: 2;
+  readonly c: string;
+  readonly th?: string;
+  readonly p: string;
+  readonly q: string;
+  readonly r: string;
+  readonly o: string;
+}
+
+function hasExactKeys(
+  value: object,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || optional.includes(key))
+  );
+}
+
+function isStrictCancelV2(value: CardActionPayload): value is StrictCancelV2 {
+  return (
+    hasExactKeys(value, ["v", "c", "cancel", "p", "s", "a"], ["th"]) &&
+    value.v === 2 &&
+    value.cancel === true &&
+    typeof value.c === "string" &&
+    typeof value.p === "string" &&
+    typeof value.s === "string" &&
+    typeof value.a === "string" &&
+    (value.th === undefined || typeof value.th === "string")
+  );
+}
+
+function isStrictPermissionV2(value: CardActionPayload): value is StrictPermissionV2 {
+  return (
+    hasExactKeys(value, ["v", "c", "p", "q", "r", "o"], ["th"]) &&
+    value.v === 2 &&
+    typeof value.c === "string" &&
+    typeof value.p === "string" &&
+    typeof value.q === "string" &&
+    typeof value.r === "string" &&
+    typeof value.o === "string" &&
+    (value.th === undefined || typeof value.th === "string")
+  );
 }
 
 export interface LarkBridgeLarkOptions {
@@ -343,6 +413,8 @@ export interface LarkBridgeOptions {
    * builds one from `lark.appId` / `lark.appSecret`.
    */
   presenter?: LarkPresenter;
+  /** Explicit semantic lifecycle gate; defaults to the immutable disabled contract. */
+  conversationCardFeature?: ConversationCardFeatureGate;
 }
 
 /** Global display / permission prefs applied to every chat runtime. */
@@ -458,6 +530,7 @@ export class LarkBridge {
   private readonly restartMarkerPath: string | null;
   private readonly lifecycleCodeRevision: LifecycleCodeRevision | undefined;
   private readonly lifecycleNoticeTimeoutMs: number | undefined;
+  private readonly conversationCardFeature: ConversationCardFeatureGate;
 
   private readonly chats = new Map<string, ChatRuntime>();
   private readonly pendingAgentSwitches = new Map<string, PendingAgentSwitch>();
@@ -513,6 +586,8 @@ export class LarkBridge {
     this.restartMarkerPath = opts.lifecycle?.restartMarkerPath ?? null;
     this.lifecycleCodeRevision = opts.lifecycle?.codeRevision;
     this.lifecycleNoticeTimeoutMs = opts.lifecycle?.noticeTimeoutMs;
+    this.conversationCardFeature =
+      opts.conversationCardFeature ?? DISABLED_CONVERSATION_CARD_FEATURE;
   }
 
   /**
@@ -1996,29 +2071,51 @@ export class LarkBridge {
     }
 
     const legacyCards = new LegacyConversationCardAdapter(this.presenter);
-    const progressCardId = await legacyCards
-      .send(messageId, {
-        status: "received",
-        entries: [],
-        cancellable: false,
-        chatId,
-        threadId,
-      })
-      .catch((err) => {
-        this.logger.warn({ err, chatId, threadId }, "initial progress card failed");
-        return null;
-      });
+    const progressCardId = this.conversationCardFeature.v2Enabled
+      ? null
+      : await legacyCards
+          .send(messageId, {
+            status: "received",
+            entries: [],
+            cancellable: false,
+            chatId,
+            threadId,
+          })
+          .catch((err) => {
+            this.logger.warn({ err, chatId, threadId }, "initial progress card failed");
+            return null;
+          });
 
     const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
-    const [prompt, userName, chatName] = await Promise.all([
-      hydratePrompt(segments, {
-        downloader: this.http,
-        resourceDownloader: this.http,
-        logger: this.logger,
-      }),
-      this.http.getUserName(userId),
-      isGroup ? this.http.getChatName(chatId) : Promise.resolve(""),
-    ]);
+    const runtime = await this.acquireRuntime(chatId, threadId, binding);
+    const prepared = this.conversationCardFeature.v2Enabled
+      ? runtime.preparePrompt({ messageId, chatId, threadId, profile: null })
+      : undefined;
+    const reaction = prepared
+      ? this.http.addMessageReaction(messageId, "OnIt").catch((err) => {
+          this.logger.debug({ err }, "prompt acknowledgement reaction failed");
+          return null;
+        })
+      : Promise.resolve(null);
+    let prompt: Awaited<ReturnType<typeof hydratePrompt>>;
+    let userName: string;
+    let chatName: string;
+    try {
+      [prompt, userName, chatName] = await Promise.all([
+        hydratePrompt(segments, {
+          downloader: this.http,
+          resourceDownloader: this.http,
+          logger: this.logger,
+        }),
+        this.http.getUserName(userId),
+        isGroup ? this.http.getChatName(chatId) : Promise.resolve(""),
+      ]);
+    } catch (err) {
+      prepared?.attachAcknowledgement(await reaction);
+      prepared?.failBeforeEnqueue("hydrate_failed");
+      throw err;
+    }
+    prepared?.attachAcknowledgement(await reaction);
 
     const context = isGroup
       ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`
@@ -2033,11 +2130,17 @@ export class LarkBridge {
     prompt.push({ type: "text", text: context });
     prompt.push({ type: "text", text: renderInlineControlHint(chatId, threadId) });
 
-    const runtime = await this.acquireRuntime(chatId, threadId, binding);
-    const pending: PendingMessage = { prompt, messageId, chatId, progressCardId };
+    const pending: PendingMessage = {
+      prompt,
+      messageId,
+      chatId,
+      progressCardId,
+      ...(prepared ? { prepared } : {}),
+    };
     try {
       await runtime.enqueue(pending);
     } catch (err) {
+      prepared?.failBeforeEnqueue("enqueue_failed");
       // bootstrap (spawn / initialize / newSession / resume) failed — the
       // ChatRuntime never registered itself as active, so drop it and let
       // the next message try again from scratch.
@@ -2253,6 +2356,7 @@ export class LarkBridge {
       ...(usesGlobalDefaults ? { persistInheritedControls: true } : {}),
       onTurnComplete: (messageId) => this.handleRuntimeTurnComplete(chatId, threadId, messageId),
       presenter: this.presenter,
+      conversationCardFeature: this.conversationCardFeature,
       sessionStore: this.sessionStore,
       logger: this.logger,
     });
@@ -2616,11 +2720,28 @@ export class LarkBridge {
 
   private handleCardAction(event: Lark.CardActionEvent): void {
     const value = event.action.value as CardActionPayload | undefined;
-    if (!value?.c) return;
-    if (value.cancel === true && Object.hasOwn(value, "v")) {
-      this.logger.info("unsupported versioned Cancel action ignored");
+    if (!value || typeof value !== "object") return;
+    if (Object.hasOwn(value, "v")) {
+      if (!this.conversationCardFeature.v2Enabled) {
+        this.logger.info("versioned card action ignored while semantic lifecycle is disabled");
+        return;
+      }
+      if (value.v !== 2) {
+        this.logger.info("unsupported versioned card action ignored");
+        return;
+      }
+      if (isStrictCancelV2(value)) {
+        this.handleCancelV2(value);
+        return;
+      }
+      if (isStrictPermissionV2(value)) {
+        this.handlePermissionV2(value);
+        return;
+      }
+      this.logger.info("malformed versioned card action ignored");
       return;
     }
+    if (!value.c) return;
 
     // Older cards (pre-topic) carry no `th`; `?? null` maps them to the chat's
     // main conversation, matching how those runtimes are keyed.
@@ -2648,6 +2769,29 @@ export class LarkBridge {
       value.k,
       value.t,
     );
+  }
+
+  private handleCancelV2(value: StrictCancelV2): void {
+    const runtime = this.chats.get(runtimeKey(value.c, value.th ?? null));
+    if (!runtime) return;
+    const result = runtime.consumeCancelAction({
+      promptToken: value.p,
+      segmentToken: value.s,
+      actionToken: value.a,
+    });
+    this.logger.info({ result }, "v2 cancel action consumed");
+  }
+
+  private handlePermissionV2(value: StrictPermissionV2): void {
+    const runtime = this.chats.get(runtimeKey(value.c, value.th ?? null));
+    if (!runtime) return;
+    const result = runtime.consumePermissionAction({
+      promptToken: value.p,
+      permissionToken: value.q,
+      requestId: value.r,
+      optionId: value.o,
+    });
+    this.logger.info({ result }, "v2 permission action consumed");
   }
 
   private handleCancelButton(chatId: string, threadId: string | null): void {

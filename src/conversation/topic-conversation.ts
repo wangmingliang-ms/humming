@@ -126,6 +126,10 @@ class ResponseCard {
     this.timeline = [...entries];
   }
 
+  get isEmpty(): boolean {
+    return this.timeline.length === 0;
+  }
+
   append(entry: TimelineEntry): void {
     this.timeline.push(entry);
   }
@@ -152,14 +156,17 @@ class ResponseCard {
 class ResponseLifecycle {
   private stateValue: ResponseState;
   private readonly responseCards: ResponseCard[];
+  private readonly terminalToolIds = new Set<string>();
+  private profileValue: SessionCardMeta | null;
 
   constructor(
     readonly id: ResponseId,
     readonly token: ResponseToken,
-    readonly profile: SessionCardMeta | null,
+    profile: SessionCardMeta | null,
     initialCardId: ResponseCardId,
     phase: "received" | "interrupting",
   ) {
+    this.profileValue = profile;
     this.stateValue = { kind: "in_progress", phase, activity: "thinking" };
     this.responseCards = [new ResponseCard(initialCardId, "initial")];
   }
@@ -177,6 +184,11 @@ class ResponseLifecycle {
   transition(phase: ResponsePhase): void {
     if (this.stateValue.kind === "terminal") throw new Error("terminal response is absorbing");
     this.stateValue = { kind: "in_progress", phase, activity: "thinking" };
+  }
+
+  setProfile(profile: SessionCardMeta | null): void {
+    if (this.stateValue.kind === "terminal") throw new Error("terminal response rejects profile");
+    this.profileValue = profile;
   }
 
   setActivity(activity: ResponseActivity): void {
@@ -199,6 +211,10 @@ class ResponseLifecycle {
 
   append(entry: TimelineEntry): void {
     if (this.stateValue.kind === "terminal") throw new Error("terminal response rejects updates");
+    if (entry.kind === "tool" && (entry.status === "completed" || entry.status === "failed")) {
+      if (this.terminalToolIds.has(entry.toolCallId)) return;
+      this.terminalToolIds.add(entry.toolCallId);
+    }
     this.tail.append(entry);
   }
 
@@ -208,7 +224,7 @@ class ResponseLifecycle {
       id: this.id,
       token: this.token,
       state: Object.freeze({ ...this.stateValue }),
-      profile: this.profile === null ? null : Object.freeze({ ...this.profile }),
+      profile: this.profileValue === null ? null : Object.freeze({ ...this.profileValue }),
       cards: Object.freeze(this.responseCards.map((card) => card.snapshot(card.id === tailId))),
     });
   }
@@ -254,6 +270,9 @@ export class TopicConversation {
 
   accept(input: AcceptTurnInput): ResponseId {
     this.assertUnique(input);
+    if (this.pendingBatchValue?.state === "collecting") {
+      return this.appendCollectingBatch(input);
+    }
     const phase = this.executionOwner === null ? "received" : "interrupting";
     const response = new ResponseLifecycle(
       input.responseId,
@@ -264,6 +283,7 @@ export class TopicConversation {
     );
     this.turns.push(new Turn(input.turnId, input.request, response));
     if (this.executionOwner !== null) {
+      this.expireCurrentPermissionFor(this.executionOwner);
       this.pendingBatchValue = {
         messages: [input.request],
         carrierResponseId: input.responseId,
@@ -275,33 +295,36 @@ export class TopicConversation {
   }
 
   appendToInterruptBatch(input: AppendToBatchInput): ResponseId {
-    const batch = this.pendingBatchValue;
-    if (batch === null || batch.state !== "collecting") throw new Error("no collecting batch");
-    const previousCarrier = this.response(batch.carrierResponseId);
-    previousCarrier.seal("merged");
-    const response = new ResponseLifecycle(
-      input.responseId,
-      input.responseToken,
-      input.profile,
-      input.initialCardId,
-      "interrupting",
-    );
-    this.turns.push(new Turn(input.turnId, input.request, response));
-    batch.messages.push(input.request);
-    batch.carrierResponseId = input.responseId;
-    this.assertInvariants();
-    return input.responseId;
+    if (this.pendingBatchValue?.state !== "collecting") throw new Error("no collecting batch");
+    this.assertUnique(input);
+    return this.appendCollectingBatch(input);
   }
 
   prepare(responseId: ResponseId): void {
     if (this.executionOwner !== null) throw new Error("cannot prepare while execution is owned");
-    this.response(responseId).transition("preparing");
+    const batch = this.pendingBatchValue;
+    if (batch !== null && (batch.state !== "sealed" || batch.carrierResponseId !== responseId)) {
+      throw new Error("only a sealed batch carrier may prepare");
+    }
+    const response = this.response(responseId);
+    if (response.state.kind !== "in_progress") throw new Error("terminal response cannot prepare");
+    if (response.state.phase !== "received" && response.state.phase !== "interrupting") {
+      throw new Error("response is not waiting to prepare");
+    }
+    response.transition("preparing");
     this.assertInvariants();
   }
 
   activate(responseId: ResponseId, token: ActionToken): void {
     if (this.executionOwner !== null) throw new Error("execution is already owned");
     const response = this.response(responseId);
+    if (response.state.kind !== "in_progress" || response.state.phase !== "preparing") {
+      throw new Error("only a preparing response may activate");
+    }
+    const batch = this.pendingBatchValue;
+    if (batch !== null && (batch.state !== "sealed" || batch.carrierResponseId !== responseId)) {
+      throw new Error("only the sealed batch carrier may activate");
+    }
     response.transition("active");
     this.executionOwner = responseId;
     this.cancel = { kind: "cancel", responseId, cardId: response.tail.id, token };
@@ -328,6 +351,11 @@ export class TopicConversation {
     this.assertInvariants();
   }
 
+  setProfile(responseId: ResponseId, profile: SessionCardMeta | null): void {
+    this.response(responseId).setProfile(profile);
+    this.assertInvariants();
+  }
+
   setActivity(responseId: ResponseId, activity: ResponseActivity): void {
     if (this.executionOwner !== responseId) throw new Error("only execution owner has activity");
     this.response(responseId).setActivity(activity);
@@ -350,6 +378,9 @@ export class TopicConversation {
     if (this.executionOwner !== input.responseId) throw new Error("permission requires owner");
     if (this.currentPermission?.status === "current") throw new Error("permission already current");
     const response = this.response(input.responseId);
+    if (response.tail.isEmpty) {
+      response.append({ kind: "notice", text: "等待权限处理完成。" });
+    }
     this.rotateTail(input.responseId, input.continuationCardId, "permission_continuation", null);
     response.transition("awaiting_permission");
     this.currentPermission = {
@@ -400,6 +431,11 @@ export class TopicConversation {
     if (permission !== null && permission.responseId === responseId) {
       this.currentPermission = { ...permission, status: "display_failed" };
     }
+    const response = this.response(responseId);
+    response.append({
+      kind: "notice",
+      text: "权限请求无法显示，本次执行失败。",
+    });
     this.seal(responseId, "failed");
   }
 
@@ -504,6 +540,37 @@ export class TopicConversation {
       carrierResponseId: batch.carrierResponseId,
       state: batch.state,
     });
+  }
+
+  private appendCollectingBatch(input: AppendToBatchInput): ResponseId {
+    const batch = this.pendingBatchValue;
+    if (batch === null || batch.state !== "collecting") throw new Error("no collecting batch");
+    const previousCarrier = this.response(batch.carrierResponseId);
+    previousCarrier.seal("merged");
+    const response = new ResponseLifecycle(
+      input.responseId,
+      input.responseToken,
+      input.profile,
+      input.initialCardId,
+      "interrupting",
+    );
+    this.turns.push(new Turn(input.turnId, input.request, response));
+    batch.messages.push(input.request);
+    batch.carrierResponseId = input.responseId;
+    this.assertInvariants();
+    return input.responseId;
+  }
+
+  private expireCurrentPermissionFor(responseId: ResponseId): void {
+    const permission = this.currentPermission;
+    if (
+      permission === null ||
+      permission.responseId !== responseId ||
+      permission.status !== "current"
+    ) {
+      return;
+    }
+    this.currentPermission = { ...permission, status: "expired" };
   }
 
   private response(id: ResponseId): ResponseLifecycle {

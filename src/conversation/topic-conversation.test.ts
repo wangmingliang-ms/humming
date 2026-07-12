@@ -283,14 +283,40 @@ describe("TopicConversation canonical lifecycle", () => {
       continuationActionToken: id.action("action-a-2"),
     });
     const b = accept(topic, "b");
-
-    topic.revokePermissionForInterrupt(a);
     const snapshot = topic.snapshot();
 
     expect(snapshot.permission).toMatchObject({ status: "expired" });
     expect(snapshot.executionOwnerResponseId).toBe(a);
     expect(snapshot.cancelAuthority).toMatchObject({ kind: "cancel", responseId: a });
     expect(response(topic, b).state).toMatchObject({ kind: "in_progress", phase: "interrupting" });
+  });
+
+  it("keeps consecutive permission continuation intermediates non-empty", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.requestPermission({
+      responseId: a,
+      permissionToken: id.permission("permission-1"),
+      requestId: "permission-request-1",
+      allowedOptionIds: new Set(["allow"]),
+      continuationCardId: id.card("card-a-2"),
+      continuationActionToken: id.action("action-a-2"),
+    });
+    topic.resolvePermission(id.permission("permission-1"), "allow");
+    topic.requestPermission({
+      responseId: a,
+      permissionToken: id.permission("permission-2"),
+      requestId: "permission-request-2",
+      allowedOptionIds: new Set(["allow"]),
+      continuationCardId: id.card("card-a-3"),
+      continuationActionToken: id.action("action-a-3"),
+    });
+
+    expect(response(topic, a).cards[1]?.entries).toContainEqual({
+      kind: "notice",
+      text: "等待权限处理完成。",
+    });
   });
 
   it("fails the Response when its mandatory Permission Card cannot be displayed", () => {
@@ -314,6 +340,55 @@ describe("TopicConversation canonical lifecycle", () => {
       cancelAuthority: { kind: "none" },
       permission: { status: "display_failed" },
     });
+    expect(response(topic, a).cards.at(-1)?.entries).toContainEqual({
+      kind: "notice",
+      text: "权限请求无法显示，本次执行失败。",
+    });
+  });
+
+  it("routes repeated accept calls into the same collecting batch", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    const b = accept(topic, "b");
+    const c = accept(topic, "c");
+
+    expect(response(topic, b).state).toEqual({ kind: "terminal", outcome: "merged" });
+    expect(topic.snapshot().pendingBatch).toMatchObject({
+      messages: [{ content: "b" }, { content: "c" }],
+      carrierResponseId: c,
+      state: "collecting",
+    });
+    expect(() => topic.prepare(c)).toThrow("cannot prepare while execution is owned");
+  });
+
+  it("does not duplicate terminal tool results across Cards", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "tool-1",
+      title: "Build",
+      status: "in_progress",
+    });
+    topic.rotateTail(a, id.card("card-a-2"), "content_rotation", id.action("action-a-2"));
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "tool-1",
+      title: "Build",
+      status: "completed",
+    });
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "tool-1",
+      title: "Build duplicate",
+      status: "completed",
+    });
+
+    expect(response(topic, a).cards.at(-1)?.entries).toEqual([
+      { kind: "tool", toolCallId: "tool-1", title: "Build", status: "completed" },
+    ]);
   });
 
   it("rejects late updates and stale Cancel after terminal", () => {

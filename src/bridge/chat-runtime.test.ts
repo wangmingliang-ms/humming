@@ -102,12 +102,19 @@ describe("ChatRuntime prompt preparation", () => {
       expect(opts.client).toBeInstanceOf(HummingClient);
       return fake.agent;
     });
+    const presenter = {
+      sendUnifiedCard: vi.fn(async (_messageId: string, state: UnifiedCardState) => {
+        expect(state.cancellable).toBe(false);
+        return "card";
+      }),
+      updateUnifiedCard: vi.fn(async (_messageId: string, state: UnifiedCardState) => {
+        expect(state.cancellable).toBe(false);
+        return true;
+      }),
+    } as unknown as LarkPresenter;
     const runtime = new ChatRuntime({
       ...opts(),
-      presenter: {
-        sendUnifiedCard: vi.fn(async () => "card"),
-        updateUnifiedCard: vi.fn(async () => true),
-      } as unknown as LarkPresenter,
+      presenter,
       sessionStore: { getLatest: vi.fn(async () => null) } as unknown as SessionStore,
     });
 
@@ -561,7 +568,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       interval: 20,
     });
     expect(states.map((state) => state.status)).toContain("preparing");
-    expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: true });
+    expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: false });
 
     fake.resolvePrompt("end_turn");
     await vi.waitFor(() => expect(states.at(-1)?.status).toBe("complete"), {
@@ -646,7 +653,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       },
       { timeout: 1_000, interval: 20 },
     );
-    expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: true });
+    expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: false });
   });
 
   it("respawns and preserves the queued follow-up if interrupt closes the agent", async () => {
@@ -688,7 +695,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       { timeout: 1_000, interval: 20 },
     );
     expect(notices.some((notice) => notice.title === "⚠️ Agent 异常退出")).toBe(false);
-    expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: true });
+    expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: false });
   });
 
   it("marks the queued message card terminal when the queued message is cancelled", async () => {

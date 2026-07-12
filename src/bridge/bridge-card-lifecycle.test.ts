@@ -48,7 +48,7 @@ describe("LarkBridge Cancel card compatibility", () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it("still cancels from an unversioned legacy action", async () => {
+  it("makes unversioned legacy Cancel actions inert", () => {
     const bridge = makeBridge();
     const cancel = vi.fn(async () => {});
     const get = vi.fn(() => ({ cancel }));
@@ -56,7 +56,8 @@ describe("LarkBridge Cancel card compatibility", () => {
 
     dispatchCardAction(bridge, { cancel: true, c: "chat", th: "topic" });
 
-    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    expect(get).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
   });
 });
 

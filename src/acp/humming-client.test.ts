@@ -1114,6 +1114,36 @@ describe("HummingClient card-v2 conversation rendering", () => {
     ]);
   });
 
+  it("labels tool-only byte compaction as tool activity rather than reply text", async () => {
+    const ops: RenderOp[] = [];
+    const client = makeClient(ops);
+
+    await client.sessionUpdate({
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool_large",
+        title: "Large tool",
+        kind: "execute",
+        status: "pending",
+        rawInput: { command: "x".repeat(CARD_MARKDOWN_ELEMENT_BYTE_LIMIT + 100) },
+      },
+    });
+    await waitForFlush();
+
+    const latest = ops.findLast(
+      (op): op is Extract<RenderOp, { kind: "updateUnified" | "sendUnified" }> =>
+        op.kind === "updateUnified" || op.kind === "sendUnified",
+    );
+    expect(latest?.state.entries.at(0)).toMatchObject({
+      kind: "text",
+      text: expect.stringContaining("早期工具活动较长"),
+    });
+    expect(latest?.state.entries.at(0)).not.toMatchObject({
+      text: expect.stringContaining("回复内容"),
+    });
+  });
+
   it("folds long final output even when no later tool call arrives", async () => {
     const ops: RenderOp[] = [];
     const client = makeClient(ops);

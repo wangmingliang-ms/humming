@@ -117,10 +117,25 @@ function compactionNoticeReason(reason: CardCompactionReason): string {
   }
 }
 
-function compactedEntry(removedBytes: number, reason: CardCompactionReason): TimelineEntry {
+function compactionSubject(entries: readonly TimelineEntry[]): string {
+  const hasReplyText = entries.some((entry) => entry.kind === "text");
+  const hasThought = entries.some((entry) => entry.kind === "thought");
+  const hasTool = entries.some((entry) => entry.kind === "tool");
+  if (hasReplyText) return "回复内容";
+  if (hasThought && hasTool) return "早期思考与工具活动";
+  if (hasThought) return "早期思考活动";
+  if (hasTool) return "早期工具活动";
+  return "早期活动";
+}
+
+function compactedEntry(
+  removedEntries: readonly TimelineEntry[],
+  reason: CardCompactionReason,
+): TimelineEntry {
+  const removedBytes = timelineTextSize(removedEntries);
   return {
     kind: "text",
-    text: `${CARD_COMPACTION_NOTICE_PREFIX}：${compactionNoticeReason(reason)}折叠约 ${removedBytes.toLocaleString("en-US")} UTF-8 bytes。完整内容请查看 Agent 本地会话记录或日志。`,
+    text: `_${compactionSubject(removedEntries)}较长，已在安全边界折叠_：${compactionNoticeReason(reason)}折叠约 ${removedBytes.toLocaleString("en-US")} UTF-8 bytes。完整内容请查看 Agent 本地会话记录或日志。`,
   };
 }
 
@@ -938,15 +953,14 @@ export class HummingClient implements acp.Client {
     if (kept.length === entries.length) return [...entries];
     const keptCount = kept.length;
     const removed = entries.slice(0, entries.length - keptCount);
-    const removedBytes = timelineTextSize(removed);
-    return [compactedEntry(removedBytes, reason), ...kept];
+    return [compactedEntry(removed, reason), ...kept];
   }
 
   private compactEntriesForStructure(entries: readonly TimelineEntry[]): TimelineEntry[] {
     if (entries.length <= CARD_TIMELINE_ENTRY_LIMIT) return [...entries];
     const kept = entries.slice(-(CARD_TIMELINE_ENTRY_LIMIT - 1));
     const removed = entries.slice(0, entries.length - kept.length);
-    return [compactedEntry(timelineTextSize(removed), "emergency"), ...kept];
+    return [compactedEntry(removed, "emergency"), ...kept];
   }
 
   private upsertTool(

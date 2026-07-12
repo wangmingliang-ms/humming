@@ -2774,7 +2774,10 @@ export class LarkBridge {
     const threadId = value.th ?? null;
 
     if (value.cancel === true) {
-      this.handleCancelButton(value.c, threadId);
+      this.logger.info(
+        { chatId: value.c, threadId },
+        "tokenless legacy cancel ignored; use /cancel or a versioned active card",
+      );
       return;
     }
 
@@ -2818,18 +2821,6 @@ export class LarkBridge {
       optionId: value.o,
     });
     this.logger.info({ result }, "v2 permission action consumed");
-  }
-
-  private handleCancelButton(chatId: string, threadId: string | null): void {
-    const runtime = this.chats.get(runtimeKey(chatId, threadId));
-    if (!runtime) {
-      this.logger.info({ chatId, threadId }, "cancel button clicked but no active runtime");
-      return;
-    }
-    this.logger.info({ chatId, threadId }, "cancel button clicked");
-    runtime
-      .cancel()
-      .catch((err) => this.logger.warn({ err, chatId, threadId }, "cancel via card button failed"));
   }
 
   private handlePermissionCardAction(

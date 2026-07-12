@@ -531,7 +531,7 @@ export class ChatRuntime {
       logger: this.logger,
       showThoughts: this.opts.showThoughts,
       showTools: this.opts.showTools,
-      showCancelButton: this.opts.showCancelButton,
+      showCancelButton: this.conversationCardFeature.v2Enabled && this.opts.showCancelButton,
       permissionTimeoutMs: this.opts.permissionTimeoutMs,
       idleStatusCardMs: this.opts.idleStatusCardMs,
       conversationCardFeature: this.conversationCardFeature,

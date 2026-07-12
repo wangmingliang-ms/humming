@@ -40,6 +40,36 @@ const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> 
   failed: { content: "⚠️ 出错", template: "red" },
 };
 
+const STATUS_ICON: Record<AgentStatus, string> = {
+  received: "📩",
+  queued: "⏳",
+  interrupting: "⚡",
+  preparing: "🔄",
+  thinking: "💭",
+  waiting: "⏳",
+  calling_tool: "🔄",
+  responding: "✍️",
+  sealed: "",
+  complete: "✅",
+  cancelled: "⛔",
+  failed: "⚠️",
+};
+
+const STATUS_SUMMARY_DETAIL: Record<AgentStatus, string> = {
+  received: "Humming 已收到消息",
+  queued: "等待处理",
+  interrupting: "正在中断当前任务",
+  preparing: "正在启动或连接 Agent",
+  thinking: "Agent 正在思考",
+  waiting: "Agent 仍在处理",
+  calling_tool: "Agent 正在处理",
+  responding: "Agent 正在回复",
+  sealed: "对话片段",
+  complete: "已结束",
+  cancelled: "已取消",
+  failed: "出错",
+};
+
 const CONVERSATION_SUMMARY_CHAR_LIMIT = 80;
 
 const EMPTY_OUTPUT_HEADER = { content: "⚠️ 空回复", template: "orange" } as const;
@@ -401,10 +431,53 @@ function assertNeverConversationEntry(entry: never): never {
   throw new Error(`unexpected semantic timeline entry: ${String(entry)}`);
 }
 
-function unifiedCardSummary(state: UnifiedCardState, fallback: string): string {
-  if (state.status !== "sealed") return fallback;
+type SummaryEntry = TimelineEntry | ConversationTimelineEntry;
+
+function statusSummary(status: AgentStatus, entries: readonly SummaryEntry[]): string {
+  const activityDetail = currentActivityDetail(status, entries);
+  const detail = activityDetail ? stripMarkdownForSummary(activityDetail) : "";
+  const summaryDetail = detail || STATUS_SUMMARY_DETAIL[status];
+  const icon = STATUS_ICON[status];
+  return truncateSummary(icon ? `${icon} ${summaryDetail}` : summaryDetail);
+}
+
+function currentActivityDetail(
+  status: AgentStatus,
+  entries: readonly SummaryEntry[],
+): string | undefined {
+  if (status === "calling_tool") {
+    const tool = entries
+      .slice()
+      .reverse()
+      .find(
+        (entry) =>
+          entry.kind === "tool" && (entry.status === "pending" || entry.status === "in_progress"),
+      );
+    return tool?.kind === "tool" ? `${tool.toolKind}: ${tool.title}` : undefined;
+  }
+  if (status === "thinking") {
+    const thought = entries
+      .slice()
+      .reverse()
+      .find((entry) => entry.kind === "thought");
+    return thought?.kind === "thought" ? thought.text : undefined;
+  }
+  if (status === "responding") {
+    const text = entries
+      .slice()
+      .reverse()
+      .find((entry) => entry.kind === "text");
+    return text?.kind === "text" ? text.text : undefined;
+  }
+  return undefined;
+}
+
+function unifiedCardSummary(state: UnifiedCardState): string {
+  if (state.status !== "sealed") return statusSummary(state.status, state.entries);
   const firstText = firstSummaryText(state.entries);
-  return firstText ? truncateSummary(stripMarkdownForSummary(firstText)) : fallback;
+  return firstText
+    ? truncateSummary(stripMarkdownForSummary(firstText))
+    : STATUS_SUMMARY_DETAIL.sealed;
 }
 
 function firstSummaryText(entries: readonly TimelineEntry[]): string | undefined {
@@ -527,7 +600,7 @@ function buildUnifiedCard(state: UnifiedCardState): object {
     showHeader ? header.content : null,
     showHeader ? header.template : null,
     elements,
-    unifiedCardSummary(state, header.content),
+    emptyTerminal ? EMPTY_OUTPUT_HEADER.content : unifiedCardSummary(state),
   );
 }
 
@@ -631,12 +704,17 @@ function semanticSummary(
       return text ? truncateSummary(text) : "对话片段";
     }
     case "queued":
+      return statusSummary("queued", view.entries);
     case "interrupting":
+      return statusSummary("interrupting", view.entries);
     case "starting":
+      return statusSummary("preparing", view.entries);
     case "orphaned":
+      return header?.content ?? "对话片段";
     case "active":
+      return statusSummary(view.header, view.entries);
     case "terminal":
-      return header!.content;
+      return header?.content ?? semanticTerminalHeader(view.header).content;
     default:
       return assertNeverConversationView(view);
   }

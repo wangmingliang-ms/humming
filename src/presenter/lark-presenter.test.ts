@@ -127,10 +127,10 @@ describe("LarkCardPresenter card summary", () => {
     });
 
     expect(cards.map((card) => card.config?.summary?.content)).toEqual([
-      "📩 消息已收到",
-      "🔄 准备中...",
-      "💭 思考中...",
-      "🔄 处理中...",
+      "📩 Humming 已收到消息",
+      "🔄 正在启动或连接 Agent",
+      "💭 Agent 正在思考",
+      "🔄 read: Read file",
       "⏳ 待确认",
       "✅ 已结束",
     ]);
@@ -139,6 +139,21 @@ describe("LarkCardPresenter card summary", () => {
     expect(cards[2]?.body?.elements?.[0]?.content).toContain("已转发给 Agent");
     expect(cards[3]?.header?.title?.content).toBe("🔄 处理中...");
     expect(cards[4]?.header?.title?.content).toBe("⏳ 待确认");
+  });
+
+  it("surfaces the latest thought in a thinking summary", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+
+    await presenter.sendUnifiedCard("om_1", {
+      status: "thinking",
+      entries: [{ kind: "thought", text: "**Inspecting** the request" }],
+      cancellable: true,
+      chatId: "oc_1",
+      threadId: null,
+    });
+
+    expect(cards[0]?.config?.summary?.content).toBe("💭 Inspecting the request");
   });
 
   it("renders sealed conversation fragments without a status-colored header", async () => {
@@ -463,7 +478,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
       title: { tag: "plain_text", content: "✍️ 回复中..." },
       template: "blue",
     });
-    expect(cards[0]?.config?.summary?.content).toBe("✍️ 回复中...");
+    expect(cards[0]?.config?.summary?.content).toBe("✍️ answer");
     expect(cards[0]?.body?.elements?.filter((element) => element.tag === "button")).toEqual([
       expect.objectContaining({
         text: { tag: "plain_text", content: "中断当前任务" },
@@ -566,11 +581,11 @@ describe("LarkCardPresenter semantic conversation cards", () => {
       "✅ 已结束",
     ]);
     expect(cards.map((card) => card.config?.summary?.content)).toEqual([
-      "⏳ 消息已排队",
+      "⏳ 等待处理",
       "⚡ 正在中断当前任务",
-      "🔄 准备中...",
+      "🔄 正在启动或连接 Agent",
       "对话片段",
-      "✍️ 回复中...",
+      "✍️ answer",
       "history",
       "✅ 已结束",
     ]);

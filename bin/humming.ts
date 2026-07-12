@@ -3053,6 +3053,9 @@ async function runCardsV2(args: ParsedArgs, operations?: CardsV2Operations): Pro
   const homeDir = resolveHomeDir(args.home);
   const settingsPath = resolveSettingsPath(args.configPath, homeDir);
   const launch = action === "rollback" ? readLaunchArgv(homeDir) : null;
+  if (action === "rollback" && operations === undefined && launch === null) {
+    throw new CliError("rollback requires a saved launch descriptor");
+  }
   const ops = operations ?? createCardsV2Operations(args, homeDir, settingsPath, launch);
 
   if (action === "enable") {

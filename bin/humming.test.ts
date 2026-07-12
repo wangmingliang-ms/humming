@@ -192,6 +192,39 @@ describe("conversation card lifecycle feature settings", () => {
     expect(calls).toEqual([]);
   });
 
+  it("online disable persists false, rereads, then restarts without status/stop/start", async () => {
+    const calls: string[] = [];
+    let persisted = true;
+    await runCardsV2(
+      { command: "cards-v2", cardsV2Action: "disable", agentExtraArgs: [] },
+      {
+        queryStatus: async () => {
+          calls.push("status");
+          return { cardActionSchemaVersion: 2, conversationCardLifecycleV2Enabled: true };
+        },
+        persist: (enabled) => {
+          calls.push(`persist:${enabled}`);
+          persisted = enabled;
+        },
+        reread: () => {
+          calls.push("reread");
+          return persisted;
+        },
+        restart: async () => {
+          calls.push("restart");
+        },
+        stop: async () => {
+          calls.push("stop");
+        },
+        start: async () => {
+          calls.push("start");
+        },
+        validateCheckout: () => "/target/dist/bin/humming.js",
+      },
+    );
+    expect(calls).toEqual(["persist:false", "reread", "restart"]);
+  });
+
   it("offline disable persists and rereads without touching control or process APIs", async () => {
     const calls: string[] = [];
     let persisted = true;
@@ -215,9 +248,15 @@ describe("conversation card lifecycle feature settings", () => {
           calls.push("reread");
           return persisted;
         },
-        restart: async () => calls.push("restart"),
-        stop: async () => calls.push("stop"),
-        start: async () => calls.push("start"),
+        restart: async () => {
+          calls.push("restart");
+        },
+        stop: async () => {
+          calls.push("stop");
+        },
+        start: async () => {
+          calls.push("start");
+        },
         validateCheckout: () => {
           calls.push("validate");
           return "/target/dist/bin/humming.js";

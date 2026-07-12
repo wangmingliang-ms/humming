@@ -557,7 +557,12 @@ export class ChatRuntime {
     );
     const bootstrapRoute = router.activateBootstrap(
       latest && !latest.profileOnly ? "resume" : "new",
-      { sessionUpdate: (params) => client.sessionUpdate(params) },
+      {
+        sessionUpdate: async (params) => {
+          const update = params.update;
+          if (update.sessionUpdate === "session_info_update") applySessionInfo(update);
+        },
+      },
     );
     client.setContext(firstMessage.messageId, firstMessage.chatId, this.opts.threadId);
     client.adoptProgressCard(firstMessage.progressCardId);
@@ -925,6 +930,14 @@ export class ChatRuntime {
         } finally {
           if (pending.prepared !== undefined && this.activePreparedPrompt === pending.prepared) {
             this.activePreparedPrompt = null;
+          }
+          if (!state.router.isConnectionHealthy()) {
+            this.logger.warn(
+              "quarantined ACP callback route; restarting connection before next prompt",
+            );
+            const queued = state.queue.splice(0);
+            this.queuedAfterRespawn.push(...queued);
+            this.state = null;
           }
           this.promptInFlight = false;
           this.cancelRequested = false;

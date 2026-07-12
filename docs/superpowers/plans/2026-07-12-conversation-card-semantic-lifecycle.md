@@ -48,6 +48,8 @@
 - Modify `templates/home/settings.back.json`: document the disabled-by-default feature gate.
 - Modify `bin/humming.ts` and `bin/process-control.ts`: feature enable/disable and rollback-safe restart commands.
 - Create `tsconfig.type-tests.json` and `type-tests/conversation-card-view.test-d.ts`: compile-time illegal-state checks.
+- Create `src/presenter/legacy-conversation-card-adapter.ts`: the only gate-off wrapper allowed to call legacy `sendUnifiedCard` / `updateUnifiedCard` after cutover preparation.
+- Create `src/bridge/conversation-card-feature.ts`: injectable gate contract and disabled default used before persisted configuration exists.
 
 ---
 
@@ -82,7 +84,18 @@
 
 - [ ] **Step 1: Write failing compile/runtime invariant tests**
 
-Put `@ts-expect-error` checks in `type-tests/conversation-card-view.test-d.ts`, which is included by `tsconfig.type-tests.json`; ordinary `*.test.ts` files are excluded from the production `tsconfig.json` and are not valid type tests.
+Create exactly:
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": "." },
+  "include": ["src/presenter/conversation-card-view.ts", "type-tests/**/*.test-d.ts"],
+  "exclude": ["node_modules", "dist"]
+}
+```
+
+Put `@ts-expect-error` checks in `type-tests/conversation-card-view.test-d.ts`. First run `npx tsc -p tsconfig.type-tests.json --noEmit --listFiles` and assert the fixture path appears. Include one deliberate unused `@ts-expect-error` during RED to prove the fixture is checked, then replace it with the actual illegal archived/terminal action assertions for GREEN.
 
 ```ts
 const archived: ConversationCardView = {
@@ -134,42 +147,46 @@ Commit message: `feat(cards): define semantic conversation views`.
 - Produces:
 
 ```ts
-createPromptLifecycle(input): PromptLifecycleState
-reducePromptLifecycle(state, event): TransitionResult
-viewForPromptState(state): ConversationCardView | null
+interface TransitionDiagnostic {
+  readonly promptSequence: number;
+  readonly segmentSequence: number | null;
+  readonly from: SemanticPhase;
+  readonly to: SemanticPhase;
+  readonly event: ConversationCardEvent["type"];
+  readonly entryCount: number;
+  readonly utf8Bytes: number;
+  readonly actionRevoked: boolean;
+  readonly staleReason?: StaleEventReason;
+}
+interface TransitionResult {
+  readonly next: PromptLifecycleState;
+  readonly effects: readonly CardEffect[];
+  readonly diagnostic: TransitionDiagnostic;
+}
+createPromptLifecycle(input: CreatePromptLifecycleInput): PromptLifecycleState
+reducePromptLifecycle(state: PromptLifecycleState, event: ConversationCardEvent): TransitionResult
+viewForPromptState(state: PromptLifecycleState): ConversationCardView | null
 ```
 
-- [ ] **Step 1: RED — legal transition table**
+- [ ] **Step 1: RED/GREEN — create and queued/starting transitions**
 
-Table-driven tests:
+Write only creation plus `queued -> starting` / `interrupting -> starting` tests. Run RED because reducer functions do not exist; implement the smallest state/event shapes to make these tests GREEN; rerun.
 
-```ts
-it.each([
-  ["queued", event.starting(), "starting"],
-  ["interrupting", event.starting(), "starting"],
-  ["starting", event.forwarded(), "active"],
-  ["active", event.archive("rotation"), "active"],
-  ["active", event.finish("complete"), "terminal"],
-])("moves %s through %o to %s", ...);
-```
+- [ ] **Step 2: RED/GREEN — forwarded, archive, and terminal absorption**
 
-Assert terminal is absorbing and stale prompt/segment/timer/render generations return `ignored` effects.
+Add one failing behavior at a time: starting->active with action token, non-empty archive/open next segment, finish from each live phase, terminal absorbing, stale prompt/segment rejection. After each failing assertion, implement only that transition and rerun before adding the next test.
 
-- [ ] **Step 2: RED — tool ledger matrix and normalization**
+- [ ] **Step 3: RED/GREEN — ToolLedger matrix**
 
-Cover absent/pending/in-progress/completed/failed/interrupted matrix, direct pending->completed, initial completed, duplicate terminal, cross-segment completion marker, and normalization for complete/cancelled/failed/superseded/abandoned.
+Add matrix rows incrementally: absent/pending, pending->in_progress, direct pending->completed/failed, initial terminal, duplicate/conflicting terminal, cross-segment marker, then terminal normalization. Each row must fail for semantic output—not missing symbols—before its minimal implementation.
 
-- [ ] **Step 3: RED — render generation and idle semantics**
+- [ ] **Step 4: RED/GREEN — render timer and idle semantics**
 
-Assert active updates advance desired state while maintaining at most one timer. The timer reads the latest generation/view when it fires; updates after its callback clears the scheduled marker create a second timer. Archive/permission/finish invalidate pending flush. Assert an already-reduced idle slot closed by finish cannot target a new owner.
+First add one-timer/latest-view RED and implement it. Then add update-after-callback RED and implement second-timer scheduling. Then add archive/permission/finish invalidation and already-reduced-idle close tests individually.
 
-- [ ] **Step 4: RED — deterministic generated sequences and diagnostics**
+- [ ] **Step 5: RED/GREEN — diagnostics and seeded generated sequences**
 
-Use a seeded local PRNG to generate thousands of legal/illegal event sequences; after every event assert view invariants and terminal absorption. Assert every accepted/rejected transition emits bounded diagnostics with runtime-local prompt/segment sequence, from/to phase, event, entry/byte counts, delivery outcome placeholder, action revocation, and stale reason—never raw tokens, card content, IDs, or paths.
-
-- [ ] **Step 5: Implement the minimal pure reducer**
-
-Keep this file free of presenter/network calls. Use exhaustive switches and `assertNever`. Store prompt-level ToolLedger separately from current segment entries.
+Add diagnostic shape/serialization tests, implement bounded `TransitionDiagnostic`, then add the seeded sequence generator. After every generated event assert view invariants and terminal absorption; serializer tests reject raw tokens, content, IDs, and paths. Delivery outcome is intentionally not in reducer diagnostics and is recorded by Task 5's delivery diagnostic port.
 
 - [ ] **Step 6: Verify**
 
@@ -198,24 +215,24 @@ class PromptCallbackRouter implements acp.Client {
   activate(promptToken: PromptToken, callbacks: PromptScopedCallbacks): PromptRouteHandle;
   close(handle: PromptRouteHandle): void;
   isConnectionHealthy(): boolean;
-  requestPermission(params): Promise<acp.RequestPermissionResponse>;
-  sessionUpdate(params): void;
+  requestPermission(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse>;
+  sessionUpdate(params: acp.SessionNotification): Promise<void>;
 }
 ```
 
 - `HummingClient` and `PromptCardController` are active-route callbacks, not second ACP clients.
 
-- [ ] **Step 1: RED — entry-time route capture**
+- [ ] **Step 1: RED/GREEN — entry-time route capture**
 
-Use a deferred callback: enter `sessionUpdate` under prompt A, close A and activate B before the callback resolves, and assert the update still carries A. Verify session metadata goes only to the session delegate.
+Write the route-capture test, run RED, implement only activate/close/sessionUpdate capture, then run GREEN. Use a deferred callback: enter `sessionUpdate` under prompt A, close A and activate B before the callback resolves, and assert the update still carries A. Then add/implement the session-metadata delegate case.
 
-- [ ] **Step 2: RED — ACP response boundary and protocol violations**
+- [ ] **Step 2: RED/GREEN — ACP response boundary and protocol violations**
 
-Assert callback messages that enter before the prompt response belong to the current route. After route close, a session update is rejected and marks the connection unhealthy; a permission request immediately returns `{ outcome: { outcome: "cancelled" } }` and marks unhealthy. No callback is assigned to the next prompt by current-token lookup.
+Add update-after-close RED and implement unhealthy quarantine; then add permission-after-close RED and implement immediate `{ outcome: { outcome: "cancelled" } }`; rerun after each. No callback is assigned to the next prompt by current-token lookup.
 
-- [ ] **Step 3: RED — cancellation ordering**
+- [ ] **Step 3: RED/GREEN — cancellation ordering**
 
-Keep route active after `session/cancel`, accept trailing updates, cancel unresolved permission requests, and close only when the cancelled prompt response arrives.
+Add the trailing-update-after-cancel test, implement route retention until prompt response, rerun; then add unresolved-permission cancellation and implement it.
 
 - [ ] **Step 4: Implement router and connection construction**
 
@@ -242,31 +259,40 @@ Commit message: `feat(acp): scope callbacks to protocol prompt turns`.
 - Produces:
 
 ```ts
-deliver(owner, view)
-close(owner, nonActionableView): OwnershipToken
-handoffToPermission(owner, patchPermission, sendPermission): Promise<PermissionHandoffResult>
-reconcileSuperseded(cardId, orphanedView)
+interface DeliveryDiagnostic {
+  readonly ownerSequence: number;
+  readonly operation: "adopt" | "send" | "patch" | "close" | "permission_reuse" | "permission_send" | "reconcile";
+  readonly outcome: "pending" | "visible" | "rejected" | "failed" | "superseded" | "reused";
+}
+createOwner(context: CardDeliveryContext): OwnershipToken
+adopt(owner: OwnershipToken, cardId: string): void
+deliver(owner: OwnershipToken, view: ConversationCardView): Promise<DeliveryResult>
+close(owner: OwnershipToken, view: NonActionableView): OwnershipToken
+handoffToPermission(owner: OwnershipToken, request: PermissionHandoffRequest): Promise<PermissionHandoffResult>
+reconcileSuperseded(cardId: string, view: OrphanedView): Promise<void>
 ```
 
-- [ ] **Step 1: RED — atomic close ordering**
+`createOwner` is called when one `PromptCardLifecycle` is allocated. `adopt` attaches an already-created queued card to that same owner; transition to starting/active preserves owner identity until close. Every operation reports a real `DeliveryDiagnostic` through an injected bounded diagnostics port.
 
-With deferred patch, assert close queues final view behind old-owner renders, returns a fresh owner immediately, and fresh-owner delivery completes before the old promise resolves.
+- [ ] **Step 1: RED/GREEN — owner creation, adoption, and delivery diagnostics**
 
-- [ ] **Step 2: RED — terminal over already-queued Waiting**
+Add createOwner/adopt tests, run RED, implement them, rerun. Then add one diagnostic outcome at a time (`pending`, `visible`, `rejected`, `failed`, `superseded`, `reused`) and minimally implement/report it before the next.
 
-Queue Waiting, block transport, call close(terminal), then start a fresh owner. Assert Waiting never migrates after terminal and old action authority is absent.
+- [ ] **Step 2: RED/GREEN — atomic close ordering**
 
-- [ ] **Step 3: RED — permission handoff matrix**
+With deferred patch, add the close-order test, run RED, implement close returning a fresh owner immediately, rerun. Then add fresh-owner progress while old promise hangs and implement per-owner queues.
 
-Cover empty-card reuse success; reuse patch failure then one fresh send; fresh send failure; finish/cancel during handoff; stale successful permission send goes through the permission presenter's expiry path (not conversation-card orphan rendering). Assert prompt and permission tokens are retained for callback validation.
+- [ ] **Step 3: RED/GREEN — terminal over queued Waiting**
 
-- [ ] **Step 4: RED — superseded send reconciliation and immutable inputs**
+Add Waiting-hung-then-terminal RED, implement barrier behavior, rerun; then add no-migration-to-fresh-owner assertion.
 
-Assert every stale successful send ID is patched with `orphaned`, and mutating source state after `deliver` cannot alter transport input.
+- [ ] **Step 4: RED/GREEN — permission handoff matrix**
 
-- [ ] **Step 5: Implement minimal transport ownership changes**
+Add and implement separately: reuse success, reuse rejection+single fresh send, fresh send failure, finish/cancel during handoff, stale successful permission send through permission expiry. Preserve prompt/permission tokens in the handoff request.
 
-Keep semantic inspection out of Delivery. Ownership identity and queues remain per generation. Do not introduce a global queue.
+- [ ] **Step 5: RED/GREEN — superseded send and immutable inputs**
+
+Add stale send ID RED, implement orphan reconciliation, rerun. Then mutate each nested input class after delivery and implement clone/freeze at the boundary until all remain immutable.
 
 - [ ] **Step 6: Verify and commit**
 
@@ -285,56 +311,66 @@ Run delivery tests, build, Prettier. Commit: `feat(cards): add atomic lifecycle 
 - Produces intent API:
 
 ```ts
-acknowledge(...)
-markQueued()
-markInterrupting()
-markPreparing(profile)
-markForwarded()
-applyAgentUpdate(update)
-requestPermission(...)
-resolvePermission(...)
-finish(outcome)
-validateCancel(tokens): boolean
+interface PromptCardController {
+  acknowledge(input: { messageId: string; reactionId?: string }): void;
+  markQueued(): void;
+  markInterrupting(): void;
+  markPreparing(profile: SessionCardMeta | null): void;
+  markForwarded(): { promptToken: PromptToken; segmentToken: SegmentToken; actionToken: ActionToken };
+  applyAgentUpdate(update: acp.SessionNotification["update"]): void;
+  requestPermission(input: {
+    requestId: string;
+    params: acp.RequestPermissionRequest;
+  }): { promptToken: PromptToken; permissionToken: PermissionToken };
+  consumePermission(input: {
+    promptToken: PromptToken;
+    permissionToken: PermissionToken;
+    requestId: string;
+    optionId: string;
+  }): "accepted" | "stale" | "duplicate" | "invalid_option";
+  consumeCancel(input: {
+    promptToken: PromptToken;
+    segmentToken: SegmentToken;
+    actionToken: ActionToken;
+  }): "accepted" | "stale" | "duplicate";
+  finish(outcome: TerminalOutcome): void;
+  onFirstVisibleCard(listener: (cardId: string) => void): () => void;
+  onTerminalWithoutVisibleCard(listener: () => void): () => void;
+  awaitEffects(timeoutMs: number): Promise<void>;
+}
 ```
 
-- [ ] **Step 1: RED — screenshot regressions**
+- [ ] **Step 1: RED/GREEN — active/archive/terminal screenshot regressions**
 
-Recording presenter must assert visible state history:
+Add delayed-running-patch+archive RED, implement minimal effect orchestration, rerun. Then separately add terminal+late-update and exactly-one-action-token cases, implementing each before the next.
 
-```text
-active/actionable -> archived/non-actionable -> new active
-```
+- [ ] **Step 2: RED/GREEN — 100 ms coalescing**
 
-Never:
+Add multiple-chunks-one-delivery RED, implement timer wiring, rerun; then add terminal-cancels-flush RED and implement immediate close.
 
-```text
-archived/actionable
-terminal -> active
-```
+- [ ] **Step 3: RED/GREEN — permission, actions, and ToolLedger integration**
 
-Cover delayed running patch + archive + later update, delayed terminal + late update, idle already queued + finish, and exactly one valid action token.
+Add separately and implement after each RED: content boundary, empty reuse, failed handoff, cross-boundary tool completion, finish awaiting permission, consumePermission request/option membership, duplicate/stale permission, consumeCancel duplicate/stale.
 
-- [ ] **Step 2: RED — 100 ms coalescing**
+- [ ] **Step 4: RED/GREEN — acknowledgement lifecycle callbacks**
 
-Use fake timers: multiple chunks produce one delivery; terminal cancels pending flush and submits close immediately.
+Add first-visible callback RED and implement from `DeliveryResult.visible(cardId)`. Then add terminal-without-visible RED and implement its callback. Prove each fires once and unsubscribe works.
 
-- [ ] **Step 3: RED — permission and ToolLedger integration**
+- [ ] **Step 5: Complete effect runner**
 
-Cover content boundary, empty slot reuse, failed handoff, cross-boundary tool completion, finish while awaiting permission.
+Semantic calls return immediately after reducer commit; effect promises are tracked only for bounded `awaitEffects` and never block reducer events.
 
-- [ ] **Step 4: Implement controller/effect runner**
-
-Semantic calls return immediately after reducer commit; effect promises are tracked for bounded shutdown but do not block reducer events.
-
-- [ ] **Step 5: Verify and commit**
+- [ ] **Step 6: Verify and commit**
 
 Run controller/reducer/delivery tests, build, Prettier. Commit: `feat(cards): orchestrate prompt card lifecycle`.
 
 ---
 
-### Task 7: Exhaustive Lark Presenter V2
+### Task 7: Disabled Gate Contract and Exhaustive Lark Presenter V2
 
 **Files:**
+- Create: `src/bridge/conversation-card-feature.ts`
+- Create: `src/bridge/conversation-card-feature.test.ts`
 - Modify: `src/presenter/presenter.ts`
 - Modify: `src/presenter/lark-presenter.ts`
 - Modify: `src/presenter/lark-presenter.test.ts`
@@ -342,23 +378,27 @@ Run controller/reducer/delivery tests, build, Prettier. Commit: `feat(cards): or
 
 **Interfaces:**
 - Consumes: `ConversationCardView`.
-- Produces gated v2 `sendConversationCard` / `updateConversationCard` methods while legacy methods remain gate-off only.
+- Produces `ConversationCardFeatureGate { readonly v2Enabled: boolean }`, exported `DISABLED_CONVERSATION_CARD_FEATURE = { v2Enabled: false }`, and gated v2 presenter methods. Until Task 12 supplies persisted config, every production constructor defaults/injects the disabled contract. Tests for Tasks 7–11 explicitly inject true only into isolated fixtures; each task asserts the default live route remains legacy.
 
-- [ ] **Step 1: RED — exhaustive rendering**
+- [ ] **Step 1: RED/GREEN — disabled gate contract**
+
+Add default/injection tests, run RED, implement the immutable disabled default and constructor injection, rerun. Assert production construction without explicit injection cannot call v2 presenter methods.
+
+- [ ] **Step 2: RED/GREEN — exhaustive rendering**
 
 For each view kind assert exact header presence, footer presence, summary, body, and actions. Specifically assert archived has no header/footer/button; terminal has header/no button; queued/starting no button; orphaned neutral/no button. Only active emits the exact Cancel wire schema `{ v: 2, cancel: true, c, th?, p, s, a }` by combining route and action fields. Permission cards emit `{ v: 2, c, th?, p, q, r, o }`.
 
-- [ ] **Step 2: RED — impossible view rejection**
+- [ ] **Step 3: RED/GREEN — impossible view rejection**
 
 At runtime boundary, malformed external test fixtures are rejected/logged rather than silently normalized.
 
-- [ ] **Step 3: Implement exhaustive renderer**
+- [ ] **Step 4: Implement remaining exhaustive renderer plumbing**
 
 No lifecycle conditions outside switch-by-kind. Preserve existing markdown panels and card-size helpers.
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 5: Verify and commit**
 
-Run presenter + budget tests, build, Prettier. Commit: `feat(cards): render semantic conversation views`.
+Run presenter + feature-gate + budget tests, build, Prettier. Commit: `feat(cards): render semantic conversation views`.
 
 ---
 
@@ -418,9 +458,12 @@ Run HummingClient and all new ACP tests, build, Prettier. Commit: `refactor(card
 
 ---
 
-### Task 10: ChatRuntime Per-Prompt Ownership
+### Task 10: ChatRuntime Per-Prompt Ownership and Legacy Writer Isolation
 
 **Files:**
+- Create: `src/presenter/legacy-conversation-card-adapter.ts`
+- Create: `src/presenter/legacy-conversation-card-adapter.test.ts`
+- Modify: `src/acp/humming-client.ts`
 - Modify: `src/bridge/chat-runtime.ts`
 - Modify: `src/bridge/chat-runtime.test.ts`
 
@@ -440,11 +483,23 @@ After prompt response, close the route. Send a protocol-violating late update an
 
 Cover normal complete, explicit cancel, agent error, shutdown, supersede, bootstrap failure, permission-pending termination. Assert supersede is not success.
 
-- [ ] **Step 4: Implement runtime integration under v2 gate**
+- [ ] **Step 4: RED/GREEN — isolate every legacy writer**
 
-Create prompt token/lifecycle when message is accepted, not when it begins running. Remove v2 direct presenter updates; retain legacy path gate-off.
+Add a full-`src/` inventory test for direct `sendUnifiedCard`/`updateUnifiedCard` references. Move production legacy calls from bridge/runtime/HummingClient behind `legacy-conversation-card-adapter.ts`, preserving behavior after each move. The temporary allowlist becomes exactly:
 
-- [ ] **Step 5: Verify and commit**
+```text
+src/presenter/lark-presenter.ts
+src/presenter/legacy-conversation-card-adapter.ts
+src/acp/conversation-card-delivery.ts
+```
+
+Tests may reference methods but production files outside the allowlist may not. Include new v2 `sendConversationCard`/`updateConversationCard` names in the scanner.
+
+- [ ] **Step 5: Implement remaining runtime integration under injected gate**
+
+Create prompt token/lifecycle before Bridge adds reaction via a `preparePrompt(messageContext): PreparedPrompt` factory shared by Bridge and ChatRuntime. `PreparedPrompt` owns the controller and acknowledgement callbacks; Bridge adds reaction then calls `prepared.attachAcknowledgement(reactionId?)` and enqueues that same prepared object. Default gate remains disabled.
+
+- [ ] **Step 6: Verify and commit**
 
 Run runtime + ACP tests, build, Prettier. Commit: `refactor(runtime): own cards per prompt lifecycle`.
 
@@ -454,12 +509,21 @@ Run runtime + ACP tests, build, Prettier. Commit: `refactor(runtime): own cards 
 
 **Files:**
 - Modify: `src/bridge/bridge.ts`
+- Modify: `src/bridge/chat-runtime.ts`
+- Modify: `src/bridge/chat-runtime.test.ts`
 - Modify: `src/bridge/bridge-card-lifecycle.test.ts`
-- Modify: `src/bridge/bridge-agent-switch.test.ts` if affected.
 
 **Interfaces:**
-- Consumes: reaction port, v2 runtime lifecycle, v2 Cancel payload.
-- Produces: gate-on complete single-writer route.
+- Bridge strict parser accepts only exact v2 Cancel `{ v:2,c,th?,cancel:true,p,s,a }` and permission `{ v:2,c,th?,p,q,r,o }` schemas; version is checked before runtime lookup.
+- ChatRuntime exposes:
+
+```ts
+consumeCancelAction(input: { promptToken: string; segmentToken: string; actionToken: string }): "accepted" | "stale" | "duplicate";
+consumePermissionAction(input: { promptToken: string; permissionToken: string; requestId: string; optionId: string }): "accepted" | "stale" | "duplicate" | "invalid_option";
+```
+
+- Bridge passes decoded tokens/request/option into these methods. Controller verifies current token, request ID, allowed option membership, and one-shot consumption before ACP resolve/cancel.
+- Produces complete v2 single-writer route when injected gate is true; production default remains false until Task 12 persistence/enablement.
 
 - [ ] **Step 1: RED — no standalone receipt card and correct reaction lifetime**
 
@@ -475,7 +539,7 @@ Current prompt+permission token resolves exactly once. Previous prompt, previous
 
 - [ ] **Step 4: RED — no direct conversation-card bypass**
 
-A source-level assertion scans all `src/` production files for conversation-card send/update calls against an explicit allowlist containing only lifecycle delivery/presenter and the isolated gate-off legacy adapter.
+A source-level assertion scans all `src/` production files and requires the exact temporary allowlist established in Task 10: presenter transport, legacy adapter, and lifecycle Delivery only. Bridge, ChatRuntime, and HummingClient are never file-level exceptions.
 
 - [ ] **Step 5: Implement cutover code with gate defaulting off**
 
@@ -499,9 +563,12 @@ Run all bridge/runtime/ACP/presenter tests, full `npm test`, build, fmt check. C
 - Modify: `src/bridge/control-server.test.ts`
 
 **Interfaces:**
+- CLI commands are exact:
+  - `humming cards-v2 enable`: query live control status; require `cardActionSchemaVersion >= 2`; persist gate true; restart/reload.
+  - `humming cards-v2 disable`: persist and reread gate false; restart/reload current binary.
+  - `humming cards-v2 rollback --checkout <absolute-path>`: verify the target checkout contains Task 1's guard marker/test and a built CLI; persist and reread gate false; stop current bridge; start the target checkout using its explicit binary plus the saved launch descriptor. Failure before stop leaves current bridge running; failure after stop reports loudly and does not re-enable gate.
 - Persists `features.conversationCardLifecycleV2`, default false.
 - Live status reports `cardActionSchemaVersion: 2` and effective gate state.
-- Provides enable/disable operations; rollback operation writes false before stopping/starting the old binary.
 
 - [ ] **Step 1: RED — default-off and compatibility schema**
 
@@ -509,7 +576,7 @@ Assert missing setting means false; status reports schema 2; persisted true is e
 
 - [ ] **Step 2: RED — deployment and rollback command ordering**
 
-With fake process control, prove enable refuses unless the running bridge reports schema >= 2. Prove rollback/disable persists false before any stop/start call.
+With fake process control, prove enable refuses unless the running bridge reports schema >= 2. Prove rollback validates the target contains commit/guard `4700e9d` behavior, then records calls in this exact order: `writeGate(false)`, `readGate() === false`, `stopCurrent()`, `startCheckout(target, launchDescriptor)`. Cover invalid target, persist/reread failure before stop, and target-start failure after stop.
 
 - [ ] **Step 3: Implement configuration and CLI**
 
@@ -548,7 +615,7 @@ Build and restart. Confirm linked checkout, bridge health, `cardActionSchemaVers
 
 - [ ] **Step 4: Simulate rollback ordering while gate is off**
 
-Run the rollback/disable command against process-control fakes in automation and one non-destructive local dry-run. Evidence must show settings write false precedes stop/start. Do not actually downgrade the live checkout.
+Run the actual `humming cards-v2 rollback --checkout <rollback-fixture-checkout>` against an isolated temporary home and disposable bridge fixture. Verify the fixture contains Task 1's guard, gate is reread false before stop, the target fixture binary starts, and the original development runtime is untouched. This is a real old-checkout process switch in isolation, not only a mock or dry-run.
 
 - [ ] **Step 5: Explicitly enable v2 and restart/reload**
 

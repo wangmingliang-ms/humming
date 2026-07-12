@@ -664,7 +664,7 @@ Each implementation commit remains independently testable, but only the compatib
 
 ### Diagnostics correlation contract
 
-A single runtime-owned `LifecycleDiagnosticSink` is injected into reducer controller, delivery, router, and acknowledgement runner:
+A single runtime-owned `LifecycleDiagnosticSink` is injected into the controller, delivery, router, and acknowledgement runner. The pure reducer never receives a sink; it returns a diagnostic value, and Controller correlates/writes it:
 
 ```ts
 interface DiagnosticCorrelation {
@@ -678,7 +678,7 @@ interface LifecycleDiagnosticSink {
 }
 ```
 
-It keeps at most 256 structured events per runtime in a ring buffer and streams the same bounded fields to the logger. Transition and delivery events share `runtimeSequence + promptSequence`; segment/owner sequence are local monotonically allocated integers, never tokens or IDs. The controller owns allocation and passes correlation into state/effects/Delivery. Tests join transition and delivery records by these fields and assert no token, card content, chat/thread/message/card ID, path, or secret appears.
+It keeps at most 256 structured events per runtime in a ring buffer and streams the same bounded fields to the logger. Transition and delivery events share `runtimeSequence + promptSequence`; segment/owner sequence are local monotonically allocated integers, never tokens or IDs. Controller owns allocation and passes correlation into state/effects/Delivery, including the next-owner correlation supplied to `close`. Tests join transition and delivery records by these fields and assert no token, card content, chat/thread/message/card ID, path, or secret appears.
 
 ## Observability
 

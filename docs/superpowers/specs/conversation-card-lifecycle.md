@@ -139,7 +139,7 @@ For one Response containing Cards `C1, C2, ..., Cn`:
 ```text
 C1 ... C(n-1): no Title, no Metadata, no actions
 Cn: Title and Metadata retained
-Cn has Cancel only while its Response is active and owns execution
+Cn has Cancel only while its Response is in progress, owns execution, and Cn is a Response Card rather than a Permission Card
 ```
 
 ## 5. When a Card is created
@@ -160,7 +160,9 @@ Create a successor Card only when the same Response requires a new visual segmen
 - content length rotation;
 - waiting-time/idle rotation;
 - permission boundary and continuation;
-- transport replacement after the current Card can no longer be patched.
+- a transport replacement only when the current Card itself can no longer receive updates.
+
+A transport replacement caused by a failed patch is not the normal sealing path. See Section 5.3.
 
 The tail handoff is atomic at the semantic layer:
 
@@ -172,10 +174,35 @@ The tail handoff is atomic at the semantic layer:
    - hide all actions.
 3. Create/adopt the successor as the new tail.
 4. Render Title and Metadata on the new tail.
-5. Render Cancel on the new tail only if the Response is active and is Execution Owner.
+5. Render Cancel on the new tail only if the Response is in progress and is Execution Owner.
 ```
 
-There must never be an interval in semantic state where both old and new tails are actionable. Transport may complete asynchronously, but stale action tokens must already be invalid.
+There must never be an interval in semantic state where both old and new tails own a valid Cancel action. Transport may complete asynchronously, but stale action tokens must already be invalid.
+
+### 5.3 Feishu rejects a Card update
+
+A Feishu patch rejection is a transport/presentation failure, not a lifecycle transition failure.
+
+When Humming semantically seals or demotes a Card:
+
+```text
+1. The domain transition completes immediately.
+2. The old action token is revoked immediately.
+3. Execution ownership may proceed normally.
+4. Humming attempts to patch the old Card projection.
+```
+
+If Feishu rejects that patch or the update fails:
+
+- do not roll back the Response transition;
+- do not block execution-owner handoff;
+- do not create a special no-Cancel mode;
+- allow the next valid active Response tail to show its own Cancel normally;
+- treat the old visual Cancel as stale; clicking it must be inert and must never cancel the newer Response;
+- append a visible informational entry to the following Response tail stating that the previous Card could not be updated and its old Cancel button may remain visible but is no longer valid;
+- record the failure as a transport diagnostic.
+
+The resulting Feishu UI may contain a stale visual Cancel button and a current valid Cancel button. This is an accepted external inconsistency caused by Feishu refusing the update, not overlapping semantic ownership. The domain invariant is therefore about valid Cancel authority, not the number of stale buttons still visible in an unpatchable external Card.
 
 ## 6. Normal idle-to-complete branch
 
@@ -291,18 +318,58 @@ If C arrives while B is interrupting A, C may have a received/queued tail Card, 
 
 ## 8. Permission boundary
 
-Permission UI is a separate actionable artifact, but the same exclusivity rule applies:
+A Permission Card is a permission artifact in the visual timeline; it is not counted in the ordered `ResponseCard[]` used to determine the Response tail. Every permission request creates this sequence:
 
 ```text
-1. Revoke Cancel from the active Response tail.
-2. If a successor Response Card is created, the old tail becomes intermediate.
-3. Present the permission action as the only actionable artifact.
-4. Resolve/expire the permission action exactly once.
-5. Resume with a new Response tail segment.
-6. Restore Cancel only when that tail is active and its Response owns execution.
+current Response tail
+  -> sealed as an intermediate Response Card
+Permission Card
+  -> shows the current permission choices
+new continuation Response Card
+  -> becomes the Response tail immediately
+  -> shows waiting-for-permission status, Metadata, and Cancel
 ```
 
-At most one actionable artifact exists for a Topic.
+The Response remains in progress and remains the Topic Execution Owner while waiting for permission. Therefore its continuation tail retains the Response-level Cancel action. The Permission Card independently holds the permission-choice actions. These actions have different scopes:
+
+- Permission actions resolve only the current permission request.
+- Cancel terminates the entire Response and expires the current permission request.
+
+The exact transition is:
+
+```text
+1. Revoke Cancel from the old Response tail.
+2. Demote the old tail to an intermediate Response Card:
+   - hide Title;
+   - hide Metadata;
+   - hide all actions;
+   - retain content.
+3. Present the Permission Card.
+4. Immediately create the continuation Response Card below it.
+5. Make the continuation Card the new Response tail.
+6. Show Title, Metadata, waiting-for-permission status, and the Response-level Cancel on it.
+7. Resolve or expire the Permission Card exactly once.
+8. After permission resolution, reuse the same continuation tail for resumed Agent output.
+```
+
+If another permission request occurs later, repeat the same transition:
+
+```text
+A1 -> P1 -> A2 -> P2 -> A3
+```
+
+where `A1` and `A2` are intermediate Response Cards, `A3` is the current continuation tail, and `P1`/`P2` are Permission Cards. Only `A3` holds the Response-level Cancel. Only the current unresolved Permission Card holds permission-choice actions.
+
+If the Response terminates while awaiting permission:
+
+```text
+1. Expire the Permission Card and remove its choices.
+2. Seal the continuation tail as complete/failed/interrupted/cancelled as appropriate.
+3. Retain the continuation tail's terminal Title and Metadata.
+4. Remove its Cancel.
+```
+
+A permission followed immediately by another permission may leave a continuation Card with little or no Agent output. Before demotion, that Card must retain a truthful short status entry so it does not become a blank intermediate Card.
 
 ## 9. Cancellation, failure, disconnect, and late callbacks
 
@@ -355,29 +422,36 @@ I1. Every visible Response has exactly one tail Card.
 I2. Only a Response tail displays Title and Metadata.
 I3. Intermediate Cards display no Title, Metadata, or actions.
 I4. A Topic has at most one Execution Owner Response.
-I5. Only an active Execution Owner's tail displays Cancel.
-I6. Therefore a Topic has at most one Cancel button in semantic state.
-I7. Terminal Responses never accept renderable callbacks.
-I8. Ownership handoff is old -> none -> new, never overlapping.
-I9. A new Request's interrupting Card is reused for preparing/active; no duplicate task Card.
-I10. Terminal final tails retain Title and Metadata for success, failure, interruption, and cancellation.
+I5. Only an in-progress Execution Owner's tail Response Card displays Cancel.
+I6. Therefore a Topic has at most one semantically valid Cancel authority; stale visual buttons left by failed Feishu patches do not regain authority.
+I7. A current Permission Card may show permission choices while the owner Response's continuation tail independently shows the one Response-level Cancel.
+I8. Terminal Responses never accept renderable callbacks.
+I9. Ownership handoff is old -> none -> new, never overlapping.
+I10. A new Request's interrupting Card is reused for preparing/active; no duplicate task Card.
+I11. Terminal final tails retain Title and Metadata for success, failure, interruption, and cancellation.
+I12. Every Permission Card is immediately followed by a continuation Response tail; Permission Cards do not participate in Response-tail position.
+I13. Failed external patches do not roll back domain state; their stale action tokens remain invalid.
 ```
 
 ## 13. Conformance matrix
 
-| Situation                | Previous Response tail                  | New Response tail                   | Cancel owner                   |
-| ------------------------ | --------------------------------------- | ----------------------------------- | ------------------------------ |
-| Idle Request accepted    | none                                    | received/preparing                  | none                           |
-| Response active          | active Title + Metadata                 | none                                | active Response                |
-| New Request arrives      | A active Title + Metadata               | B interrupting Title + Metadata     | A only                         |
-| A interruption confirmed | A interrupted Title + Metadata          | B preparing Title + Metadata        | none                           |
-| B starts                 | A interrupted Title + Metadata          | B active Title + Metadata           | B only                         |
-| Same Response rotates    | old tail becomes plain intermediate     | successor tail Title + Metadata     | successor only if owner active |
-| Response completes       | final tail complete Title + Metadata    | none                                | none                           |
-| Response fails           | final tail failed Title + Metadata      | none                                | none                           |
-| Response is cancelled    | final tail cancelled Title + Metadata   | none                                | none                           |
-| Bridge restarts          | final tail interrupted Title + Metadata | optional non-actionable notice only | none                           |
-| Late callback arrives    | no change                               | no new Card                         | none                           |
+| Situation                          | Previous Response tail                                                       | New Response tail                            | Cancel owner                        |
+| ---------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------- | ----------------------------------- |
+| Idle Request accepted              | none                                                                         | received/preparing                           | none                                |
+| Response active                    | active Title + Metadata                                                      | none                                         | active Response                     |
+| New Request arrives                | A active Title + Metadata                                                    | B interrupting Title + Metadata              | A only                              |
+| A interruption confirmed           | A interrupted Title + Metadata                                               | B preparing Title + Metadata                 | none                                |
+| B starts                           | A interrupted Title + Metadata                                               | B active Title + Metadata                    | B only                              |
+| Same Response rotates              | old tail becomes plain intermediate                                          | successor tail Title + Metadata              | successor only if owner in progress |
+| Permission requested               | old tail becomes plain intermediate; Permission Card shows choices           | continuation tail waiting + Metadata         | continuation tail                   |
+| Consecutive Permission requested   | prior continuation becomes intermediate; next Permission Card shows choices  | next continuation tail waiting + Metadata    | next continuation tail              |
+| Response ends during Permission    | Permission Card expires; prior Cards unchanged                               | continuation terminal Title + Metadata       | none                                |
+| Feishu rejects old-tail seal patch | domain treats old tail as intermediate; stale visual button may remain inert | following tail includes patch-failure notice | current valid owner tail            |
+| Response completes                 | final tail complete Title + Metadata                                         | none                                         | none                                |
+| Response fails                     | final tail failed Title + Metadata                                           | none                                         | none                                |
+| Response is cancelled              | final tail cancelled Title + Metadata                                        | none                                         | none                                |
+| Bridge restarts                    | final tail interrupted Title + Metadata                                      | optional non-actionable notice only          | none                                |
+| Late callback arrives              | no change                                                                    | no new Card                                  | none                                |
 
 ## 14. Change-control rule
 

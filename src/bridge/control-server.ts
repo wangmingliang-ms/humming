@@ -26,6 +26,11 @@ export type ControlRequest =
     }
   | {
       readonly id?: string | number;
+      readonly method: "status";
+      readonly params: Record<string, never>;
+    }
+  | {
+      readonly id?: string | number;
       readonly method: "capabilities";
       readonly params: { readonly chatId: string; readonly threadId?: string | null };
     }
@@ -85,6 +90,10 @@ export type ControlResponse =
 
 export interface BridgeControlHandlers {
   shutdown(): Promise<unknown>;
+  status(): Promise<{
+    readonly cardActionSchemaVersion: number;
+    readonly conversationCardLifecycleV2Enabled: boolean;
+  }>;
   capabilities(chatId: string, threadId: string | null): Promise<SessionCapabilitiesSnapshot>;
   setControls(
     chatId: string,
@@ -210,6 +219,12 @@ export class BridgeControlServer {
             ok: true,
             id: parsed.id,
             result: await this.handlers.shutdown(),
+          };
+        case "status":
+          return {
+            ok: true,
+            id: parsed.id,
+            result: await this.handlers.status(),
           };
         case "capabilities":
           return {
@@ -344,6 +359,9 @@ export async function sendControlRequest(
 function isControlRequest(value: unknown): value is ControlRequest {
   if (!isRecord(value)) return false;
   if (value["method"] === "shutdown") {
+    return isRecord(value["params"]) && Object.keys(value["params"]).length === 0;
+  }
+  if (value["method"] === "status") {
     return isRecord(value["params"]) && Object.keys(value["params"]).length === 0;
   }
   if (value["method"] === "capabilities") {

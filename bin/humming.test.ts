@@ -29,6 +29,10 @@ import {
   runInit,
   resolveUpdateRef,
   restartHasExplicitOptions,
+  resolveConversationCardFeature,
+  runCardsV2,
+  validateRollbackCheckout,
+  writeConversationCardFeature,
   DEFAULT_AGENT,
   DEFAULT_PERMISSION_MODE,
   type ParsedArgs,
@@ -105,6 +109,316 @@ describe("parseArgs — update subcommand", () => {
     // takes no options of its own — its only knob is the $HUMMING_REF env var.
     const args = parseArgs(["update", "extra", "tokens"]);
     expect(args.command).toBe("update");
+  });
+});
+
+describe("conversation card lifecycle feature settings", () => {
+  it("defaults the persisted gate off when features are absent", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-feature-config-"));
+    try {
+      const settingsPath = path.join(dir, "settings.json");
+      fs.writeFileSync(settingsPath, JSON.stringify({ credentials: {}, runtime: {} }));
+
+      const config = readConfigFile(settingsPath);
+
+      expect(config.features.conversationCardLifecycleV2).toBe(false);
+      expect(resolveConversationCardFeature(config.features, 2)).toEqual({ v2Enabled: false });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a persisted true gate when the binary schema is too old", () => {
+    expect(() =>
+      resolveConversationCardFeature({ conversationCardLifecycleV2: true }, 1),
+    ).toThrowError(/requires card action schema version 2/);
+  });
+
+  it("enables only after live schema verification, persistence, reread, then restart", async () => {
+    const calls: string[] = [];
+    let persisted = false;
+    await runCardsV2(
+      { command: "cards-v2", cardsV2Action: "enable", agentExtraArgs: [] },
+      {
+        queryStatus: async () => {
+          calls.push("status");
+          return { cardActionSchemaVersion: 2, conversationCardLifecycleV2Enabled: false };
+        },
+        persist: (enabled) => {
+          calls.push(`persist:${enabled}`);
+          persisted = enabled;
+        },
+        reread: () => {
+          calls.push("reread");
+          return persisted;
+        },
+        restart: async () => {
+          calls.push("restart");
+        },
+        stop: async () => {
+          calls.push("stop");
+        },
+        start: async () => {
+          calls.push("start");
+        },
+        validateCheckout: () => {
+          calls.push("validate");
+          return "/target/dist/bin/humming.js";
+        },
+      },
+    );
+    expect(calls).toEqual(["status", "persist:true", "reread", "restart"]);
+  });
+
+  it("refuses enable without schema 2 before mutating settings", async () => {
+    const calls: string[] = [];
+    await expect(
+      runCardsV2(
+        { command: "cards-v2", cardsV2Action: "enable", agentExtraArgs: [] },
+        {
+          queryStatus: async () => ({
+            cardActionSchemaVersion: 1,
+            conversationCardLifecycleV2Enabled: false,
+          }),
+          persist: () => calls.push("persist"),
+          reread: () => false,
+          restart: async () => calls.push("restart"),
+          stop: async () => calls.push("stop"),
+          start: async () => calls.push("start"),
+          validateCheckout: () => "/target/dist/bin/humming.js",
+        },
+      ),
+    ).rejects.toThrow(/schema version 2/);
+    expect(calls).toEqual([]);
+  });
+
+  it("offline disable persists and rereads without touching control or process APIs", async () => {
+    const calls: string[] = [];
+    let persisted = true;
+    await runCardsV2(
+      {
+        command: "cards-v2",
+        cardsV2Action: "disable",
+        cardsV2Offline: true,
+        agentExtraArgs: [],
+      },
+      {
+        queryStatus: async () => {
+          calls.push("status");
+          return { cardActionSchemaVersion: 2, conversationCardLifecycleV2Enabled: true };
+        },
+        persist: (enabled) => {
+          calls.push(`persist:${enabled}`);
+          persisted = enabled;
+        },
+        reread: () => {
+          calls.push("reread");
+          return persisted;
+        },
+        restart: async () => calls.push("restart"),
+        stop: async () => calls.push("stop"),
+        start: async () => calls.push("start"),
+        validateCheckout: () => {
+          calls.push("validate");
+          return "/target/dist/bin/humming.js";
+        },
+      },
+    );
+    expect(calls).toEqual(["persist:false", "reread"]);
+  });
+
+  it("parses the exact management commands and rejects relative rollback checkouts", () => {
+    expect(parseArgs(["cards-v2", "enable"])).toMatchObject({
+      command: "cards-v2",
+      cardsV2Action: "enable",
+    });
+    expect(parseArgs(["cards-v2", "disable", "--offline"])).toMatchObject({
+      command: "cards-v2",
+      cardsV2Action: "disable",
+      cardsV2Offline: true,
+    });
+    expect(parseArgs(["cards-v2", "rollback", "--checkout", "/old/humming"])).toMatchObject({
+      command: "cards-v2",
+      cardsV2Action: "rollback",
+      cardsV2Checkout: "/old/humming",
+    });
+    expect(() => parseArgs(["cards-v2", "rollback", "--checkout", "relative/humming"])).toThrow(
+      /absolute path/,
+    );
+  });
+
+  it("persists only the gate while preserving unrelated settings", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-feature-write-"));
+    try {
+      const settingsPath = path.join(dir, "settings.json");
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          credentials: { appId: "keep" },
+          features: { other: "keep", conversationCardLifecycleV2: true },
+          runtime: { agent: "codex" },
+        }),
+      );
+      writeConversationCardFeature(settingsPath, false);
+      expect(JSON.parse(fs.readFileSync(settingsPath, "utf-8"))).toEqual({
+        credentials: { appId: "keep" },
+        features: { other: "keep", conversationCardLifecycleV2: false },
+        runtime: { agent: "codex" },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates rollback guard marker, guard test, and built CLI", () => {
+    const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "humming-rollback-target-"));
+    try {
+      fs.mkdirSync(path.join(checkout, "src", "bridge"), { recursive: true });
+      fs.mkdirSync(path.join(checkout, "dist", "bin"), { recursive: true });
+      fs.writeFileSync(
+        path.join(checkout, "src", "bridge", "bridge.ts"),
+        'if (Object.hasOwn(value, "v")) return;',
+      );
+      fs.writeFileSync(
+        path.join(checkout, "src", "bridge", "bridge-card-lifecycle.test.ts"),
+        "test",
+      );
+      fs.writeFileSync(path.join(checkout, "dist", "bin", "humming.js"), "#!/usr/bin/env node");
+      expect(validateRollbackCheckout(checkout)).toBe(
+        path.join(checkout, "dist", "bin", "humming.js"),
+      );
+      fs.rmSync(path.join(checkout, "src", "bridge", "bridge-card-lifecycle.test.ts"));
+      expect(() => validateRollbackCheckout(checkout)).toThrow(/guard test/);
+    } finally {
+      fs.rmSync(checkout, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back in validate, persist false, reread, stop, explicit target start order", async () => {
+    const calls: string[] = [];
+    let persisted = true;
+    await runCardsV2(
+      {
+        command: "cards-v2",
+        cardsV2Action: "rollback",
+        cardsV2Checkout: "/target",
+        agentExtraArgs: [],
+      },
+      {
+        queryStatus: async () => ({
+          cardActionSchemaVersion: 2,
+          conversationCardLifecycleV2Enabled: true,
+        }),
+        persist: (enabled) => {
+          calls.push(`persist:${enabled}`);
+          persisted = enabled;
+        },
+        reread: () => {
+          calls.push("reread");
+          return persisted;
+        },
+        restart: async () => {},
+        stop: async () => {
+          calls.push("stop");
+        },
+        start: async (selfPath) => {
+          calls.push(`start:${selfPath}`);
+        },
+        validateCheckout: (checkout) => {
+          calls.push(`validate:${checkout}`);
+          return "/target/dist/bin/humming.js";
+        },
+      },
+    );
+    expect(calls).toEqual([
+      "validate:/target",
+      "persist:false",
+      "reread",
+      "stop",
+      "start:/target/dist/bin/humming.js",
+    ]);
+  });
+
+  it("does not stop rollback when persistence or reread fails", async () => {
+    const makeOps = (persist: () => void, reread: () => boolean) => {
+      const calls: string[] = [];
+      return {
+        calls,
+        ops: {
+          queryStatus: async () => ({
+            cardActionSchemaVersion: 2,
+            conversationCardLifecycleV2Enabled: true,
+          }),
+          persist,
+          reread,
+          restart: async () => {},
+          stop: async () => {
+            calls.push("stop");
+          },
+          start: async () => {
+            calls.push("start");
+          },
+          validateCheckout: () => "/target/dist/bin/humming.js",
+        },
+      };
+    };
+    const args: ParsedArgs = {
+      command: "cards-v2",
+      cardsV2Action: "rollback",
+      cardsV2Checkout: "/target",
+      agentExtraArgs: [],
+    };
+    const persistence = makeOps(
+      () => {
+        throw new Error("disk full");
+      },
+      () => false,
+    );
+    await expect(runCardsV2(args, persistence.ops)).rejects.toThrow("disk full");
+    expect(persistence.calls).toEqual([]);
+
+    const reread = makeOps(
+      () => {},
+      () => true,
+    );
+    await expect(runCardsV2(args, reread.ops)).rejects.toThrow(/failed to reread/);
+    expect(reread.calls).toEqual([]);
+  });
+
+  it("leaves the gate disabled and reports target start failure after stop", async () => {
+    let persisted = true;
+    const calls: string[] = [];
+    await expect(
+      runCardsV2(
+        {
+          command: "cards-v2",
+          cardsV2Action: "rollback",
+          cardsV2Checkout: "/target",
+          agentExtraArgs: [],
+        },
+        {
+          queryStatus: async () => ({
+            cardActionSchemaVersion: 2,
+            conversationCardLifecycleV2Enabled: true,
+          }),
+          persist: (enabled) => {
+            persisted = enabled;
+          },
+          reread: () => persisted,
+          restart: async () => {},
+          stop: async () => {
+            calls.push("stop");
+          },
+          start: async () => {
+            calls.push("start");
+            throw new Error("target failed");
+          },
+          validateCheckout: () => "/target/dist/bin/humming.js",
+        },
+      ),
+    ).rejects.toThrow("target failed");
+    expect(calls).toEqual(["stop", "start"]);
+    expect(persisted).toBe(false);
   });
 });
 

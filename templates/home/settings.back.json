@@ -15,6 +15,9 @@
     "lifecycleNotifyChatIds": [],
     "globalControlChatIds": []
   },
+  "features": {
+    "conversationCardLifecycleV2": false
+  },
   "agents": {
     "my-agent": {
       "label": "My ACP Agent",

@@ -616,4 +616,66 @@ describe("LarkCardPresenter semantic conversation cards", () => {
     expect(JSON.stringify(warnings)).not.toContain("oc_semantic");
     expect(JSON.stringify(warnings)).not.toContain("prompt");
   });
+
+  it("rejects semantic invariant violations at the runtime boundary", async () => {
+    const calls: object[] = [];
+    const warnings: unknown[][] = [];
+    const invalidLogger: LarkLogger = {
+      ...logger,
+      warn: (...args: unknown[]) => warnings.push(args),
+      child: () => invalidLogger,
+    } as LarkLogger;
+    const http = {
+      replyCard: async (_messageId: string, card: object): Promise<string> => {
+        calls.push(card);
+        return "unexpected";
+      },
+    } as unknown as LarkHttpClient;
+    const presenter = new LarkCardPresenter({ http, logger: invalidLogger, feature: enabled });
+    const route = { c: "sensitive-chat" };
+    const profile = null;
+    const running = {
+      kind: "tool",
+      toolCallId: "tool",
+      title: "Run",
+      toolKind: "execute",
+      status: "in_progress",
+    };
+    const malformed = [
+      { kind: "active", header: "responding", entries: [], profile, route },
+      { kind: "active", header: "calling_tool", entries: [], profile, route },
+      {
+        kind: "active",
+        header: "waiting",
+        entries: [{ kind: "text", text: "unexpected" }],
+        profile,
+        route,
+      },
+      { kind: "archived", entries: [running], summary: "x", route },
+      {
+        kind: "terminal",
+        header: "failed",
+        entries: [running],
+        profile,
+        body: "content",
+        route,
+      },
+      {
+        kind: "terminal",
+        header: "complete",
+        entries: [],
+        profile,
+        body: "content",
+        route,
+      },
+    ] as unknown as ConversationCardView[];
+
+    for (const view of malformed) {
+      expect(await presenter.sendConversationCard("om_1", view)).toBeNull();
+    }
+    expect(calls).toEqual([]);
+    expect(warnings).toHaveLength(malformed.length);
+    expect(JSON.stringify(warnings)).not.toContain("sensitive-chat");
+    expect(JSON.stringify(warnings)).not.toContain("unexpected");
+  });
 });

@@ -5,6 +5,7 @@ export type {
   LarkPresenter,
   NoticeCardSpec,
   NoticeTemplate,
+  PermissionCardView,
   TimelineEntry,
   ToolStatus,
   UnifiedCardState,

@@ -1,4 +1,10 @@
 import type * as acp from "@agentclientprotocol/sdk";
+import type {
+  CardRoute,
+  ConversationCardView,
+  PermissionToken,
+  PromptToken,
+} from "./conversation-card-view.js";
 
 /** Status chip rendered in the unified card header. */
 export type AgentStatus =
@@ -79,6 +85,22 @@ export interface SessionCardMeta {
   readonly permission: string;
 }
 
+/** Semantic permission request rendered by the v2 card presenter. */
+export interface PermissionCardView {
+  readonly route: CardRoute;
+  readonly promptToken: PromptToken;
+  readonly permissionToken: PermissionToken;
+  readonly requestId: string;
+  readonly title: string;
+  readonly toolKind: string;
+  readonly toolTitle: string;
+  readonly options: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly kind?: string;
+  }[];
+}
+
 /** Snapshot the presenter renders into a single Lark interactive card. */
 export interface UnifiedCardState {
   status: AgentStatus;
@@ -106,6 +128,24 @@ export interface UnifiedCardState {
  * testing, plain-text mode, or other chat platforms.
  */
 export interface LarkPresenter {
+  /** Gate-protected semantic conversation-card send path. */
+  sendConversationCard(
+    replyToMessageId: string,
+    view: ConversationCardView,
+  ): Promise<string | null>;
+
+  /** Gate-protected semantic conversation-card patch path. */
+  updateConversationCard(cardMessageId: string, view: ConversationCardView): Promise<boolean>;
+
+  /** Gate-protected semantic permission-card send path. */
+  sendPermissionRequestCard(
+    replyToMessageId: string,
+    view: PermissionCardView,
+  ): Promise<string | null>;
+
+  /** Gate-protected semantic permission-card patch path. */
+  updatePermissionRequestCard(cardMessageId: string, view: PermissionCardView): Promise<boolean>;
+
   /**
    * Reply to `messageId` with plain-ish text (rendered as a Lark `post`
    * rich-text message). Used for system notices — agent output is

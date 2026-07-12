@@ -8,12 +8,22 @@ import {
 import { CARD_MARKDOWN_ROTATION_BYTE_LIMIT, utf8ByteLength } from "./card-text-budget.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
+import type { ConversationCardFeatureGate } from "../bridge/conversation-card-feature.js";
+import type {
+  ActionToken,
+  ConversationCardView,
+  PermissionToken,
+  PromptToken,
+  SegmentToken,
+} from "./conversation-card-view.js";
+import type { PermissionCardView } from "./presenter.js";
 
 interface CardElement {
   tag?: string;
   content?: string;
   elements?: CardElement[];
   text?: { content?: string };
+  behaviors?: { type?: string; value?: Record<string, unknown> }[];
 }
 
 interface CardWithConfig {
@@ -35,7 +45,11 @@ const logger: LarkLogger = {
   child: () => logger,
 };
 
-function makePresenter(captured: CardWithConfig[], calls: ReplyCardCall[] = []): LarkCardPresenter {
+function makePresenter(
+  captured: CardWithConfig[],
+  calls: ReplyCardCall[] = [],
+  feature?: ConversationCardFeatureGate,
+): LarkCardPresenter {
   const http = {
     replyCard: async (
       _messageId: string,
@@ -51,7 +65,7 @@ function makePresenter(captured: CardWithConfig[], calls: ReplyCardCall[] = []):
       captured.push(card as CardWithConfig);
     },
   } as unknown as LarkHttpClient;
-  return new LarkCardPresenter({ http, logger });
+  return new LarkCardPresenter({ http, logger, feature });
 }
 
 function permissionRequest(): acp.RequestPermissionRequest {
@@ -403,5 +417,203 @@ describe("LarkCardPresenter card summary", () => {
       .join("");
     expect(utf8ByteLength(content)).toBeLessThanOrEqual(COMMAND_RESULT_BODY_BYTE_LIMIT);
     expect(content).toContain("结果内容超过限制，已截断");
+  });
+});
+
+describe("LarkCardPresenter semantic conversation cards", () => {
+  const enabled = Object.freeze({ v2Enabled: true });
+  const route = { c: "oc_semantic", th: "omt_semantic" } as const;
+  const profile = {
+    agent: "Claude",
+    mode: "Plan Mode",
+    model: "Claude Sonnet 5",
+    permission: "Ask",
+  } as const;
+  const active: ConversationCardView = {
+    kind: "active",
+    header: "responding",
+    entries: [{ kind: "text", text: "answer" }],
+    profile,
+    cancelAction: {
+      p: "prompt_1" as PromptToken,
+      s: "segment_1" as SegmentToken,
+      a: "action_1" as ActionToken,
+    },
+    route,
+  };
+
+  it("keeps semantic methods transport-inert by default", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+
+    expect(await presenter.sendConversationCard("om_1", active)).toBeNull();
+    expect(await presenter.updateConversationCard("card_1", active)).toBe(false);
+    expect(cards).toEqual([]);
+  });
+
+  it("renders an explicitly enabled active card with the exact Cancel V2 payload", async () => {
+    const cards: CardWithConfig[] = [];
+    const calls: ReplyCardCall[] = [];
+    const presenter = makePresenter(cards, calls, enabled);
+
+    expect(await presenter.sendConversationCard("om_1", active)).toBe("card_1");
+
+    expect(calls[0]?.opts).toEqual({ replyInThread: true });
+    expect(cards[0]?.header).toEqual({
+      title: { tag: "plain_text", content: "✍️ 回复中..." },
+      template: "blue",
+    });
+    expect(cards[0]?.config?.summary?.content).toBe("✍️ 回复中...");
+    expect(cards[0]?.body?.elements?.filter((element) => element.tag === "button")).toEqual([
+      expect.objectContaining({
+        text: { tag: "plain_text", content: "中断当前任务" },
+        behaviors: [
+          {
+            type: "callback",
+            value: {
+              v: 2,
+              c: "oc_semantic",
+              th: "omt_semantic",
+              cancel: true,
+              p: "prompt_1",
+              s: "segment_1",
+              a: "action_1",
+            },
+          },
+        ],
+      }),
+    ]);
+  });
+
+  it("renders semantic permission actions with prompt and permission authority", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards, [], enabled);
+    const permission: PermissionCardView = {
+      route,
+      promptToken: "prompt_1" as PromptToken,
+      permissionToken: "permission_1" as PermissionToken,
+      requestId: "request_1",
+      title: "Permission required",
+      toolKind: "edit",
+      toolTitle: "Edit file",
+      options: [{ id: "allow", label: "允许", kind: "allow_once" }],
+    };
+
+    expect(await presenter.sendPermissionRequestCard("om_1", permission)).toBe("card_1");
+    expect(cards[0]?.body?.elements?.filter((element) => element.tag === "button")).toEqual([
+      expect.objectContaining({
+        behaviors: [
+          {
+            type: "callback",
+            value: {
+              v: 2,
+              c: "oc_semantic",
+              th: "omt_semantic",
+              p: "prompt_1",
+              q: "permission_1",
+              r: "request_1",
+              o: "allow",
+            },
+          },
+        ],
+      }),
+    ]);
+  });
+
+  it("renders every semantic view kind through the public send and patch methods", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards, [], enabled);
+    const views: ConversationCardView[] = [
+      { kind: "queued", header: "queued", entries: [], route },
+      { kind: "interrupting", header: "interrupting", entries: [], route },
+      { kind: "starting", header: "preparing", entries: [], profile, route },
+      {
+        kind: "orphaned",
+        header: "orphaned",
+        entries: [{ kind: "text", text: "stale" }],
+        reason: "stale_handoff",
+        route,
+      },
+      active,
+      {
+        kind: "archived",
+        entries: [{ kind: "text", text: "**history**" }],
+        summary: "**history**",
+        route,
+      },
+      {
+        kind: "terminal",
+        header: "complete",
+        entries: [{ kind: "text", text: "done" }],
+        profile,
+        body: "content",
+        route,
+      },
+    ];
+
+    for (const [index, view] of views.entries()) {
+      if (index % 2 === 0) await presenter.sendConversationCard("om_1", view);
+      else await presenter.updateConversationCard("card_1", view);
+    }
+
+    expect(cards.map((card) => card.header?.title?.content)).toEqual([
+      "⏳ 消息已排队",
+      "⚡ 正在中断当前任务",
+      "🔄 准备中...",
+      "对话片段",
+      "✍️ 回复中...",
+      undefined,
+      "✅ 已结束",
+    ]);
+    expect(cards.map((card) => card.config?.summary?.content)).toEqual([
+      "⏳ 消息已排队",
+      "⚡ 正在中断当前任务",
+      "🔄 准备中...",
+      "对话片段",
+      "✍️ 回复中...",
+      "history",
+      "✅ 已结束",
+    ]);
+    const serialized = cards.map((card) => JSON.stringify(card));
+    expect(serialized[0]).not.toContain("Agent:");
+    expect(serialized[1]).not.toContain("Agent:");
+    expect(serialized[2]).toContain("Agent: Claude");
+    expect(serialized[3]).not.toContain("Agent:");
+    expect(serialized[3]).not.toContain('"tag":"button"');
+    expect(serialized[4]).toContain('"tag":"button"');
+    expect(serialized[5]).not.toContain("Agent:");
+    expect(serialized[5]).not.toContain('"tag":"button"');
+    expect(serialized[6]).toContain("Agent: Claude");
+    expect(serialized[6]).not.toContain('"tag":"button"');
+  });
+
+  it("rejects and logs malformed external semantic fixtures without transport calls", async () => {
+    const cards: CardWithConfig[] = [];
+    const warnings: unknown[][] = [];
+    const invalidLogger: LarkLogger = {
+      ...logger,
+      warn: (...args: unknown[]) => warnings.push(args),
+      child: () => invalidLogger,
+    } as LarkLogger;
+    const http = {
+      replyCard: async (_messageId: string, card: object): Promise<string> => {
+        cards.push(card as CardWithConfig);
+        return "unexpected";
+      },
+    } as unknown as LarkHttpClient;
+    const presenter = new LarkCardPresenter({ http, logger: invalidLogger, feature: enabled });
+    const malformed = {
+      kind: "archived",
+      entries: [],
+      summary: "",
+      route: { c: "oc_semantic" },
+      cancelAction: { p: "prompt", s: "segment", a: "action" },
+    } as unknown as ConversationCardView;
+
+    expect(await presenter.sendConversationCard("om_1", malformed)).toBeNull();
+    expect(cards).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(JSON.stringify(warnings)).not.toContain("oc_semantic");
+    expect(JSON.stringify(warnings)).not.toContain("prompt");
   });
 });

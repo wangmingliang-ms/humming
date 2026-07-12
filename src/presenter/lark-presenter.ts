@@ -1,6 +1,11 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
+import {
+  DISABLED_CONVERSATION_CARD_FEATURE,
+  type ConversationCardFeatureGate,
+} from "../bridge/conversation-card-feature.js";
+import type { ConversationCardView, ConversationTimelineEntry } from "./conversation-card-view.js";
 import { markdownToPost, splitMarkdown } from "./lark-markdown.js";
 import { CARD_MARKDOWN_ROTATION_BYTE_LIMIT, splitUtf8, truncateUtf8 } from "./card-text-budget.js";
 import type {
@@ -10,6 +15,7 @@ import type {
   CommandResultCardSpec,
   LarkPresenter,
   NoticeCardSpec,
+  PermissionCardView,
   TimelineEntry,
   UnifiedCardState,
 } from "./presenter.js";
@@ -376,6 +382,25 @@ function entryToCardElement(entry: TimelineEntry): object {
   return { tag: "markdown", content: nonThoughtEntryToMarkdown(entry) };
 }
 
+function semanticEntryToCardElement(entry: ConversationTimelineEntry): object {
+  switch (entry.kind) {
+    case "text":
+      return { tag: "markdown", content: entry.text };
+    case "thought":
+      return buildThoughtPanel(entry.text);
+    case "tool": {
+      const head = `**${entry.toolKind}**: ${entry.title}`;
+      return { tag: "markdown", content: entry.detail ? `${head}\n\n${entry.detail}` : head };
+    }
+    default:
+      return assertNeverConversationEntry(entry);
+  }
+}
+
+function assertNeverConversationEntry(entry: never): never {
+  throw new Error(`unexpected semantic timeline entry: ${String(entry)}`);
+}
+
 function unifiedCardSummary(state: UnifiedCardState, fallback: string): string {
   if (state.status !== "sealed") return fallback;
   const firstText = firstSummaryText(state.entries);
@@ -506,9 +531,374 @@ function buildUnifiedCard(state: UnifiedCardState): object {
   );
 }
 
+function buildSemanticPermissionCard(view: PermissionCardView): object {
+  const elements: object[] = [
+    { tag: "markdown", content: `**${view.toolKind}**: ${view.toolTitle}` },
+  ];
+  for (const option of view.options) {
+    elements.push(
+      buildCallbackButton(option.label, buttonTypeForKind(option.kind ?? ""), {
+        v: 2,
+        c: view.route.c,
+        ...(view.route.th !== undefined ? { th: view.route.th } : {}),
+        p: view.promptToken,
+        q: view.permissionToken,
+        r: view.requestId,
+        o: option.id,
+      }),
+    );
+  }
+  return buildV2Card("⏳ 待确认", HEADER_TEMPLATE_PERMISSION, elements, "⏳ 待确认");
+}
+
+function semanticEmptyMessage(view: ConversationCardView): string {
+  switch (view.kind) {
+    case "queued":
+      return emptyStateMessage("queued");
+    case "interrupting":
+      return emptyStateMessage("interrupting");
+    case "starting":
+      return emptyStateMessage("preparing");
+    case "orphaned":
+      return "_此对话片段已失去当前所有权。_";
+    case "active":
+      return emptyStateMessage(view.header);
+    case "archived":
+      return "";
+    case "terminal":
+      if (view.body === "empty_complete") return EMPTY_OUTPUT_BODY;
+      switch (view.header) {
+        case "complete":
+        case "cancelled":
+        case "failed":
+          return emptyStateMessage(view.header);
+        case "superseded":
+          return "_本轮任务已被后续任务取代。_";
+        case "abandoned":
+          return "_本轮任务未能开始或继续。_";
+        default:
+          return "";
+      }
+    default:
+      return assertNeverConversationView(view);
+  }
+}
+
+function semanticHeader(view: ConversationCardView): { content: string; template: string } | null {
+  switch (view.kind) {
+    case "queued":
+    case "interrupting":
+    case "starting":
+    case "active":
+      return STATUS_HEADER[view.header];
+    case "orphaned":
+      return { content: "对话片段", template: "grey" };
+    case "archived":
+      return null;
+    case "terminal":
+      return view.body === "empty_complete"
+        ? EMPTY_OUTPUT_HEADER
+        : semanticTerminalHeader(view.header);
+    default:
+      return assertNeverConversationView(view);
+  }
+}
+
+function semanticTerminalHeader(
+  header: Extract<ConversationCardView, { kind: "terminal" }>["header"],
+): { content: string; template: string } {
+  switch (header) {
+    case "complete":
+    case "cancelled":
+    case "failed":
+      return STATUS_HEADER[header];
+    case "superseded":
+      return { content: "⏭️ 已被后续任务取代", template: "grey" };
+    case "abandoned":
+      return { content: "⚠️ 未执行", template: "grey" };
+    default:
+      return assertNeverTerminalHeader(header);
+  }
+}
+
+function semanticSummary(
+  view: ConversationCardView,
+  header: { content: string; template: string } | null,
+): string {
+  switch (view.kind) {
+    case "archived": {
+      const text = stripMarkdownForSummary(view.summary);
+      return text ? truncateSummary(text) : "对话片段";
+    }
+    case "queued":
+    case "interrupting":
+    case "starting":
+    case "orphaned":
+    case "active":
+    case "terminal":
+      return header!.content;
+    default:
+      return assertNeverConversationView(view);
+  }
+}
+
+function semanticEntries(view: ConversationCardView): object[] {
+  const elements: object[] = [];
+  if (view.entries.length === 0) {
+    const message = semanticEmptyMessage(view);
+    if (message) elements.push({ tag: "markdown", content: message });
+    return elements;
+  }
+  view.entries.forEach((entry: ConversationTimelineEntry, index: number) => {
+    if (index > 0 && entry.kind !== "thought") elements.push({ tag: "hr" });
+    elements.push(semanticEntryToCardElement(entry));
+  });
+  return elements;
+}
+
+function semanticProfile(view: ConversationCardView): object | null {
+  switch (view.kind) {
+    case "starting":
+    case "active":
+    case "terminal":
+      if (view.profile === null) return null;
+      return {
+        tag: "markdown",
+        content: `<font color=\"grey\">${[
+          `Agent: ${view.profile.agent}`,
+          `Mode: ${view.profile.mode}`,
+          `Model: ${view.profile.model}`,
+          `Permission: ${view.profile.permission}`,
+        ].join(" · ")}</font>`,
+      };
+    case "queued":
+    case "interrupting":
+    case "orphaned":
+    case "archived":
+      return null;
+    default:
+      return assertNeverConversationView(view);
+  }
+}
+
+function buildSemanticConversationCard(view: ConversationCardView): object {
+  const elements = semanticEntries(view);
+  switch (view.kind) {
+    case "active":
+      if (view.cancelAction !== undefined) {
+        elements.push({ tag: "hr" });
+        elements.push(
+          buildCallbackButton(CANCEL_BUTTON_TEXT, "danger", {
+            v: 2,
+            c: view.route.c,
+            ...(view.route.th !== undefined ? { th: view.route.th } : {}),
+            cancel: true,
+            p: view.cancelAction.p,
+            s: view.cancelAction.s,
+            a: view.cancelAction.a,
+          }),
+        );
+      }
+      break;
+    case "queued":
+    case "interrupting":
+    case "starting":
+    case "orphaned":
+    case "archived":
+    case "terminal":
+      break;
+    default:
+      return assertNeverConversationView(view);
+  }
+  const profile = semanticProfile(view);
+  if (profile !== null) {
+    elements.push({ tag: "hr" });
+    elements.push(profile);
+  }
+  const header = semanticHeader(view);
+  return buildV2Card(
+    header?.content ?? null,
+    header?.template ?? null,
+    elements,
+    semanticSummary(view, header),
+  );
+}
+
+function assertNeverConversationView(view: never): never {
+  throw new Error(`unexpected conversation card view: ${String(view)}`);
+}
+
+function assertNeverTerminalHeader(header: never): never {
+  throw new Error(`unexpected terminal header: ${String(header)}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function isRoute(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["c", "th"]) &&
+    typeof value.c === "string" &&
+    (value.th === undefined || typeof value.th === "string")
+  );
+}
+
+function isTimelineEntry(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.kind !== "string") return false;
+  switch (value.kind) {
+    case "text":
+    case "thought":
+      return hasOnlyKeys(value, ["kind", "text"]) && typeof value.text === "string";
+    case "tool":
+      return (
+        hasOnlyKeys(value, ["kind", "toolCallId", "title", "toolKind", "status", "detail"]) &&
+        typeof value.toolCallId === "string" &&
+        typeof value.title === "string" &&
+        typeof value.toolKind === "string" &&
+        ["pending", "in_progress", "completed", "failed", "interrupted"].includes(
+          value.status as string,
+        ) &&
+        (value.detail === undefined || typeof value.detail === "string")
+      );
+    default:
+      return false;
+  }
+}
+
+function hasEntries(value: Record<string, unknown>, nonEmpty = false): boolean {
+  return (
+    Array.isArray(value.entries) &&
+    (!nonEmpty || value.entries.length > 0) &&
+    value.entries.every(isTimelineEntry)
+  );
+}
+
+function isProfile(value: unknown): boolean {
+  return (
+    value === null ||
+    (isRecord(value) &&
+      hasOnlyKeys(value, ["agent", "mode", "model", "permission"]) &&
+      [value.agent, value.mode, value.model, value.permission].every(
+        (field) => typeof field === "string",
+      ))
+  );
+}
+
+function isConversationCardView(value: unknown): value is ConversationCardView {
+  if (!isRecord(value) || typeof value.kind !== "string" || !isRoute(value.route)) return false;
+  switch (value.kind) {
+    case "queued":
+      return (
+        hasOnlyKeys(value, ["kind", "header", "entries", "route"]) &&
+        value.header === "queued" &&
+        Array.isArray(value.entries) &&
+        value.entries.length === 0
+      );
+    case "interrupting":
+      return (
+        hasOnlyKeys(value, ["kind", "header", "entries", "route"]) &&
+        value.header === "interrupting" &&
+        Array.isArray(value.entries) &&
+        value.entries.length === 0
+      );
+    case "starting":
+      return (
+        hasOnlyKeys(value, ["kind", "header", "entries", "profile", "route"]) &&
+        value.header === "preparing" &&
+        Array.isArray(value.entries) &&
+        value.entries.length === 0 &&
+        isProfile(value.profile)
+      );
+    case "orphaned":
+      return (
+        hasOnlyKeys(value, ["kind", "header", "entries", "reason", "route"]) &&
+        value.header === "orphaned" &&
+        hasEntries(value) &&
+        (value.reason === "superseded_send" || value.reason === "stale_handoff")
+      );
+    case "active":
+      return (
+        hasOnlyKeys(value, ["kind", "header", "entries", "profile", "cancelAction", "route"]) &&
+        ["thinking", "waiting", "calling_tool", "responding"].includes(value.header as string) &&
+        hasEntries(value) &&
+        isProfile(value.profile) &&
+        (value.cancelAction === undefined ||
+          (isRecord(value.cancelAction) &&
+            hasOnlyKeys(value.cancelAction, ["p", "s", "a"]) &&
+            [value.cancelAction.p, value.cancelAction.s, value.cancelAction.a].every(
+              (field) => typeof field === "string",
+            )))
+      );
+    case "archived":
+      return (
+        hasOnlyKeys(value, ["kind", "entries", "summary", "route"]) &&
+        hasEntries(value, true) &&
+        typeof value.summary === "string"
+      );
+    case "terminal":
+      return (
+        hasOnlyKeys(value, ["kind", "header", "entries", "profile", "body", "route"]) &&
+        ["complete", "cancelled", "failed", "superseded", "abandoned"].includes(
+          value.header as string,
+        ) &&
+        hasEntries(value) &&
+        isProfile(value.profile) &&
+        (value.body === "content" ||
+          (value.body === "empty_complete" &&
+            value.header === "complete" &&
+            Array.isArray(value.entries) &&
+            value.entries.length === 0))
+      );
+    default:
+      return false;
+  }
+}
+
+function isPermissionCardView(value: unknown): value is PermissionCardView {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "route",
+      "promptToken",
+      "permissionToken",
+      "requestId",
+      "title",
+      "toolKind",
+      "toolTitle",
+      "options",
+    ]) &&
+    isRoute(value.route) &&
+    [
+      value.promptToken,
+      value.permissionToken,
+      value.requestId,
+      value.title,
+      value.toolKind,
+      value.toolTitle,
+    ].every((field) => typeof field === "string") &&
+    Array.isArray(value.options) &&
+    value.options.length > 0 &&
+    value.options.every(
+      (option) =>
+        isRecord(option) &&
+        hasOnlyKeys(option, ["id", "label", "kind"]) &&
+        typeof option.id === "string" &&
+        typeof option.label === "string" &&
+        (option.kind === undefined || typeof option.kind === "string"),
+    )
+  );
+}
+
 export interface LarkCardPresenterOptions {
   http: LarkHttpClient;
   logger: LarkLogger;
+  feature?: ConversationCardFeatureGate;
 }
 
 /**
@@ -518,10 +908,86 @@ export interface LarkCardPresenterOptions {
 export class LarkCardPresenter implements LarkPresenter {
   private readonly http: LarkHttpClient;
   private readonly logger: LarkLogger;
+  private readonly feature: ConversationCardFeatureGate;
 
   constructor(opts: LarkCardPresenterOptions) {
     this.http = opts.http;
     this.logger = opts.logger.child({ name: "presenter" });
+    this.feature = opts.feature ?? DISABLED_CONVERSATION_CARD_FEATURE;
+  }
+
+  async sendConversationCard(
+    replyToMessageId: string,
+    view: ConversationCardView,
+  ): Promise<string | null> {
+    if (!this.feature.v2Enabled) return null;
+    if (!isConversationCardView(view)) {
+      this.logger.warn("sendConversationCard rejected malformed view");
+      return null;
+    }
+    try {
+      return await this.http.replyCard(replyToMessageId, buildSemanticConversationCard(view), {
+        replyInThread: view.route.th !== undefined,
+      });
+    } catch (err) {
+      this.logger.warn({ err: conciseError(err) }, "sendConversationCard rejected");
+      return null;
+    }
+  }
+
+  async updateConversationCard(
+    cardMessageId: string,
+    view: ConversationCardView,
+  ): Promise<boolean> {
+    if (!this.feature.v2Enabled) return false;
+    if (!isConversationCardView(view)) {
+      this.logger.warn("updateConversationCard rejected malformed view");
+      return false;
+    }
+    try {
+      await this.http.patchCard(cardMessageId, buildSemanticConversationCard(view));
+      return true;
+    } catch (err) {
+      this.logger.warn({ err: conciseError(err) }, "updateConversationCard rejected");
+      return false;
+    }
+  }
+
+  async sendPermissionRequestCard(
+    replyToMessageId: string,
+    view: PermissionCardView,
+  ): Promise<string | null> {
+    if (!this.feature.v2Enabled) return null;
+    if (!isPermissionCardView(view)) {
+      this.logger.warn("sendPermissionRequestCard rejected malformed view");
+      return null;
+    }
+    try {
+      return await this.http.replyCard(replyToMessageId, buildSemanticPermissionCard(view), {
+        replyInThread: view.route.th !== undefined,
+      });
+    } catch (err) {
+      this.logger.warn({ err: conciseError(err) }, "sendPermissionRequestCard rejected");
+      return null;
+    }
+  }
+
+  async updatePermissionRequestCard(
+    cardMessageId: string,
+    view: PermissionCardView,
+  ): Promise<boolean> {
+    if (!this.feature.v2Enabled) return false;
+    if (!isPermissionCardView(view)) {
+      this.logger.warn("updatePermissionRequestCard rejected malformed view");
+      return false;
+    }
+    try {
+      await this.http.patchCard(cardMessageId, buildSemanticPermissionCard(view));
+      return true;
+    } catch (err) {
+      this.logger.warn({ err: conciseError(err) }, "updatePermissionRequestCard rejected");
+      return false;
+    }
   }
 
   async replyText(messageId: string, text: string): Promise<void> {

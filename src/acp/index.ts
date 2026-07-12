@@ -18,6 +18,17 @@ export type {
   ProbeAgentSessionCapabilitiesResult,
   SpawnAgentOptions,
 } from "./agent-process.js";
+export { ConversationCardDelivery } from "./conversation-card-delivery.js";
+export type {
+  CardDeliveryContext,
+  CardDeliveryResult,
+  CardDeliveryTransport,
+  PermissionArtifactReconciliation,
+  PermissionCardTransport,
+  PermissionHandoffRequest,
+  PermissionHandoffResult,
+  SemanticCardDeliveryTransport,
+} from "./conversation-card-delivery.js";
 export {
   projectLifecycleDiagnostic,
   RingBufferLifecycleDiagnosticSink,

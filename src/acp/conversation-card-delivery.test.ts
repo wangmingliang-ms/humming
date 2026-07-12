@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ConversationCardView, OwnershipToken } from "../presenter/conversation-card-view.js";
 import type { UnifiedCardState } from "../presenter/presenter.js";
+import type {
+  DiagnosticCorrelation,
+  LifecycleDiagnosticEvent,
+  LifecycleDiagnosticSink,
+} from "./lifecycle-diagnostics.js";
 import {
   ConversationCardDelivery,
   type CardDeliveryTransport,
@@ -31,7 +37,401 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function ownerToken(value: string): OwnershipToken {
+  return value as OwnershipToken;
+}
+
+function correlation(ownerSequence: number): DiagnosticCorrelation {
+  return {
+    runtimeSequence: 1,
+    promptSequence: 2,
+    segmentSequence: 3,
+    ownerSequence,
+  };
+}
+
+function startingView(text = "route"): ConversationCardView {
+  return {
+    kind: "starting",
+    header: "preparing",
+    entries: [],
+    profile: null,
+    route: { c: text },
+  };
+}
+
+function archivedView(text = "done"): Extract<ConversationCardView, { kind: "archived" }> {
+  return {
+    kind: "archived",
+    entries: [{ kind: "text", text }],
+    summary: text,
+    route: { c: "route" },
+  };
+}
+
+function promptToken(value: string) {
+  return value as import("../presenter/conversation-card-view.js").PromptToken;
+}
+
+function segmentToken(value: string) {
+  return value as import("../presenter/conversation-card-view.js").SegmentToken;
+}
+
+function permissionToken(value: string) {
+  return value as import("../presenter/conversation-card-view.js").PermissionToken;
+}
+
+function diagnosticSink(): LifecycleDiagnosticSink & { events: LifecycleDiagnosticEvent[] } {
+  const events: LifecycleDiagnosticEvent[] = [];
+  return { events, record: (event) => events.push(event) };
+}
+
 describe("ConversationCardDelivery", () => {
+  it("registers a supplied semantic owner and adopts a card for immutable view delivery", async () => {
+    const sink = diagnosticSink();
+    const sendView = vi.fn(async () => "unexpected-card");
+    const patchView = vi.fn(async () => true);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      sink,
+      () => ownerToken("generated-owner"),
+      { sendView, patchView },
+    );
+    const owner = ownerToken("owner-1");
+    const view = startingView();
+
+    expect(delivery.createOwner({ messageSequence: 1 }, correlation(1), owner)).toBe(owner);
+    expect(delivery.adopt(owner, "card-1")).toBe("adopted");
+    await expect(delivery.deliver(owner, view)).resolves.toEqual({
+      outcome: "visible",
+      cardId: "card-1",
+    });
+
+    expect(patchView).toHaveBeenCalledExactlyOnceWith("card-1", view);
+    expect(sendView).not.toHaveBeenCalled();
+    expect(sink.events).toEqual([
+      {
+        category: "delivery",
+        correlation: correlation(1),
+        operation: "adopt",
+        outcome: "visible",
+      },
+      {
+        category: "delivery",
+        correlation: correlation(1),
+        operation: "patch",
+        outcome: "pending",
+      },
+      {
+        category: "delivery",
+        correlation: correlation(1),
+        operation: "patch",
+        outcome: "visible",
+      },
+    ]);
+  });
+
+  it("closes an owner synchronously so a detached successor proceeds while its patch hangs", async () => {
+    const oldPatch = deferred<boolean>();
+    const sendView = vi.fn(async () => "successor-card");
+    const patchView = vi.fn(() => oldPatch.promise);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView, patchView },
+    );
+    const oldOwner = delivery.createOwner(
+      { messageSequence: 1 },
+      correlation(1),
+      ownerToken("old"),
+    );
+    delivery.adopt(oldOwner, "old-card");
+    const running = delivery.deliver(oldOwner, startingView("running"));
+    await vi.waitFor(() => expect(patchView).toHaveBeenCalledTimes(1));
+
+    const successor = delivery.close(
+      oldOwner,
+      archivedView(),
+      correlation(2),
+      ownerToken("successor"),
+    );
+    await expect(delivery.deliver(oldOwner, startingView("stale"))).resolves.toEqual({
+      outcome: "skipped",
+    });
+    await expect(delivery.deliver(successor, startingView("fresh"))).resolves.toEqual({
+      outcome: "visible",
+      cardId: "successor-card",
+    });
+
+    expect(sendView).toHaveBeenCalledExactlyOnceWith(startingView("fresh"));
+    oldPatch.resolve(true);
+    await expect(running).resolves.toEqual({ outcome: "skipped" });
+    await vi.waitFor(() => expect(patchView).toHaveBeenCalledTimes(2));
+    expect(patchView).toHaveBeenNthCalledWith(2, "old-card", archivedView());
+    expect(sendView).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits terminal close immediately instead of waiting behind a hung queued patch", async () => {
+    const hungPatch = deferred<boolean>();
+    const patchView = vi
+      .fn()
+      .mockImplementationOnce(() => hungPatch.promise)
+      .mockResolvedValueOnce(true);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView: vi.fn(async () => "unexpected"), patchView },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+    delivery.adopt(owner, "card");
+    const waiting = delivery.deliver(owner, {
+      kind: "active",
+      header: "waiting",
+      entries: [],
+      profile: null,
+      cancelAction: {
+        p: promptToken("prompt"),
+        s: segmentToken("segment"),
+        a: "action" as import("../presenter/conversation-card-view.js").ActionToken,
+      },
+      route: { c: "route" },
+    });
+    await vi.waitFor(() => expect(patchView).toHaveBeenCalledTimes(1));
+
+    delivery.close(owner, archivedView("terminal wins"), correlation(2), ownerToken("next"));
+    await vi.waitFor(() => expect(patchView).toHaveBeenCalledTimes(2));
+    expect(patchView).toHaveBeenNthCalledWith(2, "card", archivedView("terminal wins"));
+
+    hungPatch.resolve(true);
+    await expect(waiting).resolves.toEqual({ outcome: "skipped" });
+  });
+
+  it("freezes every semantic transport boundary before queued work can observe mutation", async () => {
+    const firstPatch = deferred<boolean>();
+    const patchView = vi
+      .fn()
+      .mockImplementationOnce(() => firstPatch.promise)
+      .mockResolvedValueOnce(true);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView: vi.fn(async () => "card"), patchView },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+    delivery.adopt(owner, "card");
+    const blocking = delivery.deliver(owner, startingView("block"));
+    await vi.waitFor(() => expect(patchView).toHaveBeenCalledTimes(1));
+    const mutable = startingView("original") as {
+      route: { c: string };
+    };
+
+    const queued = delivery.deliver(owner, mutable);
+    mutable.route.c = "mutated";
+    firstPatch.resolve(true);
+
+    await blocking;
+    await queued;
+    expect(patchView).toHaveBeenNthCalledWith(2, "card", startingView("original"));
+  });
+
+  it("retries a rejected permission reuse exactly once with a fresh send", async () => {
+    const patchPermission = vi.fn(async () => false);
+    const sendPermission = vi.fn(async () => "permission-card");
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView: vi.fn(), patchView: vi.fn() },
+      {
+        patchPermission,
+        sendPermission,
+        reconcilePermissionArtifact: vi.fn(),
+      },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+    delivery.adopt(owner, "idle-card");
+    const request = {
+      promptToken: promptToken("prompt"),
+      segmentToken: segmentToken("segment"),
+      permissionToken: permissionToken("permission"),
+      permission: { title: "original", options: [{ id: "allow" }] },
+      isCurrent: () => true,
+    };
+
+    await expect(delivery.handoffToPermission(owner, request)).resolves.toEqual({
+      outcome: "sent_fresh",
+      permissionCardId: "permission-card",
+    });
+    expect(patchPermission).toHaveBeenCalledExactlyOnceWith("idle-card", request);
+    expect(sendPermission).toHaveBeenCalledExactlyOnceWith(request);
+    await expect(delivery.deliver(owner, startingView())).resolves.toEqual({ outcome: "skipped" });
+  });
+
+  it("returns explicit permission reconciliation when finish wins a deferred fresh send", async () => {
+    const pendingPermission = deferred<string | null>();
+    let current = true;
+    const sendPermission = vi.fn(() => pendingPermission.promise);
+    const reconcilePermissionArtifact = vi.fn(async () => undefined);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView: vi.fn(), patchView: vi.fn() },
+      {
+        patchPermission: vi.fn(),
+        sendPermission,
+        reconcilePermissionArtifact,
+      },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+    const request = {
+      promptToken: promptToken("prompt"),
+      segmentToken: segmentToken("segment"),
+      permissionToken: permissionToken("permission"),
+      permission: { title: "permission" },
+      isCurrent: () => current,
+    };
+
+    const handoff = delivery.handoffToPermission(owner, request);
+    await vi.waitFor(() => expect(sendPermission).toHaveBeenCalledTimes(1));
+    current = false;
+    pendingPermission.resolve("late-permission-card");
+
+    await expect(handoff).resolves.toEqual({
+      outcome: "superseded",
+      permissionCardId: "late-permission-card",
+      reconciliation: {
+        type: "reconcile_permission_artifact",
+        cardId: "late-permission-card",
+        promptToken: request.promptToken,
+        permissionToken: request.permissionToken,
+        reason: "stale_handoff",
+      },
+    });
+    expect(reconcilePermissionArtifact).toHaveBeenCalledExactlyOnceWith(
+      "late-permission-card",
+      request,
+    );
+  });
+
+  it("reports a fresh permission send failure without implicit retries", async () => {
+    const sendPermission = vi.fn(async () => null);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView: vi.fn(), patchView: vi.fn() },
+      {
+        patchPermission: vi.fn(),
+        sendPermission,
+        reconcilePermissionArtifact: vi.fn(),
+      },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+
+    await expect(
+      delivery.handoffToPermission(owner, {
+        promptToken: promptToken("prompt"),
+        segmentToken: segmentToken("segment"),
+        permissionToken: permissionToken("permission"),
+        permission: {},
+        isCurrent: () => true,
+      }),
+    ).resolves.toEqual({ outcome: "failed" });
+    expect(sendPermission).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reuse a closed owner token", () => {
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView: vi.fn(), patchView: vi.fn() },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+    delivery.close(owner, archivedView(), correlation(2), ownerToken("successor"));
+
+    expect(() =>
+      delivery.createOwner({ messageSequence: 2 }, correlation(3), ownerToken("owner")),
+    ).toThrow("ownership token has already been registered");
+  });
+
+  it("reports patch rejection, replacement failure, and a later independent retry", async () => {
+    const sink = diagnosticSink();
+    const sendView = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce("replacement");
+    const patchView = vi.fn(async () => false);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      sink,
+      () => ownerToken("generated"),
+      { sendView, patchView },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+    delivery.adopt(owner, "rejected-card");
+
+    await expect(delivery.deliver(owner, startingView("failed"))).resolves.toEqual({
+      outcome: "pending",
+    });
+    await expect(delivery.deliver(owner, startingView("newest"))).resolves.toEqual({
+      outcome: "visible",
+      cardId: "replacement",
+    });
+    expect(sendView).toHaveBeenCalledTimes(2);
+    expect(sendView).toHaveBeenNthCalledWith(2, startingView("newest"));
+    expect(sink.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: "patch", outcome: "rejected" }),
+        expect.objectContaining({ operation: "send", outcome: "failed" }),
+        expect.objectContaining({ operation: "send", outcome: "visible" }),
+      ]),
+    );
+  });
+
+  it("reports a stale successful send and reconciles it without changing successor ownership", async () => {
+    const oldSend = deferred<string | null>();
+    const sendView = vi
+      .fn()
+      .mockImplementationOnce(() => oldSend.promise)
+      .mockResolvedValue("successor-card");
+    const patchView = vi.fn(async () => true);
+    const delivery = new ConversationCardDelivery(
+      transport(),
+      diagnosticSink(),
+      () => ownerToken("generated"),
+      { sendView, patchView },
+    );
+    const owner = delivery.createOwner({ messageSequence: 1 }, correlation(1), ownerToken("owner"));
+    const sending = delivery.deliver(owner, startingView("old"));
+    await vi.waitFor(() => expect(sendView).toHaveBeenCalledTimes(1));
+    const successor = delivery.close(
+      owner,
+      archivedView(),
+      correlation(2),
+      ownerToken("successor"),
+    );
+    oldSend.resolve("orphan-card");
+
+    await expect(sending).resolves.toEqual({ outcome: "superseded", cardId: "orphan-card" });
+    await delivery.reconcileSuperseded(owner, "orphan-card", {
+      kind: "orphaned",
+      header: "orphaned",
+      entries: [],
+      reason: "superseded_send",
+      route: { c: "route" },
+    });
+    expect(patchView).toHaveBeenCalledWith(
+      "orphan-card",
+      expect.objectContaining({ kind: "orphaned", reason: "superseded_send" }),
+    );
+    await expect(delivery.deliver(successor, startingView("successor"))).resolves.toEqual({
+      outcome: "visible",
+      cardId: "successor-card",
+    });
+  });
+
   it("sends the first complete state", async () => {
     const cardTransport = transport();
     const delivery = new ConversationCardDelivery(cardTransport);

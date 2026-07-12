@@ -469,9 +469,12 @@ function appendText(state: ActiveState, kind: "text" | "thought", text: string):
     last?.kind === kind
       ? [...state.entries.slice(0, -1), { kind, text: `${last.text}${text}` }]
       : [...state.entries, { kind, text }];
+  const hasRunningTool = entries.some(
+    (entry) => entry.kind === "tool" && RUNNING.has(entry.status),
+  );
   return {
     ...state,
-    activity: kind === "text" ? "responding" : state.activity,
+    activity: hasRunningTool ? "calling_tool" : kind === "text" ? "responding" : state.activity,
     display: "content",
     entries,
   };

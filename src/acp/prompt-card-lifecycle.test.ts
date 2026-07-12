@@ -650,6 +650,36 @@ describe("prompt lifecycle creation and queue transitions", () => {
     }
   });
 
+  it("keeps calling_tool when text arrives while any tool is still running", () => {
+    const active = reducePromptLifecycle(create("starting"), {
+      type: "forwarded",
+      promptToken,
+      segmentToken,
+      actionToken,
+    }).next;
+    const running = reducePromptLifecycle(active, {
+      type: "tool_started",
+      promptToken,
+      displaySegmentToken: segmentToken,
+      tool: { toolCallId: "tool", title: "run", toolKind: "shell", status: "in_progress" },
+    }).next;
+    const withText = reducePromptLifecycle(running, {
+      type: "agent_text",
+      promptToken,
+      segmentToken,
+      text: "partial answer",
+    }).next;
+
+    expect(viewForPromptState(withText)).toMatchObject({
+      kind: "active",
+      header: "calling_tool",
+      entries: [
+        { kind: "tool", status: "in_progress" },
+        { kind: "text", text: "partial answer" },
+      ],
+    });
+  });
+
   it("recomputes activity when tools finish and rejects stale idle callbacks after visible content", () => {
     const active = reducePromptLifecycle(create("starting"), {
       type: "forwarded",

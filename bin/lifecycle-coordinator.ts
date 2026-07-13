@@ -11,7 +11,6 @@ import {
   clearBridgeRestartMarker,
   isAlive,
   startBridge,
-  stopBridge,
 } from "./process-control.js";
 import { sendControlRequest } from "../src/bridge/control-server.js";
 import {
@@ -485,8 +484,12 @@ async function runCoordinatorCli(argv: readonly string[]): Promise<void> {
         return false;
       }
     },
-    forceTerminate: async () => {
-      await stopBridge({ homeDir: transaction.home });
+    forceTerminate: async (pid) => {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // already gone
+      }
     },
     complete: async (result) => {
       if (result.outcome === "restartFailed") {

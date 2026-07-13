@@ -489,8 +489,11 @@ async function startBridgeWithSystemd(
   const logPath = bridgeLogPath(opts.homeDir);
   fs.mkdirSync(opts.homeDir, { recursive: true });
 
-  // Clear a failed/collected unit with the same name before starting a new one.
+  // `systemd-run --collect` keeps a completed transient unit loaded briefly.
+  // Remove that inactive unit before recreating the stable per-home name.
+  runSystemctl(["stop", opts.unitName], false);
   runSystemctl(["reset-failed", opts.unitName], false);
+  await waitForSystemdUnitUnload(opts.unitName);
 
   const args = [
     "--user",
@@ -746,6 +749,19 @@ function systemdMainPid(unitName: string): number | null {
   const pid = Number(raw);
   if (!Number.isInteger(pid) || pid <= 0) return null;
   return pid;
+}
+
+async function waitForSystemdUnitUnload(unitName: string): Promise<void> {
+  const deadline = Date.now() + GRACEFUL_STOP_TIMEOUT_MS;
+  for (;;) {
+    const result = runSystemctl(["show", unitName, "-p", "LoadState", "--value"], false);
+    const state = result.stdout.trim();
+    if (state === "" || state === "not-found") return;
+    if (Date.now() >= deadline) {
+      throw new ProcessControlError(`systemd unit ${unitName} remained loaded after stop`);
+    }
+    await delay(EXIT_POLL_INTERVAL_MS);
+  }
 }
 
 function systemdEnvArgs(): string[] {

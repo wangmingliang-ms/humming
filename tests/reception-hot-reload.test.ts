@@ -43,13 +43,15 @@ class RecordingPresenter implements LarkPresenter {
   readonly agentSwitchWarnings: AgentSwitchWarningCardSpec[] = [];
   readonly agentSwitchResolutions: AgentSwitchWarningResolution[] = [];
   async replyText(): Promise<void> {}
-  async sendInterruptCard(): Promise<string | null> {
+  async sendConversationCard(): Promise<string | null> {
     return null;
   }
-  async updateInterruptCard(): Promise<boolean> {
+  async updateConversationCard(): Promise<boolean> {
     return true;
   }
-  async updatePermissionCard(): Promise<void> {}
+  async sendPermissionRequestCard(): Promise<string | null> {
+    return null;
+  }
   async expirePermissionCard(): Promise<void> {}
   async replyNoticeCard(_id: string, notice: NoticeCardSpec): Promise<string | null> {
     this.notices.push(notice);
@@ -74,12 +76,6 @@ class RecordingPresenter implements LarkPresenter {
     resolution: AgentSwitchWarningResolution,
   ): Promise<void> {
     this.agentSwitchResolutions.push(resolution);
-  }
-  async sendUnifiedCard(): Promise<string | null> {
-    return null;
-  }
-  async updateUnifiedCard(): Promise<boolean> {
-    return true;
   }
 }
 

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type * as acp from "@agentclientprotocol/sdk";
 import {
   COMMAND_RESULT_BODY_BYTE_LIMIT,
   LarkCardPresenter,
@@ -8,7 +7,6 @@ import {
 import { CARD_MARKDOWN_ROTATION_BYTE_LIMIT, utf8ByteLength } from "./card-text-budget.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
-import type { ConversationCardFeatureGate } from "../bridge/conversation-card-feature.js";
 import type {
   ActionToken,
   ConversationCardView,
@@ -45,11 +43,7 @@ const logger: LarkLogger = {
   child: () => logger,
 };
 
-function makePresenter(
-  captured: CardWithConfig[],
-  calls: ReplyCardCall[] = [],
-  feature?: ConversationCardFeatureGate,
-): LarkCardPresenter {
+function makePresenter(captured: CardWithConfig[], calls: ReplyCardCall[] = []): LarkCardPresenter {
   const http = {
     replyCard: async (
       _messageId: string,
@@ -65,21 +59,13 @@ function makePresenter(
       captured.push(card as CardWithConfig);
     },
   } as unknown as LarkHttpClient;
-  return new LarkCardPresenter({ http, logger, feature });
-}
-
-function permissionRequest(): acp.RequestPermissionRequest {
-  return {
-    sessionId: "sess_1",
-    toolCall: { toolCallId: "tool_1", title: "Edit file", kind: "edit", status: "pending" },
-    options: [{ kind: "allow_once", name: "允许", optionId: "allow" }],
-  };
+  return new LarkCardPresenter({ http, logger });
 }
 
 describe("LarkCardPresenter card summary", () => {
   it("accepts asynchronous active snapshots and renders Cancel", async () => {
     const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards, [], { v2Enabled: true });
+    const presenter = makePresenter(cards);
     const base = {
       profile: null,
       cancelAction: {
@@ -127,7 +113,7 @@ describe("LarkCardPresenter card summary", () => {
 
   it("labels a newly received semantic Response as received, not queued behind prior work", async () => {
     const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards, [], { v2Enabled: true });
+    const presenter = makePresenter(cards);
     await expect(
       presenter.sendConversationCard("message", {
         kind: "queued",
@@ -140,277 +126,6 @@ describe("LarkCardPresenter card summary", () => {
     expect(cards[0]?.header?.title?.content).toBe("📩 消息已收到");
     expect(cards[0]?.body?.elements?.[0]?.content).toContain("已收到消息");
     expect(JSON.stringify(cards[0])).not.toContain("前一任务仍在进行");
-  });
-
-  it("adds processing / waiting / terminal summaries for home-list status", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    await presenter.sendUnifiedCard("om_1", {
-      status: "received",
-      entries: [],
-      cancellable: true,
-      chatId: "oc_1",
-      threadId: null,
-    });
-    await presenter.updateUnifiedCard("card_1", {
-      status: "preparing",
-      entries: [],
-      cancellable: false,
-      chatId: "oc_1",
-      threadId: null,
-    });
-    await presenter.updateUnifiedCard("card_1", {
-      status: "thinking",
-      entries: [],
-      cancellable: true,
-      chatId: "oc_1",
-      threadId: null,
-    });
-    await presenter.updateUnifiedCard("card_1", {
-      status: "calling_tool",
-      entries: [
-        {
-          kind: "tool",
-          toolCallId: "tool_1",
-          title: "Read file",
-          toolKind: "read",
-          status: "pending",
-        },
-      ],
-      cancellable: true,
-      chatId: "oc_1",
-      threadId: null,
-    });
-    await presenter.sendInterruptCard("om_1", permissionRequest(), "req_1", "oc_1", null);
-    await presenter.updateUnifiedCard("card_1", {
-      status: "complete",
-      entries: [{ kind: "text", text: "done" }],
-      cancellable: false,
-      chatId: "oc_1",
-      threadId: null,
-    });
-
-    expect(cards.map((card) => card.config?.summary?.content)).toEqual([
-      "📩 Humming 已收到消息",
-      "🔄 正在启动或连接 Agent",
-      "💭 Agent 正在思考",
-      "🔄 read: Read file",
-      "⏳ 待确认",
-      "✅ 已结束",
-    ]);
-    expect(cards[0]?.body?.elements?.[0]?.content).toContain("已收到消息");
-    expect(cards[1]?.body?.elements?.[0]?.content).toContain("正在启动或连接 Agent");
-    expect(cards[2]?.body?.elements?.[0]?.content).toContain("已转发给 Agent");
-    expect(cards[3]?.header?.title?.content).toBe("🔄 处理中...");
-    expect(cards[4]?.header?.title?.content).toBe("⏳ 待确认");
-  });
-
-  it("surfaces the latest thought in a thinking summary", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    await presenter.sendUnifiedCard("om_1", {
-      status: "thinking",
-      entries: [{ kind: "thought", text: "**Inspecting** the request" }],
-      cancellable: true,
-      chatId: "oc_1",
-      threadId: null,
-    });
-
-    expect(cards[0]?.config?.summary?.content).toBe("💭 Inspecting the request");
-  });
-
-  it("renders sealed conversation fragments without a status-colored header", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    await presenter.sendUnifiedCard("om_1", {
-      status: "sealed",
-      entries: [{ kind: "text", text: "before approve" }],
-      cancellable: false,
-      chatId: "oc_1",
-      threadId: null,
-      meta: {
-        agent: "Claude",
-        mode: "Plan Mode",
-        model: "Claude Sonnet 5",
-        permission: "Edit Automatically: on",
-      },
-    });
-
-    expect(cards[0]?.header).toBeUndefined();
-    expect(cards[0]?.config?.summary?.content).toBe("before approve");
-    expect(JSON.stringify(cards[0])).not.toContain("Agent: Claude");
-  });
-
-  it("renders completed conversation cards as ended and mirrors that status in summaries", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    await presenter.updateUnifiedCard("card_1", {
-      status: "complete",
-      entries: [
-        {
-          kind: "text",
-          text: "**第一条消息** 这里是一个很长的 conversation card 开头，用来做外层 summary，不能再显示成功态勾选。".repeat(
-            3,
-          ),
-        },
-        { kind: "text", text: "second message should not drive the summary" },
-      ],
-      cancellable: false,
-      chatId: "oc_1",
-      threadId: null,
-    });
-
-    expect(cards[0]?.header?.title?.content).toBe("✅ 已结束");
-    expect(cards[0]?.header?.template).toBe("blue");
-    expect(cards[0]?.config?.summary?.content).toBe("✅ 已结束");
-  });
-
-  it("renders an explicit empty-output warning for terminal cards with no entries", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    await presenter.updateUnifiedCard("card_1", {
-      status: "complete",
-      entries: [],
-      cancellable: false,
-      chatId: "oc_1",
-      threadId: null,
-    });
-
-    const content = cards[0]?.body?.elements?.[0]?.content ?? "";
-    expect(cards[0]?.header?.title?.content).toBe("⚠️ 空回复");
-    expect(cards[0]?.header?.template).toBe("orange");
-    expect(cards[0]?.config?.summary?.content).toBe("⚠️ 空回复");
-    expect(content).toContain("Agent 本轮结束了，但没有产生任何可显示内容");
-    expect(content).not.toContain("准备中");
-  });
-
-  it("keeps empty failed cards visibly failed instead of using the empty-output warning", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    await presenter.updateUnifiedCard("card_1", {
-      status: "failed",
-      entries: [],
-      cancellable: false,
-      chatId: "oc_1",
-      threadId: null,
-    });
-
-    const content = cards[0]?.body?.elements?.[0]?.content ?? "";
-    expect(cards[0]?.header?.title?.content).toBe("⚠️ 出错");
-    expect(cards[0]?.header?.template).toBe("red");
-    expect(cards[0]?.config?.summary?.content).toBe("⚠️ 出错");
-    expect(content).toContain("本轮任务出错");
-  });
-
-  it("renders session metadata on running and titled terminal conversation cards", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-    const meta = {
-      agent: "Claude",
-      mode: "Plan Mode",
-      model: "Claude Sonnet 5",
-      permission: "Edit Automatically: on",
-    };
-
-    await presenter.sendUnifiedCard("om_1", {
-      status: "responding",
-      entries: [{ kind: "text", text: "working" }],
-      cancellable: true,
-      chatId: "oc_1",
-      threadId: null,
-      meta,
-    });
-    await presenter.updateUnifiedCard("card_1", {
-      status: "complete",
-      entries: [{ kind: "text", text: "done" }],
-      cancellable: false,
-      chatId: "oc_1",
-      threadId: null,
-      meta,
-    });
-
-    for (const card of cards) {
-      const elements = card.body?.elements ?? [];
-      expect(elements.at(-1)).toMatchObject({
-        tag: "markdown",
-        content:
-          '<font color="grey">Agent: Claude · Mode: Plan Mode · Model: Claude Sonnet 5 · Permission: Edit Automatically: on</font>',
-      });
-    }
-
-    const runningElements = cards[0]?.body?.elements ?? [];
-    expect(runningElements.at(-3)).toMatchObject({ tag: "button" });
-    expect(runningElements.at(-1)).toMatchObject({ tag: "markdown" });
-  });
-
-  it("distinguishes approved and rejected permission cards", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    await presenter.updatePermissionCard(
-      "card_approve_once",
-      "edit",
-      "config.json",
-      "允许本次",
-      "allow_once",
-    );
-    await presenter.updatePermissionCard(
-      "card_approve_always",
-      "edit",
-      "config.json",
-      "总是允许",
-      "allow_always",
-    );
-    await presenter.updatePermissionCard(
-      "card_reject_once",
-      "edit",
-      "config.json",
-      "拒绝本次",
-      "reject_once",
-    );
-    await presenter.updatePermissionCard(
-      "card_reject_always",
-      "edit",
-      "config.json",
-      "总是拒绝",
-      "reject_always",
-    );
-
-    expect(cards[0]?.header?.title?.content).toBe("✅ 已批准（本次）");
-    expect(cards[0]?.header?.template).toBe("green");
-    expect(cards[0]?.config?.summary?.content).toBe("✅ 已批准（本次）");
-    expect(cards[1]?.header?.title?.content).toBe("✅ 已批准（永久）");
-    expect(cards[1]?.header?.template).toBe("green");
-    expect(cards[1]?.config?.summary?.content).toBe("✅ 已批准（永久）");
-    expect(cards[2]?.header?.title?.content).toBe("❌ 已拒绝（本次）");
-    expect(cards[2]?.header?.template).toBe("red");
-    expect(cards[2]?.config?.summary?.content).toBe("❌ 已拒绝（本次）");
-    expect(cards[3]?.header?.title?.content).toBe("❌ 已拒绝（永久）");
-    expect(cards[3]?.header?.template).toBe("red");
-    expect(cards[3]?.config?.summary?.content).toBe("❌ 已拒绝（永久）");
-  });
-
-  it("sends topic cards as in-thread replies", async () => {
-    const cards: CardWithConfig[] = [];
-    const calls: ReplyCardCall[] = [];
-    const presenter = makePresenter(cards, calls);
-
-    await presenter.sendUnifiedCard("om_1", {
-      status: "thinking",
-      entries: [],
-      cancellable: true,
-      chatId: "oc_1",
-      threadId: "omt_1",
-    });
-    await presenter.sendInterruptCard("om_1", permissionRequest(), "req_1", "oc_1", "omt_1");
-
-    expect(calls.map((call) => call.opts?.replyInThread)).toEqual([true, true]);
   });
 
   it("truncates oversized notice card bodies at the compact notice limit", async () => {
@@ -501,7 +216,6 @@ describe("LarkCardPresenter card summary", () => {
 });
 
 describe("LarkCardPresenter semantic conversation cards", () => {
-  const enabled = Object.freeze({ v2Enabled: true });
   const route = { c: "oc_semantic", th: "omt_semantic" } as const;
   const profile = {
     agent: "Claude",
@@ -522,19 +236,10 @@ describe("LarkCardPresenter semantic conversation cards", () => {
     route,
   };
 
-  it("keeps semantic methods transport-inert by default", async () => {
-    const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards);
-
-    expect(await presenter.sendConversationCard("om_1", active)).toBeNull();
-    expect(await presenter.updateConversationCard("card_1", active)).toBe(false);
-    expect(cards).toEqual([]);
-  });
-
-  it("renders an explicitly enabled active card with the exact Cancel V2 payload", async () => {
+  it("renders an active card with the exact Cancel payload", async () => {
     const cards: CardWithConfig[] = [];
     const calls: ReplyCardCall[] = [];
-    const presenter = makePresenter(cards, calls, enabled);
+    const presenter = makePresenter(cards, calls);
 
     expect(await presenter.sendConversationCard("om_1", active)).toBe("card_1");
 
@@ -567,7 +272,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
 
   it("renders semantic permission actions with prompt and permission authority", async () => {
     const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards, [], enabled);
+    const presenter = makePresenter(cards);
     const permission: PermissionCardView = {
       route,
       promptToken: "prompt_1" as PromptToken,
@@ -602,7 +307,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
 
   it("renders every semantic view kind through the public send and patch methods", async () => {
     const cards: CardWithConfig[] = [];
-    const presenter = makePresenter(cards, [], enabled);
+    const presenter = makePresenter(cards);
     const views: ConversationCardView[] = [
       { kind: "queued", header: "queued", entries: [], profile, route },
       { kind: "interrupting", header: "interrupting", entries: [], profile, route },
@@ -681,7 +386,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
         return "unexpected";
       },
     } as unknown as LarkHttpClient;
-    const presenter = new LarkCardPresenter({ http, logger: invalidLogger, feature: enabled });
+    const presenter = new LarkCardPresenter({ http, logger: invalidLogger });
     const malformed = {
       kind: "archived",
       entries: [],
@@ -711,7 +416,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
         return "unexpected";
       },
     } as unknown as LarkHttpClient;
-    const presenter = new LarkCardPresenter({ http, logger: invalidLogger, feature: enabled });
+    const presenter = new LarkCardPresenter({ http, logger: invalidLogger });
     const route = { c: "sensitive-chat" };
     const profile = null;
     const running = {

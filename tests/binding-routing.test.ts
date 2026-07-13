@@ -36,13 +36,15 @@ class RecordingPresenter implements LarkPresenter {
   async replyText(_messageId: string, text: string): Promise<void> {
     this.texts.push(text);
   }
-  async sendInterruptCard(): Promise<string | null> {
+  async sendConversationCard(): Promise<string | null> {
     return null;
   }
-  async updateInterruptCard(): Promise<boolean> {
+  async updateConversationCard(): Promise<boolean> {
     return true;
   }
-  async updatePermissionCard(): Promise<void> {}
+  async sendPermissionRequestCard(): Promise<string | null> {
+    return null;
+  }
   async expirePermissionCard(): Promise<void> {}
   async replyNoticeCard(_replyToMessageId: string, notice: NoticeCardSpec): Promise<string | null> {
     this.notices.push(notice);
@@ -54,12 +56,6 @@ class RecordingPresenter implements LarkPresenter {
   async sendNoticeCard(_chatId: string, notice: NoticeCardSpec): Promise<string | null> {
     this.notices.push(notice);
     return "notice_msg";
-  }
-  async sendUnifiedCard(): Promise<string | null> {
-    return null;
-  }
-  async updateUnifiedCard(): Promise<boolean> {
-    return true;
   }
 }
 

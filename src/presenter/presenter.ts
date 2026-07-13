@@ -1,4 +1,3 @@
-import type * as acp from "@agentclientprotocol/sdk";
 import type {
   CardRoute,
   ConversationCardView,
@@ -20,25 +19,6 @@ export type AgentStatus =
   | "complete"
   | "cancelled"
   | "failed";
-
-/** Tool execution status — mirrors ACP's `tool_call` lifecycle. */
-export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
-
-/**
- * One entry in the unified card timeline. Entries appear in agent-emit
- * order; consecutive text / thought entries are coalesced upstream.
- */
-export type TimelineEntry =
-  | { readonly kind: "text"; text: string }
-  | { readonly kind: "thought"; text: string }
-  | {
-      readonly kind: "tool";
-      readonly toolCallId: string;
-      title: string;
-      toolKind: string;
-      status: ToolStatus;
-      detail?: string;
-    };
 
 /**
  * Lark interactive card header colour palette. Matches the templates the
@@ -101,24 +81,6 @@ export interface PermissionCardView {
   }[];
 }
 
-/** Snapshot the presenter renders into a single Lark interactive card. */
-export interface UnifiedCardState {
-  status: AgentStatus;
-  entries: readonly TimelineEntry[];
-  /** Current ACP / bridge control state. Rendered as compact footer text. */
-  meta?: SessionCardMeta;
-  /** Show the bottom "cancel" button. Typically true while the agent is
-   *  still working. */
-  cancellable: boolean;
-  /** Chat id — embedded in the cancel button's action payload so the
-   *  bridge can route the click back to the right runtime. */
-  chatId: string;
-  /** Feishu topic (话题) id, or `null` for the chat's "main" conversation.
-   *  Embedded alongside {@link chatId} so a cancel click routes to the
-   *  right per-thread runtime. */
-  threadId: string | null;
-}
-
 /**
  * Surface the bridge uses to render itself to the user — every visible
  * artefact (replies, reactions, permission cards, unified timeline card)
@@ -128,23 +90,20 @@ export interface UnifiedCardState {
  * testing, plain-text mode, or other chat platforms.
  */
 export interface LarkPresenter {
-  /** Gate-protected semantic conversation-card send path. */
+  /** Semantic conversation-card send path. */
   sendConversationCard(
     replyToMessageId: string,
     view: ConversationCardView,
   ): Promise<string | null>;
 
-  /** Gate-protected semantic conversation-card patch path. */
+  /** Semantic conversation-card patch path. */
   updateConversationCard(cardMessageId: string, view: ConversationCardView): Promise<boolean>;
 
-  /** Gate-protected semantic permission-card send path. */
+  /** Semantic permission-card send path. */
   sendPermissionRequestCard(
     replyToMessageId: string,
     view: PermissionCardView,
   ): Promise<string | null>;
-
-  /** Gate-protected semantic permission-card patch path. */
-  updatePermissionRequestCard(cardMessageId: string, view: PermissionCardView): Promise<boolean>;
 
   /**
    * Reply to `messageId` with plain-ish text (rendered as a Lark `post`
@@ -155,51 +114,12 @@ export interface LarkPresenter {
    */
   replyText(messageId: string, text: string): Promise<void>;
 
-  /**
-   * Render an ACP permission request as an interactive card.
-   *
-   * Returns the new card's id so callers can later patch it. Returns
-   * `null` if the transport did not surface one.
-   *
-   * @throws when the underlying transport rejects.
-   */
-  sendInterruptCard(
-    messageId: string,
-    params: acp.RequestPermissionRequest,
-    requestId: string,
-    chatId: string,
-    threadId: string | null,
-  ): Promise<string | null>;
-
-  /**
-   * Replace an existing empty status/progress card with an ACP permission request.
-   * Used when a silence-triggered status card is waiting to be reused by the
-   * next visible event.
-   */
-  updateInterruptCard(
-    cardMessageId: string,
-    params: acp.RequestPermissionRequest,
-    requestId: string,
-    chatId: string,
-    threadId: string | null,
-  ): Promise<boolean>;
-
-  /** Replace a permission card with a "resolved" confirmation. */
-  updatePermissionCard(
-    messageId: string,
-    toolKind: string,
-    toolTitle: string,
-    selectedName: string,
-    selectedKind?: string,
-  ): Promise<void>;
-
   /** Replace a permission card with a "no longer actionable" notice. */
   expirePermissionCard(messageId: string, reason: string): Promise<void>;
 
   /**
    * Reply to `replyToMessageId` with a single-card notice — used for
-   * lightweight system acknowledgements where {@link UnifiedCardState} would
-   * be overkill. This path is intentionally compact; use
+   * lightweight system acknowledgements. This path is intentionally compact; use
    * {@link replyCommandResultCard} for slash-command listing/query output.
    */
   replyNoticeCard(replyToMessageId: string, notice: NoticeCardSpec): Promise<string | null>;
@@ -235,13 +155,4 @@ export interface LarkPresenter {
    * hot-reload detecting that a chat binding was changed by an agent.
    */
   sendNoticeCard(chatId: string, notice: NoticeCardSpec): Promise<string | null>;
-
-  /**
-   * Send the per-prompt unified card. Returns the card's message id so
-   * the caller can patch it as the timeline grows.
-   */
-  sendUnifiedCard(replyToMessageId: string, state: UnifiedCardState): Promise<string | null>;
-
-  /** Patch an existing unified card with a new state. Returns false when the transport rejects. */
-  updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<boolean>;
 }

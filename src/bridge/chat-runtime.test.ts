@@ -4,10 +4,10 @@ import { ChatRuntime } from "./chat-runtime.js";
 import { HummingClient } from "../acp/humming-client.js";
 import type { ChatRuntimeOptions } from "./chat-runtime.js";
 import { createPinoLogger, type LarkLogger } from "../logger/logger.js";
-import type { LarkPresenter, UnifiedCardState } from "../presenter/presenter.js";
+import type { AgentStatus, LarkPresenter } from "../presenter/presenter.js";
 import type { SessionRecord, SessionStore } from "../session-store/session-store.js";
 import type { AgentProcess, SpawnAgentOptions } from "../acp/agent-process.js";
-import { DISABLED_CONVERSATION_CARD_FEATURE } from "./conversation-card-feature.js";
+
 import { RingBufferLifecycleDiagnosticSink } from "../acp/lifecycle-diagnostics.js";
 import type {
   ActionToken,
@@ -22,6 +22,7 @@ import type {
 // `AgentDisconnectedError`, which the disconnect path throws) is kept real via
 // `importOriginal`, so only the process-spawning side effect is stubbed.
 const spawnAgentMock = vi.fn<(opts: unknown) => Promise<AgentProcess>>();
+const killAgentMock = vi.fn<(process: AgentProcess["process"]) => void>();
 const spawnAndResumeAgentMock =
   vi.fn<
     (opts: SpawnAgentOptions, id: string) => Promise<{ agent: AgentProcess; resumed: boolean }>
@@ -33,7 +34,7 @@ vi.mock("../acp/agent-process.js", async (importOriginal) => {
     ...actual,
     spawnAgent: (opts: unknown) => spawnAgentMock(opts),
     spawnAndResumeAgent: (opts: SpawnAgentOptions, id: string) => spawnAndResumeAgentMock(opts, id),
-    killAgent: () => {},
+    killAgent: (process: AgentProcess["process"]) => killAgentMock(process),
   };
 });
 
@@ -94,11 +95,7 @@ describe("ChatRuntime prompt preparation", () => {
   beforeEach(() => {
     spawnAgentMock.mockReset();
     spawnAndResumeAgentMock.mockReset();
-  });
-
-  it("keeps the production feature gate disabled by default", () => {
-    const runtime = new ChatRuntime(opts());
-    expect(runtime.conversationCardFeature).toBe(DISABLED_CONVERSATION_CARD_FEATURE);
+    killAgentMock.mockReset();
   });
 
   it("releases hydration waiters when shutdown occurs before the first admission hydrates", async () => {
@@ -106,7 +103,6 @@ describe("ChatRuntime prompt preparation", () => {
       ...opts(),
       presenter: recordingPresenter([]),
       sessionStore: stubSessionStore(),
-      conversationCardFeature: { v2Enabled: true },
     });
     runtime.acceptResponse({ messageId: "om_a", content: "A", profile: null });
     const b = runtime.acceptResponse({ messageId: "om_b", content: "B", profile: null });
@@ -155,44 +151,135 @@ describe("ChatRuntime prompt preparation", () => {
     await vi.waitFor(() => expect(fake.prompts()).toContain("first"));
   });
 
-  it("uses the legacy ACP client when the semantic gate is disabled", async () => {
-    const fake = makeFakeAgent();
-    spawnAgentMock.mockImplementation(async (opts) => {
-      expect(opts.client).toBeInstanceOf(HummingClient);
-      return fake.agent;
+  for (const operation of ["cancel", "shutdown", "supersede"] as const) {
+    it(`invalidates a bootstrap that finishes after ${operation}`, async () => {
+      const fake = makeFakeAgent();
+      let releaseSpawn!: () => void;
+      const spawnBlocked = new Promise<void>((resolve) => {
+        releaseSpawn = resolve;
+      });
+      spawnAgentMock.mockImplementation(async () => {
+        await spawnBlocked;
+        return fake.agent;
+      });
+      const runtime = new ChatRuntime({
+        ...opts(),
+        presenter: recordingPresenter([]),
+        sessionStore: stubSessionStore(),
+      });
+      const response = runtime.acceptResponse({
+        messageId: `om_${operation}`,
+        content: operation,
+        profile: null,
+      });
+      const enqueue = runtime.enqueue({
+        prompt: [{ type: "text", text: operation }],
+        messageId: `om_${operation}`,
+        chatId: "oc_test",
+        response,
+      });
+      await vi.waitFor(() => expect(spawnAgentMock).toHaveBeenCalledOnce());
+
+      await runtime[operation]();
+      releaseSpawn();
+      await enqueue;
+
+      await vi.waitFor(() =>
+        expect(killAgentMock).toHaveBeenCalledExactlyOnceWith(fake.agent.process),
+      );
+      expect(fake.prompts()).toEqual([]);
+      expect(runtime.processing).toBe(false);
+      expect(response.isRunnable()).toBe(false);
     });
-    const presenter = {
-      sendUnifiedCard: vi.fn(async (_messageId: string, state: UnifiedCardState) => {
-        expect(state.cancellable).toBe(false);
-        return "card";
-      }),
-      updateUnifiedCard: vi.fn(async (_messageId: string, state: UnifiedCardState) => {
-        expect(state.cancellable).toBe(false);
-        return true;
-      }),
-    } as unknown as LarkPresenter;
+  }
+
+  it("stops the admission drain after bootstrap failure instead of spawning for B", async () => {
+    spawnAgentMock.mockRejectedValue(new Error("bootstrap failed"));
     const runtime = new ChatRuntime({
       ...opts(),
-      presenter,
-      sessionStore: { getLatest: vi.fn(async () => null) } as unknown as SessionStore,
+      presenter: recordingPresenter([]),
+      sessionStore: stubSessionStore(),
     });
-
-    const enqueue = runtime.enqueue({
-      prompt: [{ type: "text", text: "hello" }],
-      messageId: "om_legacy",
+    const a = runtime.enqueue({
+      prompt: [{ type: "text", text: "A" }],
+      messageId: "om_a",
+      chatId: "oc_test",
+    });
+    const b = runtime.enqueue({
+      prompt: [{ type: "text", text: "B" }],
+      messageId: "om_b",
       chatId: "oc_test",
     });
 
-    await vi.waitFor(() => expect(spawnAgentMock).toHaveBeenCalledOnce());
-    fake.resolvePrompt("end_turn");
-    await enqueue;
+    await expect(a).rejects.toThrow("bootstrap failed");
+    await expect(b).rejects.toThrow("runtime bootstrap failed");
     expect(spawnAgentMock).toHaveBeenCalledOnce();
+    expect(runtime.processing).toBe(false);
+  });
+
+  it("kills an Agent when bootstrap fails after spawn succeeds", async () => {
+    const fake = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(fake.agent);
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([]),
+      sessionStore: stubSessionStore(),
+    });
+    const bootstrapInternals = runtime as unknown as {
+      persistSession(): Promise<void>;
+    };
+    bootstrapInternals.persistSession = async () => {
+      throw new Error("persist failed");
+    };
+
+    await expect(
+      runtime.enqueue({
+        prompt: [{ type: "text", text: "A" }],
+        messageId: "om_post_spawn_failure",
+        chatId: "oc_test",
+      }),
+    ).rejects.toThrow("persist failed");
+
+    expect(killAgentMock).toHaveBeenCalledExactlyOnceWith(fake.agent.process);
+    expect(fake.prompts()).toEqual([]);
+    expect(runtime.processing).toBe(false);
+  });
+
+  it("kills exactly once when cancel intersects a post-spawn bootstrap failure", async () => {
+    const fake = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(fake.agent);
+    let rejectPersist!: (error: Error) => void;
+    const persistBlocked = new Promise<void>((_resolve, reject) => {
+      rejectPersist = reject;
+    });
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([]),
+      sessionStore: stubSessionStore(),
+    });
+    const bootstrapInternals = runtime as unknown as {
+      persistSession(): Promise<void>;
+    };
+    bootstrapInternals.persistSession = async () => persistBlocked;
+    const enqueue = runtime.enqueue({
+      prompt: [{ type: "text", text: "A" }],
+      messageId: "om_cancel_post_spawn_failure",
+      chatId: "oc_test",
+    });
+    await vi.waitFor(() => expect(spawnAgentMock).toHaveBeenCalledOnce());
+
+    await runtime.cancel();
+    rejectPersist(new Error("persist failed after cancel"));
+    await enqueue;
+
+    expect(killAgentMock).toHaveBeenCalledExactlyOnceWith(fake.agent.process);
+    expect(fake.prompts()).toEqual([]);
+    expect(runtime.processing).toBe(false);
   });
 
   it("allocates distinct Responses in one shared Topic aggregate", () => {
     const runtime = new ChatRuntime({
       ...opts(),
-      conversationCardFeature: { v2Enabled: true },
       lifecycleDiagnostics: new RingBufferLifecycleDiagnosticSink(),
     });
 
@@ -214,7 +301,6 @@ describe("ChatRuntime prompt preparation", () => {
   it("routes stale token actions through the shared Topic authority", async () => {
     const runtime = new ChatRuntime({
       ...opts(),
-      conversationCardFeature: { v2Enabled: true },
     });
     const response = runtime.acceptResponse({
       messageId: "om_test",
@@ -270,16 +356,37 @@ describe("ChatRuntime prompt preparation", () => {
 /** Records every card state the runtime renders, so we can assert the final
  *  one drops the cancel button. All methods are inert except the ones the
  *  cancel-on-disconnect path touches. */
+interface RecordedConversationState {
+  readonly status: AgentStatus | "interrupted" | "merged" | "superseded" | "abandoned";
+  readonly cancellable: boolean;
+  readonly entries: readonly unknown[];
+}
+
+function recordedState(
+  view: Parameters<LarkPresenter["sendConversationCard"]>[1],
+): RecordedConversationState {
+  const status =
+    view.kind === "queued"
+      ? "received"
+      : view.kind === "starting"
+        ? "preparing"
+        : view.kind === "active" || view.kind === "terminal"
+          ? view.header
+          : view.kind;
+  return {
+    status,
+    cancellable: view.action?.kind === "cancel",
+    entries: "entries" in view ? view.entries : [],
+  };
+}
+
 function recordingPresenter(
-  states: UnifiedCardState[],
+  states: RecordedConversationState[],
   notices: Array<{ title: string; body: string; template: string }> = [],
   noticeUpdates: Array<{ title: string; body: string; template: string }> = [],
 ): LarkPresenter {
   return {
     replyText: async () => {},
-    sendInterruptCard: async () => null,
-    updateInterruptCard: async () => false,
-    updatePermissionCard: async () => {},
     expirePermissionCard: async () => {},
     replyNoticeCard: async (_id, notice) => {
       notices.push({ title: notice.title, body: notice.body, template: notice.template });
@@ -296,14 +403,15 @@ function recordingPresenter(
       notices.push({ title: notice.title, body: notice.body, template: notice.template });
       return "notice_msg";
     },
-    sendUnifiedCard: async (_id, state) => {
-      states.push(structuredClone(state));
+    sendConversationCard: async (_id, view) => {
+      states.push(recordedState(view));
       return "card_msg_1";
     },
-    updateUnifiedCard: async (_id, state) => {
-      states.push(structuredClone(state));
+    updateConversationCard: async (_id, view) => {
+      states.push(recordedState(view));
       return true;
     },
+    sendPermissionRequestCard: async () => "permission_card",
   };
 }
 
@@ -521,6 +629,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   beforeEach(() => {
     spawnAgentMock.mockReset();
     spawnAndResumeAgentMock.mockReset();
+    killAgentMock.mockReset();
   });
 
   afterEach(() => {
@@ -528,7 +637,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("renders a non-cancellable final card after the connection closes", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const notices: Array<{ title: string; body: string; template: string }> = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
@@ -562,8 +671,8 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     );
   });
 
-  it("updates an adopted progress card from preparing to forwarded before agent output", async () => {
-    const states: UnifiedCardState[] = [];
+  it("advances one semantic card from received through active before agent output", async () => {
+    const states: RecordedConversationState[] = [];
     const fake = makeFakeAgent();
     let resolveSpawn: (agent: AgentProcess) => void = () => {};
     spawnAgentMock.mockReturnValue(
@@ -582,10 +691,9 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       prompt: [{ type: "text", text: "hello" }],
       messageId: "om_progress",
       chatId: "oc_test",
-      progressCardId: "progress_card_1",
     });
 
-    await vi.waitFor(() => expect(states.at(-1)?.status).toBe("preparing"), {
+    await vi.waitFor(() => expect(states.at(-1)?.status).toBe("received"), {
       timeout: 1_000,
       interval: 20,
     });
@@ -597,7 +705,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       timeout: 1_000,
       interval: 20,
     });
-    expect(states.map((state) => state.status)).toContain("preparing");
+    expect(states.map((state) => state.status)).toContain("received");
     expect(states.at(-1)).toMatchObject({ status: "thinking", cancellable: false });
 
     fake.resolvePrompt("end_turn");
@@ -620,7 +728,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
         updateConversationCard,
       },
       sessionStore: stubSessionStore(),
-      conversationCardFeature: { v2Enabled: true },
     });
 
     await runtime.enqueue({
@@ -650,7 +757,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       ...opts(),
       presenter: recordingPresenter([]),
       sessionStore: stubSessionStore(),
-      conversationCardFeature: { v2Enabled: true },
     });
     const a = runtime.acceptResponse({ messageId: "om_a", content: "A", profile: null });
     const b = runtime.acceptResponse({ messageId: "om_b", content: "B", profile: null });
@@ -685,7 +791,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       ...opts(),
       presenter: recordingPresenter([]),
       sessionStore: stubSessionStore(),
-      conversationCardFeature: { v2Enabled: true },
     });
     const a = runtime.acceptResponse({ messageId: "om_a", content: "A", profile: null });
     await runtime.enqueue({
@@ -719,7 +824,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       ...opts(),
       presenter: recordingPresenter([]),
       sessionStore: stubSessionStore(),
-      conversationCardFeature: { v2Enabled: true },
     });
     const a = runtime.acceptResponse({ messageId: "om_a", content: "A", profile: null });
     await runtime.enqueue({
@@ -759,7 +863,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       ...opts(),
       presenter: recordingPresenter([]),
       sessionStore: stubSessionStore(),
-      conversationCardFeature: { v2Enabled: true },
     });
     const a = runtime.acceptResponse({ messageId: "om_a", content: "A", profile: null });
     await runtime.enqueue({
@@ -810,7 +913,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
         }),
       },
       sessionStore: stubSessionStore(),
-      conversationCardFeature: { v2Enabled: true },
     });
 
     await runtime.enqueue({
@@ -848,7 +950,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("interrupts an in-flight prompt when a follow-up user message is queued", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
 
@@ -872,11 +974,10 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       prompt: [{ type: "text", text: "urgent follow-up" }],
       messageId: "om_followup",
       chatId: "oc_test",
-      progressCardId: "card_followup",
     });
 
     expect(fake.cancelCalls()).toBe(1);
-    expect(states.slice(-2).map((state) => state.status)).toEqual(["queued", "interrupting"]);
+    expect(states.slice(-2).map((state) => state.status)).toEqual(["thinking", "interrupting"]);
 
     fake.resolvePrompt("cancelled");
 
@@ -891,7 +992,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("respawns and preserves the queued follow-up if interrupt closes the agent", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const notices: Array<{ title: string; body: string; template: string }> = [];
     const first = makeFakeAgent();
     const second = makeFakeAgent();
@@ -917,7 +1018,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       prompt: [{ type: "text", text: "urgent follow-up after crash" }],
       messageId: "om_followup",
       chatId: "oc_test",
-      progressCardId: "card_followup",
     });
     first.closeConnection();
 
@@ -933,7 +1033,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("marks the queued message card terminal when the queued message is cancelled", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
     const runtime = new ChatRuntime({
@@ -952,20 +1052,19 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       prompt: [{ type: "text", text: "queued follow-up" }],
       messageId: "om_followup",
       chatId: "oc_test",
-      progressCardId: "card_followup",
     });
 
     await runtime.cancel();
 
     expect(states.at(-1)).toMatchObject({
       status: "cancelled",
-      entries: [{ kind: "text", text: "排队的新消息已取消。" }],
+      entries: [{ kind: "text", text: "本轮 Response 已取消。" }],
     });
     fake.resolvePrompt("cancelled");
   });
 
   it("does not respawn a queued follow-up when explicit cancel races an agent disconnect", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const first = makeFakeAgent();
     const second = makeFakeAgent();
     spawnAgentMock.mockResolvedValueOnce(first.agent).mockResolvedValueOnce(second.agent);
@@ -985,7 +1084,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       prompt: [{ type: "text", text: "queued follow-up" }],
       messageId: "om_followup",
       chatId: "oc_test",
-      progressCardId: "card_followup",
     });
 
     const releaseCancel = first.holdNextCancel();
@@ -1002,7 +1100,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("marks the card cancelled when a requested cancellation closes the agent connection", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const notices: Array<{ title: string; body: string; template: string }> = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
@@ -1032,7 +1130,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("forces an in-flight card to a terminal state when the bridge shuts down", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
     const runtime = new ChatRuntime({
@@ -1050,11 +1148,11 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
     await runtime.shutdown("cancelled");
 
-    expect(states.at(-1)).toMatchObject({ status: "cancelled", cancellable: false });
+    expect(states.at(-1)).toMatchObject({ status: "interrupted", cancellable: false });
   });
 
   it("silently discards an idle agent that exits unexpectedly and respawns on demand", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const notices: Array<{ title: string; body: string; template: string }> = [];
     const first = makeFakeAgent();
     const second = makeFakeAgent();
@@ -1092,7 +1190,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("still finalizes normally when the prompt resolves before any close", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const replies: string[] = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
@@ -1135,7 +1233,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("logs prompt usage when a turn completes with no renderable output", async () => {
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const logs: Array<{ obj: object; msg?: string }> = [];
     const logger: LarkLogger = {
       debug: () => {},
@@ -1240,7 +1338,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
         saved.push(record);
       },
     };
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const runtime = new ChatRuntime({
       ...opts(),
       presenter: recordingPresenter(states),
@@ -1263,14 +1361,14 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
     expect(saved).toHaveLength(1);
     expect(saved.at(-1)).toMatchObject({ sessionId: "sess_fake", agentLabel: "claude" });
-    expect(states.at(-1)).toMatchObject({ status: "complete", cancellable: false });
+    expect(states.at(-1)).toMatchObject({ status: "interrupted", cancellable: false });
   });
 
   it("does not create a phantom cancelled card when superseded after prompt state reset", async () => {
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
 
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const runtime = new ChatRuntime({
       ...opts(),
       presenter: recordingPresenter(states),
@@ -1300,7 +1398,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
 
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const runtime = new ChatRuntime({
       ...opts(),
       presenter: recordingPresenter(states),
@@ -1496,7 +1594,6 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       ...opts(),
       presenter: recordingPresenter([]),
       sessionStore: store,
-      conversationCardFeature: { v2Enabled: true },
     });
 
     await runtime.enqueue({
@@ -1623,7 +1720,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
       return { agent: fake.agent, resumed: true };
     });
 
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const runtime = new ChatRuntime({
       ...opts(),
       presenter: recordingPresenter(states),
@@ -1800,7 +1897,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
         saved.push(record);
       },
     };
-    const states: UnifiedCardState[] = [];
+    const states: RecordedConversationState[] = [];
     const notices: Array<{ title: string; body: string; template: string }> = [];
     const runtime = new ChatRuntime({
       ...opts(),

@@ -12,7 +12,6 @@ import type {
   LarkPresenter,
   NoticeCardSpec,
   CommandResultCardSpec,
-  UnifiedCardState,
 } from "../presenter/presenter.js";
 import type {
   PendingSessionTask,
@@ -197,15 +196,11 @@ interface PresenterEvents {
   readonly notices: NoticeCardSpec[];
   readonly noticeUpdates: NoticeCardSpec[];
   readonly commandResults: CommandResultCardSpec[];
-  readonly unifiedCards: UnifiedCardState[];
 }
 
 function recordingPresenter(events: PresenterEvents): LarkPresenter {
   return {
     replyText: async () => {},
-    sendInterruptCard: async () => null,
-    updateInterruptCard: async () => false,
-    updatePermissionCard: async () => {},
     expirePermissionCard: async () => {},
     replyNoticeCard: async (_messageId, notice) => {
       events.notices.push(notice);
@@ -229,14 +224,9 @@ function recordingPresenter(events: PresenterEvents): LarkPresenter {
     updateAgentSwitchWarningCard: async (_messageId, resolution) => {
       events.warningResolutions.push(resolution);
     },
-    sendUnifiedCard: async (_messageId, state: UnifiedCardState) => {
-      events.unifiedCards.push(structuredClone(state));
-      return "unified_card";
-    },
-    updateUnifiedCard: async (_messageId, state: UnifiedCardState) => {
-      events.unifiedCards.push(structuredClone(state));
-      return true;
-    },
+    sendConversationCard: async () => "conversation_card",
+    updateConversationCard: async () => true,
+    sendPermissionRequestCard: async () => "permission_card",
   };
 }
 
@@ -294,7 +284,6 @@ describe("LarkBridge shutdown", () => {
         warningResolutions: [],
         notices: [],
         commandResults: [],
-        unifiedCards: [],
         noticeUpdates: [],
       }),
     );
@@ -452,7 +441,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -483,7 +471,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -508,7 +495,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -541,7 +527,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -605,7 +590,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -709,7 +693,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -752,7 +735,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -804,7 +786,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -870,7 +851,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -939,7 +919,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -1015,7 +994,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -1111,7 +1089,6 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events));
@@ -1149,7 +1126,6 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         warningResolutions: [],
         notices: [],
         commandResults: [],
-        unifiedCards: [],
         noticeUpdates: [],
       };
       const bridge = makeBridge(store, recordingPresenter(events), {
@@ -1187,7 +1163,6 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         warningResolutions: [],
         notices: [],
         commandResults: [],
-        unifiedCards: [],
         noticeUpdates: [],
       };
       const bridge = makeBridge(store, recordingPresenter(events), {
@@ -1237,7 +1212,6 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         warningResolutions: [],
         notices: [],
         commandResults: [],
-        unifiedCards: [],
         noticeUpdates: [],
       };
       const bridge = makeBridge(store, recordingPresenter(events), {
@@ -1279,7 +1253,6 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         warningResolutions: [],
         notices: [],
         commandResults: [],
-        unifiedCards: [],
         noticeUpdates: [],
       };
       const bridge = makeBridge(store, recordingPresenter(events), {
@@ -1330,7 +1303,6 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
       warningResolutions: [],
       notices: [],
       commandResults: [],
-      unifiedCards: [],
       noticeUpdates: [],
     };
     const bridge = makeBridge(store, recordingPresenter(events), {
@@ -1372,7 +1344,6 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         warningResolutions: [],
         notices: [],
         commandResults: [],
-        unifiedCards: [],
         noticeUpdates: [],
       };
       const bridge = makeBridge(store, recordingPresenter(events), { settingsPath });

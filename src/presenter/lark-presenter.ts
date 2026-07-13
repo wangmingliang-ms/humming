@@ -1,10 +1,7 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
-import {
-  DISABLED_CONVERSATION_CARD_FEATURE,
-  type ConversationCardFeatureGate,
-} from "../bridge/conversation-card-feature.js";
+
 import type { ConversationCardView, ConversationTimelineEntry } from "./conversation-card-view.js";
 import { markdownToPost, splitMarkdown } from "./lark-markdown.js";
 import { CARD_MARKDOWN_ROTATION_BYTE_LIMIT, splitUtf8, truncateUtf8 } from "./card-text-budget.js";
@@ -16,13 +13,10 @@ import type {
   LarkPresenter,
   NoticeCardSpec,
   PermissionCardView,
-  TimelineEntry,
-  UnifiedCardState,
 } from "./presenter.js";
 
 const HEADER_TEMPLATE_PERMISSION = "blue";
-const HEADER_TEMPLATE_APPROVED = "green";
-const HEADER_TEMPLATE_REJECTED = "red";
+
 const HEADER_TEMPLATE_EXPIRED = "grey";
 
 const STATUS_HEADER: Record<AgentStatus, { content: string; template: string }> = {
@@ -217,97 +211,6 @@ function assertNeverSwitchResolution(x: never): never {
   throw new Error(`unexpected agent switch resolution: ${String(x)}`);
 }
 
-function buildPermissionCard(
-  params: acp.RequestPermissionRequest,
-  requestId: string,
-  chatId: string,
-  threadId: string | null,
-): object {
-  const toolTitle = params.toolCall?.title ?? "unknown";
-  const toolKind = params.toolCall?.kind ?? "tool";
-
-  const elements: object[] = [{ tag: "markdown", content: `**${toolKind}**: ${toolTitle}` }];
-
-  for (const opt of params.options) {
-    elements.push(
-      buildCallbackButton(opt.name, buttonTypeForKind(opt.kind), {
-        r: requestId,
-        o: opt.optionId,
-        n: opt.name,
-        ok: opt.kind,
-        k: toolKind,
-        t: toolTitle,
-        c: chatId,
-        // Omit `th` for the main (non-topic) conversation so those cards stay
-        // byte-identical to the pre-topic payload; the bridge reads a missing
-        // `th` as null. Topic cards carry their thread id explicitly.
-        ...(threadId !== null ? { th: threadId } : {}),
-      }),
-    );
-  }
-
-  return buildV2Card("⏳ 待确认", HEADER_TEMPLATE_PERMISSION, elements, "⏳ 待确认");
-}
-
-function resolvedPermissionHeader(selectedKind: string | undefined): {
-  readonly title: string;
-  readonly template: string;
-  readonly summary: string;
-} {
-  if (selectedKind === "reject_once") {
-    return {
-      title: "❌ 已拒绝（本次）",
-      template: HEADER_TEMPLATE_REJECTED,
-      summary: "❌ 已拒绝（本次）",
-    };
-  }
-  if (selectedKind === "reject_always") {
-    return {
-      title: "❌ 已拒绝（永久）",
-      template: HEADER_TEMPLATE_REJECTED,
-      summary: "❌ 已拒绝（永久）",
-    };
-  }
-  if (selectedKind?.startsWith("reject_")) {
-    return { title: "❌ 已拒绝", template: HEADER_TEMPLATE_REJECTED, summary: "❌ 已拒绝" };
-  }
-  if (selectedKind === "allow_once") {
-    return {
-      title: "✅ 已批准（本次）",
-      template: HEADER_TEMPLATE_APPROVED,
-      summary: "✅ 已批准（本次）",
-    };
-  }
-  if (selectedKind === "allow_always") {
-    return {
-      title: "✅ 已批准（永久）",
-      template: HEADER_TEMPLATE_APPROVED,
-      summary: "✅ 已批准（永久）",
-    };
-  }
-  return { title: "✅ 已批准", template: HEADER_TEMPLATE_APPROVED, summary: "✅ 已批准" };
-}
-
-function buildResolvedCard(
-  toolKind: string,
-  toolTitle: string,
-  selectedName: string,
-  selectedKind?: string,
-): object {
-  const resolved = resolvedPermissionHeader(selectedKind);
-  return buildV2Card(
-    resolved.title,
-    resolved.template,
-    [
-      {
-        tag: "markdown",
-        content: `**${toolKind}**: ${toolTitle}\n\n已选择: **${selectedName}**`,
-      },
-    ],
-    resolved.summary,
-  );
-}
-
 function truncateBody(body: string, maxBytes: number, suffix: string): string {
   return truncateUtf8(body, maxBytes, suffix);
 }
@@ -360,26 +263,6 @@ function buildExpiredCard(reason: string): object {
   );
 }
 
-function assertNever(x: never): never {
-  throw new Error(`unexpected timeline entry: ${String(x)}`);
-}
-
-/** Render one non-thought timeline entry to a markdown snippet. Thought
- *  entries take a separate path (a collapsible panel) since Lark's
- *  markdown element does not render blockquote styling. */
-function nonThoughtEntryToMarkdown(entry: Exclude<TimelineEntry, { kind: "thought" }>): string {
-  switch (entry.kind) {
-    case "text":
-      return entry.text;
-    case "tool": {
-      const head = `**${entry.toolKind}**: ${entry.title}`;
-      return entry.detail ? `${head}\n\n${entry.detail}` : head;
-    }
-    default:
-      return assertNever(entry);
-  }
-}
-
 function buildThoughtPanel(text: string): object {
   // Aligned with the canonical v2 sample (plain_text title, icon_position
   // "right"). Lark's v2 renderer falls back to plaintext when any field on
@@ -407,11 +290,6 @@ function buildThoughtPanel(text: string): object {
   };
 }
 
-function entryToCardElement(entry: TimelineEntry): object {
-  if (entry.kind === "thought") return buildThoughtPanel(entry.text);
-  return { tag: "markdown", content: nonThoughtEntryToMarkdown(entry) };
-}
-
 function semanticEntryToCardElement(entry: ConversationTimelineEntry): object {
   switch (entry.kind) {
     case "text":
@@ -431,7 +309,7 @@ function assertNeverConversationEntry(entry: never): never {
   throw new Error(`unexpected semantic timeline entry: ${String(entry)}`);
 }
 
-type SummaryEntry = TimelineEntry | ConversationTimelineEntry;
+type SummaryEntry = ConversationTimelineEntry;
 
 function statusSummary(status: AgentStatus, entries: readonly SummaryEntry[]): string {
   const activityDetail = currentActivityDetail(status, entries);
@@ -472,23 +350,6 @@ function currentActivityDetail(
   return undefined;
 }
 
-function unifiedCardSummary(state: UnifiedCardState): string {
-  if (state.status !== "sealed") return statusSummary(state.status, state.entries);
-  const firstText = firstSummaryText(state.entries);
-  return firstText
-    ? truncateSummary(stripMarkdownForSummary(firstText))
-    : STATUS_SUMMARY_DETAIL.sealed;
-}
-
-function firstSummaryText(entries: readonly TimelineEntry[]): string | undefined {
-  for (const entry of entries) {
-    if (entry.kind === "text" || entry.kind === "thought") return entry.text;
-    const toolSummary = `${entry.toolKind}: ${entry.title}`;
-    if (toolSummary.trim()) return toolSummary;
-  }
-  return undefined;
-}
-
 function stripMarkdownForSummary(text: string): string {
   return text
     .replace(/```[\s\S]*?```/g, " ")
@@ -505,23 +366,24 @@ function truncateSummary(text: string): string {
   return `${text.slice(0, CONVERSATION_SUMMARY_CHAR_LIMIT).trimEnd()}…`;
 }
 
-function buildSessionMetaElement(state: UnifiedCardState): object | null {
-  if (state.status === "sealed") return null;
-  const meta = state.meta;
-  if (!meta) return null;
-  return {
-    tag: "markdown",
-    content: `<font color=\"grey\">${[
-      `Agent: ${meta.agent}`,
-      `Mode: ${meta.mode}`,
-      `Model: ${meta.model}`,
-      `Permission: ${meta.permission}`,
-    ].join(" · ")}</font>`,
-  };
-}
-
-function isEmptyTerminalState(state: UnifiedCardState): boolean {
-  return state.entries.length === 0 && !state.cancellable && state.status === "complete";
+function buildSemanticPermissionCard(view: PermissionCardView): object {
+  const elements: object[] = [
+    { tag: "markdown", content: `**${view.toolKind}**: ${view.toolTitle}` },
+  ];
+  for (const option of view.options) {
+    elements.push(
+      buildCallbackButton(option.label, buttonTypeForKind(option.kind ?? ""), {
+        v: 2,
+        c: view.route.c,
+        ...(view.route.th !== undefined ? { th: view.route.th } : {}),
+        p: view.promptToken,
+        q: view.permissionToken,
+        r: view.requestId,
+        o: option.id,
+      }),
+    );
+  }
+  return buildV2Card("⏳ 待确认", HEADER_TEMPLATE_PERMISSION, elements, "⏳ 待确认");
 }
 
 function emptyStateMessage(status: AgentStatus): string {
@@ -550,78 +412,7 @@ function emptyStateMessage(status: AgentStatus): string {
       return "_本轮任务已取消。_";
     case "failed":
       return "_本轮任务出错。_";
-    default:
-      return assertNeverStatus(status);
   }
-}
-
-function assertNeverStatus(x: never): never {
-  throw new Error(`unexpected agent status: ${String(x)}`);
-}
-
-function buildUnifiedCard(state: UnifiedCardState): object {
-  const elements: object[] = [];
-  const emptyTerminal = isEmptyTerminalState(state);
-
-  if (emptyTerminal) {
-    elements.push({ tag: "markdown", content: EMPTY_OUTPUT_BODY });
-  } else if (state.entries.length === 0) {
-    elements.push({ tag: "markdown", content: emptyStateMessage(state.status) });
-  } else {
-    state.entries.forEach((entry, i) => {
-      // Don't draw a divider directly above a collapsible panel — the
-      // panel already has its own border and the extra hr looks noisy.
-      if (i > 0 && entry.kind !== "thought") elements.push({ tag: "hr" });
-      elements.push(entryToCardElement(entry));
-    });
-  }
-
-  if (state.cancellable) {
-    elements.push({ tag: "hr" });
-    elements.push(
-      buildCallbackButton(CANCEL_BUTTON_TEXT, "danger", {
-        cancel: true,
-        c: state.chatId,
-        // See buildPermissionCard: `th` omitted for the main conversation.
-        ...(state.threadId !== null ? { th: state.threadId } : {}),
-      }),
-    );
-  }
-
-  const metaElement = buildSessionMetaElement(state);
-  if (metaElement) {
-    elements.push({ tag: "hr" });
-    elements.push(metaElement);
-  }
-
-  const header = emptyTerminal ? EMPTY_OUTPUT_HEADER : STATUS_HEADER[state.status];
-  const showHeader = state.status !== "sealed" || emptyTerminal;
-  return buildV2Card(
-    showHeader ? header.content : null,
-    showHeader ? header.template : null,
-    elements,
-    emptyTerminal ? EMPTY_OUTPUT_HEADER.content : unifiedCardSummary(state),
-  );
-}
-
-function buildSemanticPermissionCard(view: PermissionCardView): object {
-  const elements: object[] = [
-    { tag: "markdown", content: `**${view.toolKind}**: ${view.toolTitle}` },
-  ];
-  for (const option of view.options) {
-    elements.push(
-      buildCallbackButton(option.label, buttonTypeForKind(option.kind ?? ""), {
-        v: 2,
-        c: view.route.c,
-        ...(view.route.th !== undefined ? { th: view.route.th } : {}),
-        p: view.promptToken,
-        q: view.permissionToken,
-        r: view.requestId,
-        o: option.id,
-      }),
-    );
-  }
-  return buildV2Card("⏳ 待确认", HEADER_TEMPLATE_PERMISSION, elements, "⏳ 待确认");
 }
 
 function semanticEmptyMessage(view: ConversationCardView): string {
@@ -1008,7 +799,6 @@ function isPermissionCardView(value: unknown): value is PermissionCardView {
 export interface LarkCardPresenterOptions {
   http: LarkHttpClient;
   logger: LarkLogger;
-  feature?: ConversationCardFeatureGate;
 }
 
 /**
@@ -1018,19 +808,16 @@ export interface LarkCardPresenterOptions {
 export class LarkCardPresenter implements LarkPresenter {
   private readonly http: LarkHttpClient;
   private readonly logger: LarkLogger;
-  private readonly feature: ConversationCardFeatureGate;
 
   constructor(opts: LarkCardPresenterOptions) {
     this.http = opts.http;
     this.logger = opts.logger.child({ name: "presenter" });
-    this.feature = opts.feature ?? DISABLED_CONVERSATION_CARD_FEATURE;
   }
 
   async sendConversationCard(
     replyToMessageId: string,
     view: ConversationCardView,
   ): Promise<string | null> {
-    if (!this.feature.v2Enabled) return null;
     if (!isConversationCardView(view)) {
       this.logger.warn("sendConversationCard rejected malformed view");
       return null;
@@ -1049,7 +836,6 @@ export class LarkCardPresenter implements LarkPresenter {
     cardMessageId: string,
     view: ConversationCardView,
   ): Promise<boolean> {
-    if (!this.feature.v2Enabled) return false;
     if (!isConversationCardView(view)) {
       this.logger.warn("updateConversationCard rejected malformed view");
       return false;
@@ -1067,7 +853,6 @@ export class LarkCardPresenter implements LarkPresenter {
     replyToMessageId: string,
     view: PermissionCardView,
   ): Promise<string | null> {
-    if (!this.feature.v2Enabled) return null;
     if (!isPermissionCardView(view)) {
       this.logger.warn("sendPermissionRequestCard rejected malformed view");
       return null;
@@ -1082,77 +867,11 @@ export class LarkCardPresenter implements LarkPresenter {
     }
   }
 
-  async updatePermissionRequestCard(
-    cardMessageId: string,
-    view: PermissionCardView,
-  ): Promise<boolean> {
-    if (!this.feature.v2Enabled) return false;
-    if (!isPermissionCardView(view)) {
-      this.logger.warn("updatePermissionRequestCard rejected malformed view");
-      return false;
-    }
-    try {
-      await this.http.patchCard(cardMessageId, buildSemanticPermissionCard(view));
-      return true;
-    } catch (err) {
-      this.logger.warn({ err: conciseError(err) }, "updatePermissionRequestCard rejected");
-      return false;
-    }
-  }
-
   async replyText(messageId: string, text: string): Promise<void> {
     for (const chunk of splitMarkdown(text)) {
       const post = markdownToPost(chunk);
       await this.http.replyPost(messageId, post);
     }
-  }
-
-  async sendInterruptCard(
-    messageId: string,
-    params: acp.RequestPermissionRequest,
-    requestId: string,
-    chatId: string,
-    threadId: string | null,
-  ): Promise<string | null> {
-    return this.http.replyCard(
-      messageId,
-      buildPermissionCard(params, requestId, chatId, threadId),
-      {
-        replyInThread: threadId !== null,
-      },
-    );
-  }
-
-  async updateInterruptCard(
-    cardMessageId: string,
-    params: acp.RequestPermissionRequest,
-    requestId: string,
-    chatId: string,
-    threadId: string | null,
-  ): Promise<boolean> {
-    try {
-      await this.http.patchCard(
-        cardMessageId,
-        buildPermissionCard(params, requestId, chatId, threadId),
-      );
-      return true;
-    } catch (err) {
-      this.logger.warn({ err: conciseError(err), cardMessageId }, "updateInterruptCard failed");
-      return false;
-    }
-  }
-
-  async updatePermissionCard(
-    messageId: string,
-    toolKind: string,
-    toolTitle: string,
-    selectedName: string,
-    selectedKind?: string,
-  ): Promise<void> {
-    await this.http.patchCard(
-      messageId,
-      buildResolvedCard(toolKind, toolTitle, selectedName, selectedKind),
-    );
   }
 
   async expirePermissionCard(messageId: string, reason: string): Promise<void> {
@@ -1224,27 +943,6 @@ export class LarkCardPresenter implements LarkPresenter {
     } catch (err) {
       this.logger.warn({ err, chatId }, "sendNoticeCard failed");
       return null;
-    }
-  }
-
-  async sendUnifiedCard(replyToMessageId: string, state: UnifiedCardState): Promise<string | null> {
-    try {
-      return await this.http.replyCard(replyToMessageId, buildUnifiedCard(state), {
-        replyInThread: state.threadId !== null,
-      });
-    } catch (err) {
-      this.logger.warn({ err, replyToMessageId }, "sendUnifiedCard failed");
-      return null;
-    }
-  }
-
-  async updateUnifiedCard(cardMessageId: string, state: UnifiedCardState): Promise<boolean> {
-    try {
-      await this.http.patchCard(cardMessageId, buildUnifiedCard(state));
-      return true;
-    } catch (err) {
-      this.logger.warn({ err: conciseError(err), cardMessageId }, "updateUnifiedCard failed");
-      return false;
     }
   }
 }

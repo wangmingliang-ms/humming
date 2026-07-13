@@ -347,10 +347,6 @@ type FileSetup = {
   readonly botName?: string;
 };
 
-type FileFeatures = {
-  readonly conversationCardLifecycleV2: boolean;
-};
-
 type FileConfig = {
   readonly credentials: FileCredentials;
   readonly setup: FileSetup;
@@ -359,7 +355,6 @@ type FileConfig = {
   readonly agents: Readonly<Record<string, UserPresetPatch>>;
   /** chatId -> { cwd } bindings, persisted in settings.json. */
   readonly bindings: Readonly<Record<string, StoredBinding>>;
-  readonly features: FileFeatures;
 };
 
 /** One chat's persisted binding as stored in settings.json's `bindings` block. */
@@ -373,7 +368,6 @@ const EMPTY_FILE_CONFIG: FileConfig = {
   runtime: {},
   agents: {},
   bindings: {},
-  features: { conversationCardLifecycleV2: false },
 };
 
 class CliError extends Error {}
@@ -453,7 +447,6 @@ function readConfigFile(filePath: string): FileConfig {
   const credentialsObj = asObjectOpt("credentials", root["credentials"]) ?? {};
   const setupObj = asObjectOpt("setup", root["setup"]) ?? {};
   const runtimeObj = asObjectOpt("runtime", root["runtime"]) ?? {};
-  const featuresObj = asObjectOpt("features", root["features"]) ?? {};
 
   const credentials: FileCredentials = {
     ...(asStringOpt("credentials.appId", credentialsObj["appId"]) !== undefined
@@ -507,14 +500,6 @@ function readConfigFile(filePath: string): FileConfig {
   const dataDir = asStringOpt("dataDir", root["dataDir"]);
   const agents = parseAgentsBlock(root["agents"]);
   const bindings = parseBindingsBlock(root["bindings"]);
-  const features: FileFeatures = {
-    conversationCardLifecycleV2:
-      asBoolOpt(
-        "features.conversationCardLifecycleV2",
-        featuresObj["conversationCardLifecycleV2"],
-      ) ?? false,
-  };
-
   return {
     credentials,
     setup,
@@ -522,18 +507,7 @@ function readConfigFile(filePath: string): FileConfig {
     runtime,
     agents,
     bindings,
-    features,
   };
-}
-
-function resolveConversationCardFeature(
-  features: FileFeatures,
-  cardActionSchemaVersion: number,
-): { readonly v2Enabled: boolean } {
-  if (features.conversationCardLifecycleV2 && cardActionSchemaVersion < 2) {
-    throw new CliError("conversation card lifecycle v2 requires card action schema version 2");
-  }
-  return { v2Enabled: features.conversationCardLifecycleV2 };
 }
 
 function parseDefaultControlsField(value: unknown): { readonly defaultControls?: SessionControls } {
@@ -675,7 +649,6 @@ type ParsedArgs = {
     | "logs"
     | "control"
     | "sessions"
-    | "cards-v2"
     | "init"
     | "update";
   /** Preset id (`--agent <id>`); resolved against the registry in {@link runProxy}. */
@@ -729,9 +702,6 @@ type ParsedArgs = {
   readonly promptStdin?: boolean;
   readonly setupTarget?: FeishuRegistrationDomain;
   readonly setupForce?: boolean;
-  readonly cardsV2Action?: "enable" | "disable" | "rollback";
-  readonly cardsV2Offline?: boolean;
-  readonly cardsV2Checkout?: string;
 };
 
 const HELP_FLAGS = new Set(["-h", "--help"]);
@@ -813,8 +783,6 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       return finalize("control", undefined, [], parseControlFlags(argv, i + 1));
     if (token === "sessions")
       return finalize("sessions", undefined, [], parseSessionsFlags(argv, i + 1));
-    if (token === "cards-v2")
-      return finalize("cards-v2", undefined, [], parseCardsV2Flags(argv, i + 1));
 
     switch (token) {
       case "--cwd":
@@ -946,9 +914,6 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       readonly promptStdin?: boolean;
       readonly setupTarget?: FeishuRegistrationDomain;
       readonly setupForce?: boolean;
-      readonly cardsV2Action?: "enable" | "disable" | "rollback";
-      readonly cardsV2Offline?: boolean;
-      readonly cardsV2Checkout?: string;
     } = {},
   ): ParsedArgs {
     return {
@@ -999,44 +964,8 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       ...(extra.promptStdin !== undefined ? { promptStdin: extra.promptStdin } : {}),
       ...(extra.setupTarget !== undefined ? { setupTarget: extra.setupTarget } : {}),
       ...(extra.setupForce !== undefined ? { setupForce: extra.setupForce } : {}),
-      ...(extra.cardsV2Action !== undefined ? { cardsV2Action: extra.cardsV2Action } : {}),
-      ...(extra.cardsV2Offline !== undefined ? { cardsV2Offline: extra.cardsV2Offline } : {}),
-      ...(extra.cardsV2Checkout !== undefined ? { cardsV2Checkout: extra.cardsV2Checkout } : {}),
     };
   }
-}
-
-function parseCardsV2Flags(
-  argv: readonly string[],
-  start: number,
-): {
-  readonly cardsV2Action: "enable" | "disable" | "rollback";
-  readonly cardsV2Offline?: boolean;
-  readonly cardsV2Checkout?: string;
-} {
-  const action = argv[start];
-  if (action !== "enable" && action !== "disable" && action !== "rollback") {
-    throw new CliError("cards-v2 requires subcommand: enable | disable | rollback");
-  }
-  const trailing = argv.slice(start + 1);
-  if (action === "enable") {
-    if (trailing.length > 0) throw new CliError("cards-v2 enable accepts no options");
-    return { cardsV2Action: action };
-  }
-  if (action === "disable") {
-    if (trailing.length === 0) return { cardsV2Action: action };
-    if (trailing.length === 1 && trailing[0] === "--offline") {
-      return { cardsV2Action: action, cardsV2Offline: true };
-    }
-    throw new CliError("cards-v2 disable accepts only --offline");
-  }
-  if (trailing.length !== 2 || trailing[0] !== "--checkout" || trailing[1] === undefined) {
-    throw new CliError("cards-v2 rollback requires --checkout <absolute-path>");
-  }
-  if (!path.isAbsolute(trailing[1])) {
-    throw new CliError("cards-v2 rollback --checkout must be an absolute path");
-  }
-  return { cardsV2Action: action, cardsV2Checkout: trailing[1] };
 }
 
 function parseSetupFlags(
@@ -1602,7 +1531,6 @@ type EffectiveConfig = {
   readonly groupRequireMention: boolean;
   readonly lifecycleNotifyChatIds: readonly string[];
   readonly globalControlChatIds: readonly string[];
-  readonly conversationCardLifecycleV2Enabled: boolean;
   /** Reception-area cwd for unbound chats (default = home dir; null disables). */
   readonly unboundCwd: string | null;
 };
@@ -1721,7 +1649,6 @@ function resolveConfig(
     groupRequireMention,
     lifecycleNotifyChatIds,
     globalControlChatIds,
-    conversationCardLifecycleV2Enabled: file.features.conversationCardLifecycleV2,
     unboundCwd,
   };
 }
@@ -3032,140 +2959,6 @@ function installCrashHandlers(opts: CrashHandlerInstallOptions): { dispose(): vo
   };
 }
 
-type CardsV2Status = {
-  readonly cardActionSchemaVersion: number;
-  readonly conversationCardLifecycleV2Enabled: boolean;
-};
-
-type CardsV2Operations = {
-  queryStatus(): Promise<CardsV2Status>;
-  persist(enabled: boolean): void;
-  reread(): boolean;
-  restart(): Promise<void>;
-  stop(): Promise<void>;
-  start(selfPath: string): Promise<void>;
-  validateCheckout(checkout: string): string;
-};
-
-async function runCardsV2(args: ParsedArgs, operations?: CardsV2Operations): Promise<void> {
-  const action = args.cardsV2Action;
-  if (action === undefined) throw new CliError("cards-v2 action is missing");
-  const homeDir = resolveHomeDir(args.home);
-  const settingsPath = resolveSettingsPath(args.configPath, homeDir);
-  const launch = action === "rollback" ? readLaunchArgv(homeDir) : null;
-  if (action === "rollback" && operations === undefined && launch === null) {
-    throw new CliError("rollback requires a saved launch descriptor");
-  }
-  const ops = operations ?? createCardsV2Operations(args, homeDir, settingsPath, launch);
-
-  if (action === "enable") {
-    const status = await ops.queryStatus();
-    if (status.cardActionSchemaVersion < 2) {
-      throw new CliError("running bridge does not support card action schema version 2");
-    }
-    ops.persist(true);
-    assertPersistedGate(ops.reread(), true);
-    await ops.restart();
-    return;
-  }
-
-  if (action === "disable") {
-    ops.persist(false);
-    assertPersistedGate(ops.reread(), false);
-    if (!args.cardsV2Offline) await ops.restart();
-    return;
-  }
-
-  const checkout = args.cardsV2Checkout;
-  if (checkout === undefined) throw new CliError("cards-v2 rollback checkout is missing");
-  const targetBinary = ops.validateCheckout(checkout);
-  ops.persist(false);
-  assertPersistedGate(ops.reread(), false);
-  await ops.stop();
-  await ops.start(targetBinary);
-}
-
-function assertPersistedGate(actual: boolean, expected: boolean): void {
-  if (actual !== expected) {
-    throw new CliError(`failed to reread conversation card lifecycle gate as ${expected}`);
-  }
-}
-
-function writeConversationCardFeature(settingsPath: string, enabled: boolean): void {
-  const existing = readSettingsObjectForWrite(settingsPath);
-  const rawFeatures = existing["features"];
-  if (rawFeatures !== undefined && !isRecord(rawFeatures)) {
-    throw new CliError("settings file features must be a JSON object");
-  }
-  atomicWritePrivateJson(settingsPath, {
-    ...existing,
-    features: { ...(rawFeatures ?? {}), conversationCardLifecycleV2: enabled },
-  });
-}
-
-function validateRollbackCheckout(checkout: string): string {
-  if (!path.isAbsolute(checkout)) throw new CliError("rollback checkout must be absolute");
-  const guardSource = path.join(checkout, "src", "bridge", "bridge.ts");
-  const guardTest = path.join(checkout, "src", "bridge", "bridge-card-lifecycle.test.ts");
-  const builtCli = path.join(checkout, "dist", "bin", "humming.js");
-  const marker = 'Object.hasOwn(value, "v")';
-  if (!fs.existsSync(guardSource) || !fs.readFileSync(guardSource, "utf-8").includes(marker)) {
-    throw new CliError("rollback checkout lacks the Task 1 versioned Cancel guard marker");
-  }
-  if (!fs.existsSync(guardTest))
-    throw new CliError("rollback checkout lacks the Task 1 guard test");
-  if (!fs.existsSync(builtCli) || !fs.statSync(builtCli).isFile()) {
-    throw new CliError("rollback checkout lacks a built CLI at dist/bin/humming.js");
-  }
-  return builtCli;
-}
-
-function createCardsV2Operations(
-  args: ParsedArgs,
-  homeDir: string,
-  settingsPath: string,
-  launch: ReturnType<typeof readLaunchArgv>,
-): CardsV2Operations {
-  return {
-    queryStatus: async () => {
-      const response = await sendControlRequest(bridgeControlSocketPath(homeDir), {
-        method: "status",
-        params: {},
-      });
-      if (!response.ok) throw new CliError(`failed to query live bridge status: ${response.error}`);
-      if (!isCardsV2Status(response.result))
-        throw new CliError("live bridge returned invalid status");
-      return response.result;
-    },
-    persist: (enabled) => writeConversationCardFeature(settingsPath, enabled),
-    reread: () => readConfigFile(settingsPath).features.conversationCardLifecycleV2,
-    restart: async () =>
-      runRestart(parseArgs([...(args.home ? ["--home", args.home] : []), "restart"])),
-    stop: async () => {
-      await stopBridge({ homeDir });
-    },
-    start: async (selfPath) => {
-      if (launch === null)
-        throw new ProcessControlError("rollback requires a saved launch descriptor");
-      await startBridge({
-        homeDir,
-        selfPath,
-        spawnArgv: launch.spawnArgv,
-        workingDirectory: launch.workingDirectory,
-      });
-    },
-    validateCheckout: validateRollbackCheckout,
-  };
-}
-
-function isCardsV2Status(value: unknown): value is CardsV2Status {
-  return (
-    isRecord(value) &&
-    typeof value["cardActionSchemaVersion"] === "number" &&
-    typeof value["conversationCardLifecycleV2Enabled"] === "boolean"
-  );
-}
-
 async function runProxy(args: ParsedArgs): Promise<void> {
   const homeDir = resolveHomeDir(args.home);
   fs.mkdirSync(homeDir, { recursive: true });
@@ -3242,10 +3035,6 @@ async function runProxy(args: ParsedArgs): Promise<void> {
       maxConcurrentChats: cfg.maxChats,
     },
     groupRequireMention: cfg.groupRequireMention,
-    conversationCardFeature: resolveConversationCardFeature(
-      { conversationCardLifecycleV2: cfg.conversationCardLifecycleV2Enabled },
-      2,
-    ),
     unboundCwd: cfg.unboundCwd,
     settingsPath: configPath,
     controlSocketPath: bridgeControlSocketPath(homeDir),
@@ -3634,9 +3423,6 @@ async function main(): Promise<void> {
     case "sessions":
       await runSessions(args);
       return;
-    case "cards-v2":
-      await runCardsV2(args);
-      return;
     default:
       assertNever(args.command);
   }
@@ -3704,10 +3490,6 @@ export {
   maskCredentialId,
   resolveUpdateRef,
   restartHasExplicitOptions,
-  resolveConversationCardFeature,
-  runCardsV2,
-  validateRollbackCheckout,
-  writeConversationCardFeature,
   DEFAULT_AGENT,
   DEFAULT_PERMISSION_MODE,
 };

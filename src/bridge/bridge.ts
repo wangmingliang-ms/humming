@@ -13,11 +13,7 @@ import {
 } from "../lark/lifecycle-notifier.js";
 import { LarkWsConnection } from "../lark/lark-ws.js";
 import { LarkCardPresenter } from "../presenter/lark-presenter.js";
-import { LegacyConversationCardAdapter } from "../presenter/legacy-conversation-card-adapter.js";
-import {
-  DISABLED_CONVERSATION_CARD_FEATURE,
-  type ConversationCardFeatureGate,
-} from "./conversation-card-feature.js";
+
 import {
   createWipNoticeCard,
   finalizeWipNoticeCard,
@@ -78,8 +74,6 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 const IDLE_CLEANUP_INTERVAL_MS = 2 * 60_000;
 /** Debounce for settings.json change events (fs.watch double-fires). */
 const SETTINGS_RELOAD_DEBOUNCE_MS = 300;
-
-const ORPHAN_CARD_REASON = "会话已结束，本次确认已失效";
 
 const SENDER_TYPE_USER = "user";
 const CHAT_TYPE_GROUP = "group";
@@ -414,8 +408,6 @@ export interface LarkBridgeOptions {
    * builds one from `lark.appId` / `lark.appSecret`.
    */
   presenter?: LarkPresenter;
-  /** Explicit semantic lifecycle gate; defaults to the immutable disabled contract. */
-  conversationCardFeature?: ConversationCardFeatureGate;
 }
 
 /** Global display / permission prefs applied to every chat runtime. */
@@ -531,7 +523,7 @@ export class LarkBridge {
   private readonly restartMarkerPath: string | null;
   private readonly lifecycleCodeRevision: LifecycleCodeRevision | undefined;
   private readonly lifecycleNoticeTimeoutMs: number | undefined;
-  private readonly conversationCardFeature: ConversationCardFeatureGate;
+
   private readonly acknowledgement: AcknowledgementPort;
 
   private readonly chats = new Map<string, ChatRuntime>();
@@ -560,14 +552,11 @@ export class LarkBridge {
       logger: this.logger,
     });
 
-    this.conversationCardFeature =
-      opts.conversationCardFeature ?? DISABLED_CONVERSATION_CARD_FEATURE;
     this.presenter =
       opts.presenter ??
       new LarkCardPresenter({
         http: this.http,
         logger: this.logger,
-        feature: this.conversationCardFeature,
       });
 
     this.resolver = opts.agent.resolver;
@@ -757,10 +746,7 @@ export class LarkBridge {
           this.onShutdownRequested();
           return { accepted: true };
         },
-        status: async () => ({
-          cardActionSchemaVersion: 2,
-          conversationCardLifecycleV2Enabled: this.conversationCardFeature.v2Enabled,
-        }),
+
         capabilities: (chatId, threadId) => this.controlCapabilities(chatId, threadId),
         setControls: async (chatId, threadId, controls) => {
           const result = await this.controlSetControls(chatId, threadId, controls);
@@ -2087,17 +2073,6 @@ export class LarkBridge {
     messageId: string,
     segments: PromptSegment[],
   ): Promise<void> {
-    if (!this.conversationCardFeature.v2Enabled) {
-      return this.enqueueWithContextSerial(
-        event,
-        chatId,
-        threadId,
-        userId,
-        messageId,
-        segments,
-        () => undefined,
-      );
-    }
     const key = runtimeKey(chatId, threadId);
     const prior = this.promptIngress.get(key) ?? Promise.resolve();
     const start = prior
@@ -2155,34 +2130,14 @@ export class LarkBridge {
       await this.notifyUnavailableBindingFallback(messageId, binding.fallbackFrom);
     }
 
-    const legacyCards = new LegacyConversationCardAdapter(this.presenter);
-    const progressCardId = this.conversationCardFeature.v2Enabled
-      ? null
-      : await legacyCards
-          .send(messageId, {
-            status: "received",
-            entries: [],
-            cancellable: false,
-            chatId,
-            threadId,
-          })
-          .catch((err) => {
-            this.logger.warn({ err, chatId, threadId }, "initial progress card failed");
-            return null;
-          });
-
     const isGroup = event.message.chat_type === CHAT_TYPE_GROUP;
     const runtime = await this.acquireRuntime(chatId, threadId, binding);
-    const response = this.conversationCardFeature.v2Enabled
-      ? runtime.acceptResponse({ messageId, content: segments, profile: null })
-      : undefined;
+    const response = runtime.acceptResponse({ messageId, content: segments, profile: null });
     admit();
-    const reaction = response
-      ? this.http.addMessageReaction(messageId, "OnIt").catch((err) => {
-          this.logger.debug({ err }, "prompt acknowledgement reaction failed");
-          return null;
-        })
-      : Promise.resolve(null);
+    const reaction = this.http.addMessageReaction(messageId, "OnIt").catch((err) => {
+      this.logger.debug({ err }, "prompt acknowledgement reaction failed");
+      return null;
+    });
     let prompt: Awaited<ReturnType<typeof hydratePrompt>>;
     let userName: string;
     let chatName: string;
@@ -2197,14 +2152,12 @@ export class LarkBridge {
         isGroup ? this.http.getChatName(chatId) : Promise.resolve(""),
       ]);
     } catch (err) {
-      response?.attachAcknowledgement(await reaction);
-      if (response !== undefined) {
-        runtime.abandonHydration(response.responseId);
-        await response.fail("消息内容读取失败，本轮 Response 未能开始。").catch(() => undefined);
-      }
+      response.attachAcknowledgement(await reaction);
+      runtime.abandonHydration(response.responseId);
+      await response.fail("消息内容读取失败，本轮 Response 未能开始。").catch(() => undefined);
       throw err;
     }
-    response?.attachAcknowledgement(await reaction);
+    response.attachAcknowledgement(await reaction);
 
     const context = isGroup
       ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`
@@ -2223,8 +2176,7 @@ export class LarkBridge {
       prompt,
       messageId,
       chatId,
-      progressCardId,
-      ...(response ? { response } : {}),
+      response,
     };
     try {
       await runtime.enqueue(pending);
@@ -2232,19 +2184,10 @@ export class LarkBridge {
       // bootstrap (spawn / initialize / newSession / resume) failed — the
       // ChatRuntime never registered itself as active, so drop it and let
       // the next message try again from scratch.
-      this.chats.delete(runtimeKey(chatId, threadId));
+      const key = runtimeKey(chatId, threadId);
+      if (this.chats.get(key) === runtime) this.chats.delete(key);
       this.logger.error({ err, chatId, threadId }, "agent bootstrap failed");
       const summary = `⚠️ Agent 启动失败: ${formatBootstrapError(err)}`;
-      if (progressCardId) {
-        const updated = await legacyCards.update(progressCardId, {
-          status: "failed",
-          entries: [{ kind: "text", text: summary }],
-          cancellable: false,
-          chatId,
-          threadId,
-        });
-        if (updated) return;
-      }
       await this.presenter
         .replyText(messageId, summary)
         .catch((sendErr) => this.logger.warn({ err: sendErr }, "bootstrap error reply failed"));
@@ -2444,7 +2387,6 @@ export class LarkBridge {
       ...(usesGlobalDefaults ? { persistInheritedControls: true } : {}),
       onTurnComplete: (messageId) => this.handleRuntimeTurnComplete(chatId, threadId, messageId),
       presenter: this.presenter,
-      conversationCardFeature: this.conversationCardFeature,
       acknowledgement: this.acknowledgement,
       sessionStore: this.sessionStore,
       logger: this.logger,
@@ -2811,10 +2753,6 @@ export class LarkBridge {
     const value = event.action.value as CardActionPayload | undefined;
     if (!value || typeof value !== "object") return;
     if (Object.hasOwn(value, "v")) {
-      if (!this.conversationCardFeature.v2Enabled) {
-        this.logger.info("versioned card action ignored while semantic lifecycle is disabled");
-        return;
-      }
       if (value.v !== 2) {
         this.logger.info("unsupported versioned card action ignored");
         return;
@@ -2849,18 +2787,12 @@ export class LarkBridge {
       return;
     }
 
-    if (!value.r || !value.o) return;
-    this.handlePermissionCardAction(
-      event,
-      value.c,
-      threadId,
-      value.r,
-      value.o,
-      value.n,
-      value.ok,
-      value.k,
-      value.t,
-    );
+    if (value.r && value.o) {
+      this.logger.info(
+        { chatId: value.c, threadId, requestId: value.r },
+        "tokenless legacy permission action ignored",
+      );
+    }
   }
 
   private handleCancelV2(value: StrictCancelV2): void {
@@ -2884,40 +2816,6 @@ export class LarkBridge {
       optionId: value.o,
     });
     this.logger.info({ result }, "v2 permission action consumed");
-  }
-
-  private handlePermissionCardAction(
-    event: Lark.CardActionEvent,
-    chatId: string,
-    threadId: string | null,
-    requestId: string,
-    optionId: string,
-    optionName: string | undefined,
-    optionKind: string | undefined,
-    toolKind: string | undefined,
-    toolTitle: string | undefined,
-  ): void {
-    const runtime = this.chats.get(runtimeKey(chatId, threadId));
-    const handled = runtime?.handleCardAction(requestId, optionId) ?? false;
-    const messageId = event.messageId;
-
-    if (!handled) {
-      this.logger.info({ chatId, threadId, requestId }, "orphan card action — patching as expired");
-      if (messageId) {
-        this.presenter
-          .expirePermissionCard(messageId, ORPHAN_CARD_REASON)
-          .catch((err) => this.logger.warn({ err }, "expirePermissionCard failed"));
-      }
-      return;
-    }
-
-    this.logger.info({ chatId, optionId }, "card action resolved");
-
-    if (messageId && optionName && toolKind && toolTitle) {
-      this.presenter
-        .updatePermissionCard(messageId, toolKind, toolTitle, optionName, optionKind)
-        .catch((err) => this.logger.warn({ err }, "updatePermissionCard failed"));
-    }
   }
 
   // ----- Lifecycle helpers ------------------------------------------------

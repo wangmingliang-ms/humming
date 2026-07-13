@@ -6,9 +6,6 @@ export type {
   NoticeCardSpec,
   NoticeTemplate,
   PermissionCardView,
-  TimelineEntry,
-  ToolStatus,
-  UnifiedCardState,
 } from "./presenter.js";
 export { cloneCardView } from "./conversation-card-view.js";
 export type {

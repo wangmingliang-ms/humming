@@ -6,11 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPinoLogger } from "../logger/logger.js";
 import { BridgeControlServer, sendControlRequest } from "./control-server.js";
 
-const STATUS = {
-  cardActionSchemaVersion: 2 as const,
-  conversationCardLifecycleV2Enabled: true,
-};
-
 let dir: string;
 let server: BridgeControlServer | null;
 
@@ -32,7 +27,6 @@ describe("BridgeControlServer", () => {
       logger: createPinoLogger(),
       handlers: {
         shutdown: async () => ({ accepted: true }),
-        status: async () => STATUS,
         capabilities: async (chatId, threadId) => ({
           session: { chatId, threadId, sessionId: "sess_1" },
           agent: { command: "node", args: [], cwd: "/repo" },
@@ -87,13 +81,6 @@ describe("BridgeControlServer", () => {
     await expect(
       sendControlRequest(socketPath, { method: "shutdown", params: {} }),
     ).resolves.toMatchObject({ ok: true, result: { accepted: true } });
-
-    await expect(sendControlRequest(socketPath, { method: "status", params: {} })).resolves.toEqual(
-      {
-        ok: true,
-        result: STATUS,
-      },
-    );
 
     const caps = await sendControlRequest(socketPath, {
       method: "capabilities",
@@ -263,7 +250,6 @@ describe("BridgeControlServer", () => {
       logger: createPinoLogger(),
       handlers: {
         shutdown: async () => ({ accepted: true }),
-        status: async () => STATUS,
         capabilities: async (chatId, threadId) => ({
           session: { chatId, threadId, sessionId: "sess_pipe" },
           agent: { command: "node", args: [], cwd: "/repo" },

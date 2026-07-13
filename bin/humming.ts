@@ -27,6 +27,7 @@ import path from "node:path";
 import os from "node:os";
 import process from "node:process";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   LarkBridge,
@@ -79,6 +80,7 @@ import {
   isAlive,
   readPid,
   bridgePidPath,
+  bridgeUnitName,
   isUserSystemdAvailable,
   runGit,
   runNpm,
@@ -3116,13 +3118,33 @@ async function runStart(args: ParsedArgs): Promise<void> {
   });
 }
 
+function resolveRunningBridgePid(homeDir: string): number | null {
+  const pidPath = bridgePidPath(homeDir);
+  const persisted = readPid(pidPath);
+  if (persisted !== null && isAlive(persisted)) return persisted;
+  if (process.platform === "linux" && isUserSystemdAvailable()) {
+    const shown = spawnSync(
+      "systemctl",
+      ["--user", "show", bridgeUnitName(homeDir), "-p", "MainPID", "--value"],
+      { encoding: "utf-8" },
+    );
+    const pid = Number((shown.stdout ?? "").trim());
+    if (shown.status === 0 && Number.isInteger(pid) && pid > 0 && isAlive(pid)) {
+      fs.mkdirSync(homeDir, { recursive: true });
+      fs.writeFileSync(pidPath, `${pid}\n`, "utf-8");
+      return pid;
+    }
+  }
+  return null;
+}
+
 /** Arm an independent coordinator before asking the Bridge to quiesce. */
 function handoffLifecycle(
   homeDir: string,
   intent: LifecycleIntent,
   launch: { readonly spawnArgv: readonly string[]; readonly workingDirectory: string },
 ): ReturnType<typeof buildLifecycleTransaction> {
-  const oldPid = readPid(bridgePidPath(homeDir));
+  const oldPid = resolveRunningBridgePid(homeDir);
   if (oldPid === null || !isAlive(oldPid)) {
     throw new ProcessControlError("bridge is not running");
   }

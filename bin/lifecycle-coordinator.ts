@@ -216,10 +216,19 @@ function runCoordinatorCli(argv: readonly string[]): void {
   readLifecycleTransaction(statePath);
 }
 
-if (
-  process.argv[1] !== undefined &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+export function isCoordinatorMainModule(
+  entryPath: string | undefined,
+  modulePath = fileURLToPath(import.meta.url),
+): boolean {
+  if (entryPath === undefined) return false;
+  try {
+    return fs.realpathSync(entryPath) === fs.realpathSync(modulePath);
+  } catch {
+    return false;
+  }
+}
+
+if (isCoordinatorMainModule(process.argv[1])) {
   try {
     runCoordinatorCli(process.argv.slice(2));
   } catch (error) {

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   armLifecycleCoordinator,
   buildLifecycleCoordinatorLaunch,
+  isCoordinatorMainModule,
   LifecycleTransactionError,
   readLifecycleTransaction,
   writeLifecycleTransaction,
@@ -58,6 +59,17 @@ describe("lifecycle transaction persistence", () => {
     fs.writeFileSync(statePath, JSON.stringify({ ...transaction(), oldPid: 0 }));
 
     expect(() => readLifecycleTransaction(statePath)).toThrow(LifecycleTransactionError);
+  });
+});
+
+describe("coordinator CLI entrypoint", () => {
+  it("recognizes a package-bin symlink as the main module", () => {
+    const realPath = path.join(dir, "lifecycle-coordinator.js");
+    const symlinkPath = path.join(dir, "humming-lifecycle-coordinator");
+    fs.writeFileSync(realPath, "");
+    fs.symlinkSync(realPath, symlinkPath);
+
+    expect(isCoordinatorMainModule(symlinkPath, realPath)).toBe(true);
   });
 });
 

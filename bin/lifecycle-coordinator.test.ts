@@ -8,6 +8,7 @@ import {
   isCoordinatorMainModule,
   LifecycleTransactionError,
   readLifecycleTransaction,
+  runLifecycleCoordinator,
   writeLifecycleTransaction,
   type LifecycleTransaction,
 } from "./lifecycle-coordinator.js";
@@ -70,6 +71,122 @@ describe("coordinator CLI entrypoint", () => {
     fs.symlinkSync(realPath, symlinkPath);
 
     expect(isCoordinatorMainModule(symlinkPath, realPath)).toBe(true);
+  });
+});
+
+describe("coordinator lifecycle execution", () => {
+  it("waits for Bridge readiness, old PID exit, starts restart, and waits for new readiness", async () => {
+    const calls: string[] = [];
+    const tx = transaction();
+    await runLifecycleCoordinator(tx, {
+      arm: async () => calls.push("arm"),
+      beginLifecycle: async (received) => {
+        calls.push(`begin:${received.intent}`);
+        return { accepted: true, transactionId: received.id, readyToExit: true };
+      },
+      isAlive: (pid) => {
+        calls.push(`alive:${pid}`);
+        return calls.filter((item) => item === `alive:${pid}`).length === 1;
+      },
+      delay: async () => {},
+      startBridge: async (received) => {
+        calls.push(`start:${received.launch.spawnArgv.join(" ")}`);
+      },
+      isReady: async () => {
+        calls.push("ready");
+        return calls.filter((item) => item === "ready").length > 1;
+      },
+      forceTerminate: async () => {
+        calls.push("force");
+      },
+      complete: async (result) => {
+        calls.push(`complete:${result.outcome}`);
+      },
+      now: () => 500,
+    });
+
+    expect(calls).toEqual([
+      "arm",
+      "begin:restart",
+      "alive:4242",
+      "alive:4242",
+      "start:proxy --agent copilot",
+      "ready",
+      "ready",
+      "complete:restarted",
+    ]);
+  });
+
+  it("does not start a bridge for Stop", async () => {
+    const complete: string[] = [];
+    await runLifecycleCoordinator(transaction({ intent: "stop" }), {
+      arm: async () => {},
+      beginLifecycle: async (received) => ({
+        accepted: true,
+        transactionId: received.id,
+        readyToExit: true,
+      }),
+      isAlive: () => false,
+      delay: async () => {},
+      startBridge: async () => {
+        throw new Error("must not start");
+      },
+      isReady: async () => false,
+      forceTerminate: async () => {},
+      complete: async (result) => {
+        complete.push(result.outcome);
+      },
+      now: () => 500,
+    });
+    expect(complete).toEqual(["stopped"]);
+  });
+
+  it("records restartFailed when beginLifecycle fails", async () => {
+    const complete: string[] = [];
+    await expect(
+      runLifecycleCoordinator(transaction(), {
+        arm: async () => {},
+        beginLifecycle: async () => {
+          throw new Error("control unavailable");
+        },
+        isAlive: () => true,
+        delay: async () => {},
+        startBridge: async () => {},
+        isReady: async () => false,
+        forceTerminate: async () => {},
+        complete: async (result) => {
+          complete.push(result.outcome);
+        },
+        now: () => 500,
+      }),
+    ).rejects.toThrow("control unavailable");
+    expect(complete).toEqual(["restartFailed"]);
+  });
+
+  it("records restartFailed when the new Bridge cannot start", async () => {
+    const complete: string[] = [];
+    await expect(
+      runLifecycleCoordinator(transaction(), {
+        arm: async () => {},
+        beginLifecycle: async (received) => ({
+          accepted: true,
+          transactionId: received.id,
+          readyToExit: true,
+        }),
+        isAlive: () => false,
+        delay: async () => {},
+        startBridge: async () => {
+          throw new Error("spawn failed");
+        },
+        isReady: async () => false,
+        forceTerminate: async () => {},
+        complete: async (result) => {
+          complete.push(result.outcome);
+        },
+        now: () => 500,
+      }),
+    ).rejects.toThrow("spawn failed");
+    expect(complete).toEqual(["restartFailed"]);
   });
 });
 

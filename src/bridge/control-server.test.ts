@@ -82,6 +82,10 @@ describe("BridgeControlServer", () => {
     await server.start();
 
     await expect(
+      sendControlRequest(socketPath, { method: "ping", params: {} }),
+    ).resolves.toMatchObject({ ok: true, result: { ready: true } });
+
+    await expect(
       sendControlRequest(socketPath, { method: "shutdown", params: {} }),
     ).resolves.toMatchObject({ ok: true, result: { accepted: true } });
 

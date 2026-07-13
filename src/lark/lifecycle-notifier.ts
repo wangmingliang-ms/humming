@@ -11,6 +11,7 @@ export const LIFECYCLE_NOTICE_KINDS = [
   "stopping",
   "restarting",
   "restarted",
+  "restartFailed",
   "crashed",
 ] as const;
 export type LifecycleNoticeKind = (typeof LIFECYCLE_NOTICE_KINDS)[number];
@@ -48,6 +49,11 @@ const LIFECYCLE_NOTICE_SPECS: Readonly<Record<LifecycleNoticeKind, LifecycleNoti
     title: "✅ Humming 已重启",
     body: "Bridge 进程已重启完成，可以继续使用。",
     template: "green",
+  },
+  restartFailed: {
+    title: "❌ Humming 重启失败",
+    body: "Bridge 未能在截止时间内恢复。请检查 bridge.log 并从外部终端重新启动。",
+    template: "red",
   },
   crashed: {
     title: "⚠️ Humming 发生未捕获错误",

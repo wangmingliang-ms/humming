@@ -37,6 +37,7 @@ describe("buildLifecycleNoticeCard", () => {
     ["stopping", "⛔ Humming 正在停止"],
     ["restarting", "🔄 Humming 正在重启"],
     ["restarted", "✅ Humming 已重启"],
+    ["restartFailed", "❌ Humming 重启失败"],
     ["crashed", "⚠️ Humming 发生未捕获错误"],
   ] satisfies readonly [LifecycleNoticeKind, string][])("renders %s", (kind, title) => {
     const card = buildLifecycleNoticeCard(kind, {
@@ -118,5 +119,31 @@ describe("sendLifecycleNotice", () => {
     expect(sent).toEqual(["oc_A"]);
     expect(patched).toEqual([{ messageId: "om_oc_A", title: "✅ Humming 已重启" }]);
     expect(restarted).toEqual([{ chatId: "oc_A", messageId: "om_oc_A" }]);
+  });
+
+  it("patches restarting cards to restartFailed", async () => {
+    const patched: string[] = [];
+    const http = {
+      async sendCardToChat(): Promise<string> {
+        return "om_restart";
+      },
+      async patchCard(_messageId: string, card: object): Promise<void> {
+        patched.push(headerTitle(card) ?? "");
+      },
+    };
+    const restarting = await sendLifecycleNotice({
+      http,
+      chatIds: ["oc_A"],
+      kind: "restarting",
+      logger: silentLogger,
+    });
+    await sendLifecycleNotice({
+      http,
+      chatIds: ["oc_A"],
+      kind: "restartFailed",
+      logger: silentLogger,
+      replace: restarting,
+    });
+    expect(patched).toEqual(["❌ Humming 重启失败"]);
   });
 });

@@ -25,6 +25,11 @@ export interface AgentProbeFailureTarget {
 export type ControlRequest =
   | {
       readonly id?: string | number;
+      readonly method: "ping";
+      readonly params: Record<string, never>;
+    }
+  | {
+      readonly id?: string | number;
       readonly method: "beginLifecycle";
       readonly params: { readonly transaction: LifecycleTransaction };
     }
@@ -225,6 +230,12 @@ export class BridgeControlServer {
     if (!isControlRequest(parsed)) return { ok: false, error: "invalid control request" };
     try {
       switch (parsed.method) {
+        case "ping":
+          return {
+            ok: true,
+            id: parsed.id,
+            result: { ready: true },
+          };
         case "beginLifecycle":
           return {
             ok: true,
@@ -380,7 +391,11 @@ function isControlRequest(value: unknown): value is ControlRequest {
     const params = value["params"];
     return isRecord(params) && isLifecycleTransaction(params["transaction"]);
   }
-  if (value["method"] === "shutdown" || value["method"] === "restart") {
+  if (
+    value["method"] === "ping" ||
+    value["method"] === "shutdown" ||
+    value["method"] === "restart"
+  ) {
     return isRecord(value["params"]) && Object.keys(value["params"]).length === 0;
   }
   if (value["method"] === "capabilities") {

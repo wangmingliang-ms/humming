@@ -65,26 +65,33 @@ import {
 } from "./agents.js";
 import {
   startBridge,
-  stopBridge,
   statusBridge,
   tailLog,
   bridgeControlSocketPath,
   bridgeRestartMarkerPath,
   markBridgeRestart,
-  clearBridgeRestartMarker,
   rewriteSubcommand,
   persistLaunchArgv,
   readLaunchArgv,
   managedCheckoutDir,
   bridgeLaunchPath,
   isBridgeRunning,
-  isCurrentProcessInBridgeUnit,
+  isAlive,
+  readPid,
+  bridgePidPath,
+  isUserSystemdAvailable,
   runGit,
   runNpm,
   readCodeRevision,
   ProcessControlError,
   DEFAULT_LOG_LINES,
 } from "./process-control.js";
+import {
+  armLifecycleCoordinator,
+  buildLifecycleTransaction,
+  type LifecycleIntent,
+} from "./lifecycle-coordinator.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * Package version for `--version` / help text. Resolved lazily and tolerantly:
@@ -131,6 +138,9 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 const DEFAULT_IDLE_STATUS_CARD_MS = 15_000;
 /** Non-zero exit tells the systemd supervisor to restart after graceful shutdown. */
 const SUPERVISOR_RESTART_EXIT_CODE = 75;
+const LIFECYCLE_READY_TO_EXIT_MS = 20_000;
+const LIFECYCLE_OLD_PID_EXIT_MS = 30_000;
+const LIFECYCLE_RESTART_READY_MS = 45_000;
 /**
  * Agent used when neither `--agent` nor settings.json `runtime.agent` names one.
  * Makes a bare `humming start` / `humming proxy` work out-of-the-box on a
@@ -3106,46 +3116,57 @@ async function runStart(args: ParsedArgs): Promise<void> {
   });
 }
 
-/** The `restart` handler: stop any running bridge, then start with the same argv. */
+/** Arm an independent coordinator before asking the Bridge to quiesce. */
+function handoffLifecycle(
+  homeDir: string,
+  intent: LifecycleIntent,
+  launch: { readonly spawnArgv: readonly string[]; readonly workingDirectory: string },
+): ReturnType<typeof buildLifecycleTransaction> {
+  const oldPid = readPid(bridgePidPath(homeDir));
+  if (oldPid === null || !isAlive(oldPid)) {
+    throw new ProcessControlError("bridge is not running");
+  }
+  const now = Date.now();
+  const id = randomUUID();
+  const transaction = buildLifecycleTransaction({
+    id,
+    intent,
+    home: homeDir,
+    oldPid,
+    launch: {
+      spawnArgv: [...launch.spawnArgv],
+      workingDirectory: launch.workingDirectory,
+      savedAt: new Date(now).toISOString(),
+    },
+    now,
+    readyToExitMs: LIFECYCLE_READY_TO_EXIT_MS,
+    oldPidExitMs: LIFECYCLE_OLD_PID_EXIT_MS,
+    restartReadyMs: LIFECYCLE_RESTART_READY_MS,
+  });
+  armLifecycleCoordinator(transaction, {
+    platform: process.platform,
+    systemdAvailable: isUserSystemdAvailable(),
+    nodePath: process.execPath,
+    coordinatorPath: path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "lifecycle-coordinator.js",
+    ),
+  });
+  return transaction;
+}
+
+/** The `restart` handler hands ownership to an independent coordinator. */
 async function runRestart(args: ParsedArgs): Promise<void> {
   const homeDir = resolveHomeDir(args.home);
-  const strategy = resolveRestartExecutionStrategy(
-    isCurrentProcessInBridgeUnit(homeDir),
-    restartHasExplicitOptions(args),
-  );
-  if (strategy === "unsupported-options") {
-    throw new ProcessControlError(
-      "a restart requested from inside Humming cannot change launch options; update the launch configuration from an external shell first",
-    );
-  }
-
   const launch = resolveRestartLaunch(args, homeDir);
-  persistLaunchArgv(homeDir, launch.spawnArgv, launch.workingDirectory);
-  if (strategy === "supervisor") {
-    const response = await sendControlRequest(bridgeControlSocketPath(homeDir), {
-      method: "restart",
-      params: {},
-    });
-    if (!response.ok) throw new ProcessControlError(response.error);
-    process.stdout.write(
-      "bridge restart requested; systemd will relaunch it after this turn exits\n",
+  if (restartHasExplicitOptions(args)) {
+    throw new ProcessControlError(
+      "restart launch options are not supported by coordinated restart yet; update the launch configuration with start from an external shell",
     );
-    return;
   }
-
-  markBridgeRestart(homeDir);
-  try {
-    await stopBridge({ homeDir });
-    await startBridge({
-      homeDir,
-      selfPath: fileURLToPath(import.meta.url),
-      spawnArgv: launch.spawnArgv,
-      workingDirectory: launch.workingDirectory,
-    });
-  } catch (err) {
-    clearBridgeRestartMarker(homeDir);
-    throw err;
-  }
+  persistLaunchArgv(homeDir, launch.spawnArgv, launch.workingDirectory);
+  const transaction = handoffLifecycle(homeDir, "restart", launch);
+  process.stdout.write(`bridge restart coordinator armed (${transaction.id})\n`);
 }
 
 /**
@@ -3370,20 +3391,8 @@ async function restartBridgeAfterUpdate(homeDir: string): Promise<void> {
     );
   }
 
-  process.stdout.write("humming update: restarting bridge with its original arguments ...\n");
-  markBridgeRestart(homeDir);
-  try {
-    await stopBridge({ homeDir });
-    await startBridge({
-      homeDir,
-      selfPath: fileURLToPath(import.meta.url),
-      spawnArgv: launch.spawnArgv,
-      workingDirectory: launch.workingDirectory,
-    });
-  } catch (err) {
-    clearBridgeRestartMarker(homeDir);
-    throw err;
-  }
+  process.stdout.write("humming update: handing restart to lifecycle coordinator ...\n");
+  handoffLifecycle(homeDir, "restart", launch);
 }
 
 /** The branch `update` hard-syncs to: `$HUMMING_REF` if set and non-empty, else `main`. */
@@ -3443,9 +3452,17 @@ async function main(): Promise<void> {
     case "start":
       await runStart(args);
       return;
-    case "stop":
-      await stopBridge({ homeDir: resolveHomeDir(args.home) });
+    case "stop": {
+      const homeDir = resolveHomeDir(args.home);
+      const launch = readLaunchArgv(homeDir) ?? {
+        spawnArgv: ["proxy"],
+        workingDirectory: process.cwd(),
+        savedAt: new Date().toISOString(),
+      };
+      const transaction = handoffLifecycle(homeDir, "stop", launch);
+      process.stdout.write(`bridge stop coordinator armed (${transaction.id})\n`);
       return;
+    }
     case "restart":
       await runRestart(args);
       return;

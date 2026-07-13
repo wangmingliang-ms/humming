@@ -2,6 +2,7 @@
 
 **Status:** Normative source of truth
 **Date:** 2026-07-12
+**Last revised:** 2026-07-13
 
 This document defines the product semantics for conversation cards. Implementation plans, reducers, routers, delivery code, tests, and older dated design documents are subordinate to this specification. If a new case changes these semantics, update and review this document first; only then change code and tests.
 
@@ -148,6 +149,21 @@ Cn: Title and Metadata retained
 Cn has Cancel only while its Response is in progress, owns execution, and Cn is a Response Card rather than a Permission Card
 ```
 
+### 4.5 Active tool summary
+
+The Feishu Card summary describes what the active Response is doing now:
+
+```text
+thinking     -> <thinking icon> thinking
+calling tool -> <tool activity icon> <current Tool title>
+```
+
+The current Tool title belongs to the current `calling_tool` activity state. It is set when that Tool begins, updated by non-terminal updates for the same Tool, and cleared when that Tool finishes or the Response moves to another activity. Summary projection must not recover a title by searching older Cards or historical Tool entries.
+
+Card rotation preserves the current Response activity but does not turn an older Tool entry into current activity. Humming falls back to the generic processing summary only when the current activity is `calling_tool` but that current Tool call has no meaningful title.
+
+The summary reuses the Agent-provided current Tool title as-is after normal summary sanitization and truncation. It must not prepend a synthetic `tool:` or tool-kind label.
+
 ## 5. When a Card is created
 
 ### 5.1 First Card of a Response
@@ -157,7 +173,11 @@ Create or adopt one lifecycle-owned Card when a Request is accepted as a Respons
 - If the Topic is idle, that Card moves in place through `received -> preparing -> active -> terminal`.
 - If another Response owns execution, that Card moves in place through `received -> interrupting -> preparing -> active -> terminal`.
 - Do not create a standalone durable receipt Card and then create a second task Card for the same Response.
-- A transient acknowledgement Reaction may exist before the first authoritative Card is visible, but it is not a Card and owns no action.
+- A transient acknowledgement Reaction is added to the original Request message when that Request is accepted. It is not a Card and owns no action.
+- The Reaction belongs to the Request/Response lifecycle, not to any individual Card. It remains present while the Response is non-terminal, including across first-Card visibility, Card rotation, tool execution, Permission Cards, and continuation Cards.
+- The Reaction is removed when and only when that Request's Response reaches any terminal outcome: `complete`, `failed`, `interrupted`, `cancelled`, or `merged`.
+- If Reaction creation completes after the Response has already become terminal, Humming removes the late-created Reaction immediately.
+- Removal is best-effort and idempotent. Duplicate terminal notifications must not produce duplicate successful removals; a failed removal may be retried on a later lifecycle signal.
 
 ### 5.2 Additional Card in the same Response
 

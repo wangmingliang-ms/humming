@@ -69,7 +69,7 @@ const DEFAULT_SHOW_THOUGHTS = true;
 const DEFAULT_SHOW_TOOLS = true;
 const DEFAULT_SHOW_CANCEL_BUTTON = true;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
-const DEFAULT_IDLE_STATUS_CARD_MS = 10_000;
+const DEFAULT_IDLE_STATUS_CARD_MS = 15_000;
 const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 const IDLE_CLEANUP_INTERVAL_MS = 2 * 60_000;
 /** Debounce for settings.json change events (fs.watch double-fires). */
@@ -323,7 +323,7 @@ export interface LarkBridgeAgentOptions {
   permissionTimeoutMs?: number;
   /**
    * After a content-bearing card is quiet for this many ms, send a new empty
-   * status card that the next visible event can reuse. 0 disables. Default 10s.
+   * status card that the next visible event can reuse. 0 disables. Default 15s.
    */
   idleStatusCardMs?: number;
   /**

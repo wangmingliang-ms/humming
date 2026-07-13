@@ -183,6 +183,86 @@ describe("TopicConversation canonical lifecycle", () => {
     ]);
   });
 
+  it("replaces a consecutive tool whose title is only a placeholder", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "placeholder-1",
+      title: "Tool",
+      status: "in_progress",
+    });
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "placeholder-2",
+      title: " ",
+      status: "completed",
+    });
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "meaningful",
+      title: "Read original implementation",
+      status: "in_progress",
+    });
+
+    expect(response(topic, a).cards.at(-1)?.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "meaningful",
+        title: "Read original implementation",
+        status: "in_progress",
+      },
+    ]);
+  });
+
+  it("does not replace meaningful or non-consecutive tool entries", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "meaningful",
+      title: "Read controller",
+      status: "completed",
+    });
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "placeholder",
+      title: "Tool",
+      status: "in_progress",
+    });
+    topic.append(a, { kind: "text", text: "继续检查" });
+    topic.append(a, {
+      kind: "tool",
+      toolCallId: "after-text",
+      title: "Search API docs",
+      status: "in_progress",
+    });
+
+    expect(response(topic, a).cards.at(-1)?.entries).toEqual([
+      {
+        kind: "tool",
+        toolCallId: "meaningful",
+        title: "Read controller",
+        status: "completed",
+      },
+      {
+        kind: "tool",
+        toolCallId: "placeholder",
+        title: "Tool",
+        status: "in_progress",
+      },
+      { kind: "text", text: "继续检查" },
+      {
+        kind: "tool",
+        toolCallId: "after-text",
+        title: "Search API docs",
+        status: "in_progress",
+      },
+    ]);
+  });
+
   it("projects only the active execution owner's tail with Cancel", () => {
     const topic = new TopicConversation();
     const a = accept(topic, "a");

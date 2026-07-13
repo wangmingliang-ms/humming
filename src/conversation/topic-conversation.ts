@@ -51,6 +51,13 @@ export type TimelineEntry =
 type TextTimelineEntry = Extract<TimelineEntry, { readonly kind: "text" | "thought" }>;
 type ToolTimelineEntry = Extract<TimelineEntry, { readonly kind: "tool" }>;
 
+const DEFAULT_TOOL_TITLE = "Tool";
+
+function hasMeaningfulToolTitle(title: string): boolean {
+  const normalized = title.trim();
+  return normalized.length > 0 && normalized !== DEFAULT_TOOL_TITLE;
+}
+
 export interface PermissionArtifact {
   readonly token: PermissionToken;
   readonly responseId: ResponseId;
@@ -151,6 +158,14 @@ class ResponseCard {
       const last = this.timeline.at(-1);
       if (last?.kind === entry.kind) {
         this.timeline[this.timeline.length - 1] = { ...last, text: last.text + entry.text };
+        return;
+      }
+    }
+    if (entry.kind === "tool") {
+      const index = this.timeline.length - 1;
+      const last = this.timeline[index];
+      if (last?.kind === "tool" && !hasMeaningfulToolTitle(last.title)) {
+        this.timeline[index] = entry;
         return;
       }
     }

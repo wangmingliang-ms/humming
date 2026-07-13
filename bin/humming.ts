@@ -127,7 +127,7 @@ const ENV_UPDATE_REF = "HUMMING_REF";
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 1440;
 const DEFAULT_MAX_CHATS = 10;
 const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
-const DEFAULT_IDLE_STATUS_CARD_MS = 10_000;
+const DEFAULT_IDLE_STATUS_CARD_MS = 15_000;
 /**
  * Agent used when neither `--agent` nor settings.json `runtime.agent` names one.
  * Makes a bare `humming start` / `humming proxy` work out-of-the-box on a
@@ -337,7 +337,7 @@ type FileRuntime = {
   readonly unboundCwd?: string;
   readonly lifecycleNotifyChatIds?: readonly string[];
   readonly globalControlChatIds?: readonly string[];
-  /** Default idle gap before sending a reusable status card (10s). */
+  /** Default idle gap before sending a reusable status card (15s). */
   readonly idleStatusCardMs?: number;
 };
 

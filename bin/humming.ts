@@ -3109,9 +3109,6 @@ async function runStart(args: ParsedArgs): Promise<void> {
 /** The `restart` handler: stop any running bridge, then start with the same argv. */
 async function runRestart(args: ParsedArgs): Promise<void> {
   const homeDir = resolveHomeDir(args.home);
-  const launch = resolveRestartLaunch(args, homeDir);
-  persistLaunchArgv(homeDir, launch.spawnArgv, launch.workingDirectory);
-
   const strategy = resolveRestartExecutionStrategy(
     isCurrentProcessInBridgeUnit(homeDir),
     restartHasExplicitOptions(args),
@@ -3121,6 +3118,9 @@ async function runRestart(args: ParsedArgs): Promise<void> {
       "a restart requested from inside Humming cannot change launch options; update the launch configuration from an external shell first",
     );
   }
+
+  const launch = resolveRestartLaunch(args, homeDir);
+  persistLaunchArgv(homeDir, launch.spawnArgv, launch.workingDirectory);
   if (strategy === "supervisor") {
     const response = await sendControlRequest(bridgeControlSocketPath(homeDir), {
       method: "restart",

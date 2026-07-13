@@ -249,6 +249,7 @@ export class ChatRuntime {
    *         The runtime is left in an unusable state — caller must drop it.
    */
   async enqueue(message: PendingMessage): Promise<void> {
+    if (this.lifecycleIntent !== null) return;
     const admitted: PendingMessage =
       message.response === undefined
         ? {
@@ -299,6 +300,7 @@ export class ChatRuntime {
 
   private async enqueueReady(message: PendingMessage): Promise<void> {
     const pending = message;
+    if (this.lifecycleIntent !== null) return;
     if (!this.state) {
       // A previous agent crash / idle exit tears down `state`; the next user
       // message should spawn a fresh agent, not inherit the old aborted flag.
@@ -315,7 +317,7 @@ export class ChatRuntime {
       try {
         const bootstrapped = await bootstrap;
         if (this.aborted) {
-          killAgent(bootstrapped.agent.process);
+          if (this.lifecycleIntent === null) killAgent(bootstrapped.agent.process);
           return;
         }
         this.state = bootstrapped;
@@ -536,18 +538,20 @@ export class ChatRuntime {
     this.suppressPromptErrorNotice = true;
     this.aborted = true;
     const state = this.state;
+    const bootstrap = this.bootstrapPromise;
     const interruption = this.conversation.interruptTopic();
     this.clearAdmissionState(`runtime is draining for ${intent}`);
     this.queuedAfterRespawn.length = 0;
     if (state !== null) state.queue.length = 0;
 
-    this.drainPromise = this.finishDrain(intent, state, interruption);
+    this.drainPromise = this.finishDrain(intent, state, bootstrap, interruption);
     return this.drainPromise;
   }
 
   private async finishDrain(
     intent: LifecycleIntent,
     state: ChatRuntimeState | null,
+    bootstrap: Promise<ChatRuntimeState> | null,
     interruption: Promise<void>,
   ): Promise<DrainResult> {
     let escalated = false;
@@ -559,7 +563,16 @@ export class ChatRuntime {
       this.logger.warn({ err, intent }, "drain presentation flush timed out");
     });
 
-    if (state === null) {
+    let drainState = state;
+    if (drainState === null && bootstrap !== null) {
+      try {
+        drainState = await bootstrap;
+      } catch (err) {
+        this.logger.info({ err, intent }, "bootstrap ended while runtime was draining");
+      }
+    }
+
+    if (drainState === null) {
       return {
         intent,
         outcome: escalated ? "escalated" : "drained",
@@ -572,7 +585,7 @@ export class ChatRuntime {
     let cancel: DrainResult["cancel"] = "sent";
     try {
       await withTimeout(
-        state.agent.connection.cancel({ sessionId: state.agent.sessionId }),
+        drainState.agent.connection.cancel({ sessionId: drainState.agent.sessionId }),
         SHUTDOWN_FINALIZE_TIMEOUT_MS,
       );
     } catch (err) {
@@ -593,9 +606,26 @@ export class ChatRuntime {
       this.logger.info({ err, intent }, "active prompt did not settle during drain");
     }
 
-    const persisted = await this.persistSession(state.agent.sessionId);
+    const persisted = await this.persistSession(drainState.agent.sessionId);
+    const closeSession = drainState.agent.connection.unstable_closeSession;
+    if (
+      drainState.agent.capabilities["sessionCapabilities"] !== null &&
+      typeof drainState.agent.capabilities["sessionCapabilities"] === "object" &&
+      (drainState.agent.capabilities["sessionCapabilities"] as { close?: unknown }).close &&
+      closeSession !== undefined
+    ) {
+      try {
+        await withTimeout(
+          closeSession.call(drainState.agent.connection, { sessionId: drainState.agent.sessionId }),
+          SHUTDOWN_FINALIZE_TIMEOUT_MS,
+        );
+      } catch (err) {
+        escalated = true;
+        this.logger.info({ err, intent }, "expected drain session close did not settle cleanly");
+      }
+    }
     this.state = null;
-    killAgent(state.agent.process);
+    killAgent(drainState.agent.process);
     return {
       intent,
       outcome: escalated ? "escalated" : "drained",

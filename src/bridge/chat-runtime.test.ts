@@ -1170,6 +1170,67 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     expect(order).toEqual(["cancel", "kill"]);
   });
 
+  it("waits for an in-flight bootstrap and cancels its Agent before reporting drained", async () => {
+    const fake = makeFakeAgent();
+    let releaseSpawn!: () => void;
+    const spawnBlocked = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    spawnAgentMock.mockImplementation(async () => {
+      await spawnBlocked;
+      return fake.agent;
+    });
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([]),
+      sessionStore: stubSessionStore(),
+    });
+    const enqueue = runtime.enqueue({
+      prompt: [{ type: "text", text: "booting" }],
+      messageId: "om_booting_drain",
+      chatId: "oc_test",
+    });
+    await vi.waitFor(() => expect(spawnAgentMock).toHaveBeenCalledOnce());
+
+    const drain = runtime.drain("restart");
+    let settled = false;
+    void drain.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseSpawn();
+    await enqueue;
+    await expect(drain).resolves.toMatchObject({ intent: "restart", cancel: "sent" });
+    expect(fake.cancelCalls()).toBe(1);
+    expect(killAgentMock).toHaveBeenCalledExactlyOnceWith(fake.agent.process);
+  });
+
+  it("settles hydration that completes after drain without spawning an Agent", async () => {
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter([]),
+      sessionStore: stubSessionStore(),
+    });
+    const response = runtime.acceptResponse({
+      messageId: "om_late_hydration",
+      content: "late hydration",
+      profile: null,
+    });
+
+    await runtime.drain("stop");
+    await expect(
+      runtime.enqueue({
+        prompt: [{ type: "text", text: "late hydration" }],
+        messageId: "om_late_hydration",
+        chatId: "oc_test",
+        response,
+      }),
+    ).resolves.toBeUndefined();
+    expect(spawnAgentMock).not.toHaveBeenCalled();
+  });
+
   it("reports bounded escalation without a crash notice when cancel and prompt hang", async () => {
     vi.useFakeTimers();
     try {

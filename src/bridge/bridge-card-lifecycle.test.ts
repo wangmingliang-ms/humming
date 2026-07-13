@@ -119,6 +119,9 @@ describe("LarkBridge prompt ingress ordering", () => {
     await expect(
       testable.beginLifecycle({ ...transaction, id: "lifecycle-2", intent: "stop" }),
     ).rejects.toThrow("already active");
+    await expect(testable.beginLifecycle({ ...transaction, intent: "stop" })).rejects.toThrow(
+      "already active",
+    );
     expect(testable.lifecycleState).toMatchObject({
       kind: "quiescing",
       intent: "restart",

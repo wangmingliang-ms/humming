@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -556,6 +557,7 @@ export class LarkBridge {
     readonly transactionId: string;
     readonly readyToExit: true;
   }> | null = null;
+  private lifecycleTransaction: LifecycleTransaction | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private ws: LarkWsConnection | null = null;
   private controlServer: BridgeControlServer | null = null;
@@ -685,7 +687,10 @@ export class LarkBridge {
     // If beginLifecycle already drained runtimes and emitted its terminal old-process
     // notice, stop() only releases process resources. Compatibility signal/control
     // shutdowns still use the legacy best-effort drain and notice path.
-    if (this.lifecycleState.kind === "running") {
+    if (this.lifecycleState.kind === "quiescing") {
+      await this.lifecyclePromise;
+      this.chats.clear();
+    } else if (this.lifecycleState.kind === "running") {
       await this.shutdownAllRuntimes("cancelled");
       this.chats.clear();
       await this.sendLifecycleStoppingNotice();
@@ -716,7 +721,10 @@ export class LarkBridge {
     readonly readyToExit: true;
   }> {
     if (this.lifecycleState.kind !== "running") {
-      if (this.lifecycleState.transactionId !== transaction.id) {
+      if (
+        this.lifecycleTransaction === null ||
+        !isDeepStrictEqual(this.lifecycleTransaction, transaction)
+      ) {
         return Promise.reject(
           new Error(`lifecycle transaction ${this.lifecycleState.transactionId} is already active`),
         );
@@ -732,6 +740,7 @@ export class LarkBridge {
     }
 
     // Quiesce synchronously before the first await so ingress cannot pass the gate.
+    this.lifecycleTransaction = transaction;
     this.lifecycleState = {
       kind: "quiescing",
       intent: transaction.intent,
@@ -1352,6 +1361,7 @@ export class LarkBridge {
     const key = runtimeKey(chatId, threadId);
     const pending = this.pendingPostTurnAgentSwitches.get(key);
     const previous = await this.sessionStore.getLatest(chatId, threadId);
+    if (this.lifecycleState.kind !== "running") return;
     const storedTarget = previous?.pendingTargetProfile;
     if (!pending && !storedTarget) return;
     this.pendingPostTurnAgentSwitches.delete(key);
@@ -1525,6 +1535,11 @@ export class LarkBridge {
           return;
         }
       }
+    }
+
+    if (this.lifecycleState.kind !== "running") {
+      await this.rejectQuiescingIngress(messageId);
+      return;
     }
 
     const interpreted: InterpretedMessage = interpretLarkMessage(event, { botOpenId });
@@ -2281,6 +2296,11 @@ export class LarkBridge {
       throw err;
     }
     response.attachAcknowledgement(await reaction);
+    if (this.lifecycleState.kind !== "running") {
+      runtime.abandonHydration(response.responseId);
+      await this.rejectQuiescingIngress(messageId);
+      return;
+    }
 
     const context = isGroup
       ? `[上下文: 群聊 "${chatName}" (${chatId}) 中用户 ${userName} (${userId}) 的消息]`

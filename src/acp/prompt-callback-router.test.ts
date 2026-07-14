@@ -23,6 +23,7 @@ function sessionCallbacks(): SessionCallbacks {
     onConfig: vi.fn(),
     onCommands: vi.fn(),
     onUsage: vi.fn(),
+    onOutOfTurnUpdate: vi.fn(async () => "discarded"),
   };
 }
 
@@ -175,27 +176,47 @@ describe("PromptCallbackRouter active routing", () => {
     expect(b.requestPermission).not.toHaveBeenCalled();
   });
 
-  it("quarantines an update that enters after the prompt response boundary", async () => {
+  it("drains an update that enters after the prompt response boundary", async () => {
     const sink = diagnosticSink();
     const callbacks = promptCallbacks();
     const router = new PromptCallbackRouter(sessionCallbacks(), sink);
     const handle = router.activate("prompt-a" as PromptToken, callbacks);
     router.close(handle);
 
-    await expect(router.sessionUpdate(notification(replayUpdates[1]!))).rejects.toThrow(
-      "closed prompt route",
-    );
+    await expect(router.sessionUpdate(notification(replayUpdates[1]!))).resolves.toBeUndefined();
 
     expect(callbacks.sessionUpdate).not.toHaveBeenCalled();
-    expect(router.isConnectionHealthy()).toBe(false);
+    expect(router.isConnectionHealthy()).toBe(true);
     expect(sink.events.at(-1)).toMatchObject({
       category: "router",
       operation: "session_update",
-      outcome: "quarantined",
+      outcome: "discarded",
     });
   });
 
-  it("cancels and quarantines a permission request that enters after close", async () => {
+  it("forwards an out-of-turn update to the session and records the attach outcome honestly", async () => {
+    const sink = diagnosticSink();
+    const session = sessionCallbacks();
+    vi.mocked(session.onOutOfTurnUpdate).mockResolvedValue("attached");
+    const callbacks = promptCallbacks();
+    const router = new PromptCallbackRouter(session, sink);
+    const handle = router.activate("prompt-a" as PromptToken, callbacks);
+    router.close(handle);
+
+    const update = replayUpdates[1]!;
+    await expect(router.sessionUpdate(notification(update))).resolves.toBeUndefined();
+
+    expect(session.onOutOfTurnUpdate).toHaveBeenCalledWith(update);
+    expect(callbacks.sessionUpdate).not.toHaveBeenCalled();
+    expect(router.isConnectionHealthy()).toBe(true);
+    expect(sink.events.at(-1)).toMatchObject({
+      category: "router",
+      operation: "session_update",
+      outcome: "accepted",
+    });
+  });
+
+  it("cancels an out-of-turn permission request without poisoning the connection", async () => {
     const sink = diagnosticSink();
     const callbacks = promptCallbacks();
     const router = new PromptCallbackRouter(sessionCallbacks(), sink);
@@ -211,7 +232,7 @@ describe("PromptCallbackRouter active routing", () => {
     ).resolves.toEqual({ outcome: { outcome: "cancelled" } });
 
     expect(callbacks.requestPermission).not.toHaveBeenCalled();
-    expect(router.isConnectionHealthy()).toBe(false);
+    expect(router.isConnectionHealthy()).toBe(true);
     expect(sink.events.at(-1)).toMatchObject({
       category: "router",
       operation: "permission_request",
@@ -231,6 +252,23 @@ describe("PromptCallbackRouter active routing", () => {
     expect(callbacks.cancelPendingPermissions).toHaveBeenCalledWith("prompt_cancelled");
     expect(callbacks.sessionUpdate).toHaveBeenCalledOnce();
     expect(router.isConnectionHealthy()).toBe(true);
+  });
+
+  it("cancels permission requests that arrive after prompt cancellation", async () => {
+    const callbacks = promptCallbacks();
+    const router = new PromptCallbackRouter(sessionCallbacks(), diagnosticSink());
+    const handle = router.activate("prompt-a" as PromptToken, callbacks);
+
+    router.cancel(handle);
+
+    await expect(
+      router.requestPermission({
+        sessionId: "session-1",
+        toolCall: { toolCallId: "tool-1", title: "Tool" },
+        options: [],
+      }),
+    ).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    expect(callbacks.requestPermission).not.toHaveBeenCalled();
   });
 
   it("cancels pending permissions exactly once across cancel and response close", () => {
@@ -257,9 +295,9 @@ describe("PromptCallbackRouter active routing", () => {
     expect(callbacks.cancelPendingPermissions).toHaveBeenCalledWith("connection_shutdown");
   });
 
-  it("refuses to activate a new prompt after quarantine", async () => {
+  it("refuses to activate a new prompt after connection shutdown", () => {
     const router = new PromptCallbackRouter(sessionCallbacks(), diagnosticSink());
-    await expect(router.sessionUpdate(notification(replayUpdates[1]!))).rejects.toThrow();
+    router.connectionShutdown();
 
     expect(() => router.activate("prompt-b" as PromptToken, promptCallbacks())).toThrow(
       "unhealthy",
@@ -277,7 +315,8 @@ describe("PromptCallbackRouter active routing", () => {
 
     expect(callbacks.cancelPendingPermissions).toHaveBeenCalledOnce();
     expect(callbacks.cancelPendingPermissions).toHaveBeenCalledWith("route_closed");
-    await expect(router.sessionUpdate(notification(replayUpdates[1]!))).rejects.toThrow();
+    await expect(router.sessionUpdate(notification(replayUpdates[1]!))).resolves.toBeUndefined();
+    expect(router.isConnectionHealthy()).toBe(true);
   });
 
   it("closes the route after a rejected prompt response", async () => {
@@ -292,6 +331,7 @@ describe("PromptCallbackRouter active routing", () => {
     ).rejects.toBe(failure);
 
     expect(callbacks.cancelPendingPermissions).toHaveBeenCalledWith("route_closed");
-    await expect(router.sessionUpdate(notification(replayUpdates[1]!))).rejects.toThrow();
+    await expect(router.sessionUpdate(notification(replayUpdates[1]!))).resolves.toBeUndefined();
+    expect(router.isConnectionHealthy()).toBe(true);
   });
 });

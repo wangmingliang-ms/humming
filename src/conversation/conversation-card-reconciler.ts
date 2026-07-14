@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { LarkLogger } from "../logger/logger.js";
 import type { ConversationCardView } from "../presenter/conversation-card-view.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
@@ -7,6 +8,8 @@ import {
   ResponseCardProjector,
   type ResponseCardId,
   type ResponseId,
+  type SupplementCardId,
+  type SupplementCardSnapshot,
   type TopicConversationSnapshot,
 } from "./topic-conversation.js";
 import type {
@@ -30,6 +33,23 @@ export interface ConversationCardDeliveryRecordSnapshot {
 interface DeliveryRecord {
   readonly cardId: ResponseCardId;
   responseId: ResponseId;
+  externalMessageId: string | null;
+  desiredRevision: number;
+  deliveredRevision: number | null;
+  status: "dirty" | "rendering" | "retrying" | "settled" | "failed";
+  attempts: number;
+  worker: Promise<void> | null;
+}
+
+/**
+ * Delivery bookkeeping for a Supplement Card. Simpler than {@link
+ * DeliveryRecord}: Supplement Cards never carry Cancel authority or patch
+ * failure diagnostics, so there is nothing else to reconcile.
+ */
+interface SupplementDeliveryRecord {
+  readonly cardId: SupplementCardId;
+  responseId: ResponseId;
+  desiredSnapshot: SupplementCardSnapshot;
   externalMessageId: string | null;
   desiredRevision: number;
   deliveredRevision: number | null;
@@ -80,6 +100,13 @@ export interface ConversationCardReconcilerOptions {
     cardId: ResponseCardId,
     kind: "intermediate" | "terminal",
   ) => void;
+  /**
+   * Fired after a Supplement Card delivery worker settles (its record reaches
+   * `settled` or `failed` with no further retry scheduled). The domain layer
+   * uses this to retry a terminal Response eviction it previously deferred
+   * because Supplement delivery for that Response was still dirty/in-flight.
+   */
+  readonly onSupplementSettled?: (responseId: ResponseId) => void;
 }
 
 /**
@@ -97,6 +124,8 @@ export class ConversationCardReconciler {
   private readonly diagnostics = new Map<number, DeliveryDiagnostic>();
   private readonly settledArtifacts = new Set<ResponseCardId>();
   private readonly permissions = new Map<string, PermissionDeliveryRecord>();
+  private readonly supplementRecords = new Map<SupplementCardId, SupplementDeliveryRecord>();
+  private readonly supplementAnchors = new Map<SupplementCardId, string>();
   private readonly unsubscribe: () => void;
   private desiredClock = 0;
   private diagnosticClock = 0;
@@ -115,6 +144,14 @@ export class ConversationCardReconciler {
 
   registerAnchor(cardId: ResponseCardId, sourceMessageId: string): void {
     this.anchors.set(cardId, sourceMessageId);
+  }
+
+  /**
+   * Anchors a Supplement Card to the original Request's source message, the
+   * same message the owning Response's first Card was anchored to.
+   */
+  registerSupplementAnchor(cardId: SupplementCardId, sourceMessageId: string): void {
+    this.supplementAnchors.set(cardId, sourceMessageId);
   }
 
   forgetSettledArtifact(cardId: ResponseCardId): void {
@@ -194,6 +231,53 @@ export class ConversationCardReconciler {
     );
   }
 
+  hasVisibleSupplementCard(responseId: ResponseId): boolean {
+    return [...this.supplementRecords.values()].some(
+      (record) => record.responseId === responseId && record.externalMessageId !== null,
+    );
+  }
+
+  /**
+   * Delivery-settled precondition for evicting a terminal Response that may
+   * hold Supplement Cards: true only when every Supplement delivery record
+   * for `responseId` has reached a terminal status (`settled` or `failed`)
+   * with no worker currently in flight. A Response with no Supplement
+   * delivery records at all trivially satisfies this.
+   */
+  isSupplementDeliverySettled(responseId: ResponseId): boolean {
+    return [...this.supplementRecords.values()]
+      .filter((record) => record.responseId === responseId)
+      .every(
+        (record) =>
+          record.worker === null && (record.status === "settled" || record.status === "failed"),
+      );
+  }
+
+  /**
+   * Narrow read-only count of Supplement delivery records still tracked for
+   * `responseId`. Exposed only so callers (and tests) can confirm
+   * {@link forgetResponseSupplements} actually released the bounded map
+   * entries after an eviction, without reaching into private state.
+   */
+  supplementDeliveryRecordCount(responseId: ResponseId): number {
+    return [...this.supplementRecords.values()].filter((record) => record.responseId === responseId)
+      .length;
+  }
+
+  /**
+   * Explicit cleanup for all Supplement delivery records/anchors belonging to
+   * an evicted Response. Domain eviction removes the Response's Turn outright
+   * rather than tearing down each Card, so nothing else prompts this map to
+   * shrink; callers must invoke it once they know the Response is gone.
+   */
+  forgetResponseSupplements(responseId: ResponseId): void {
+    for (const [cardId, record] of this.supplementRecords) {
+      if (record.responseId !== responseId) continue;
+      this.supplementRecords.delete(cardId);
+      this.supplementAnchors.delete(cardId);
+    }
+  }
+
   dispose(): void {
     this.disposed = true;
     this.unsubscribe();
@@ -207,7 +291,10 @@ export class ConversationCardReconciler {
       const permissionWorkers = [...this.permissions.values()]
         .map((record) => record.worker)
         .filter((worker): worker is Promise<void> => worker !== null);
-      const workers = [...cardWorkers, ...permissionWorkers];
+      const supplementWorkers = [...this.supplementRecords.values()]
+        .map((record) => record.worker)
+        .filter((worker): worker is Promise<void> => worker !== null);
+      const workers = [...cardWorkers, ...permissionWorkers, ...supplementWorkers];
       if (workers.length === 0) return;
       await Promise.all(workers);
     }
@@ -368,6 +455,28 @@ export class ConversationCardReconciler {
         this.publishRecord(record);
         this.schedule(record);
       }
+      for (const card of turn.response.supplements) {
+        const existing = this.supplementRecords.get(card.id);
+        if (existing !== undefined && isDeepStrictEqual(existing.desiredSnapshot, card)) continue;
+        const record = existing ?? {
+          cardId: card.id,
+          responseId: turn.response.id,
+          desiredSnapshot: card,
+          externalMessageId: null,
+          desiredRevision,
+          deliveredRevision: null,
+          status: "dirty" as const,
+          attempts: 0,
+          worker: null,
+        };
+        record.responseId = turn.response.id;
+        record.desiredSnapshot = card;
+        record.desiredRevision = desiredRevision;
+        if (record.status === "failed") record.attempts = 0;
+        if (record.status !== "rendering") record.status = "dirty";
+        this.supplementRecords.set(card.id, record);
+        this.scheduleSupplement(record);
+      }
     }
   }
 
@@ -488,6 +597,108 @@ export class ConversationCardReconciler {
       if (externalId === null) return false;
       record.externalMessageId = externalId;
       this.publishRecord(record);
+      return true;
+    }
+    const update = this.options.presenter.updateConversationCard;
+    if (typeof update !== "function") return false;
+    return update.call(this.options.presenter, record.externalMessageId, view);
+  }
+
+  private scheduleSupplement(record: SupplementDeliveryRecord): void {
+    if (this.disposed || record.worker !== null) return;
+    record.worker = this.runSupplement(record)
+      .catch((error) => {
+        record.status = "failed";
+        this.options.logger.warn(
+          { error, responseId: record.responseId, cardId: record.cardId },
+          "supplement Card reconciler worker failed",
+        );
+      })
+      .finally(() => {
+        // Clear the in-flight marker first so any settlement check performed
+        // by `onSupplementSettled` below (or by a caller it triggers) never
+        // observes a worker that "looks" active while this callback is still
+        // unwinding.
+        record.worker = null;
+        if (this.disposed) return;
+        if (record.deliveredRevision !== record.desiredRevision && record.status === "dirty") {
+          this.scheduleSupplement(record);
+          return;
+        }
+        if (record.status === "settled" || record.status === "failed") {
+          this.options.onSupplementSettled?.(record.responseId);
+        }
+      });
+  }
+
+  private async runSupplement(record: SupplementDeliveryRecord): Promise<void> {
+    while (!this.disposed && record.deliveredRevision !== record.desiredRevision) {
+      const attemptedRevision = record.desiredRevision;
+      const view = this.projectSupplementLatest(record);
+      if (view === null) return;
+      record.status = "rendering";
+      const outcome = await this.writeSupplement(record, view).catch((error) => {
+        this.options.logger.warn(
+          { error, responseId: record.responseId, cardId: record.cardId },
+          "supplement Card transport rejected",
+        );
+        return false;
+      });
+      if (outcome) {
+        record.attempts = 0;
+        record.deliveredRevision = attemptedRevision;
+        record.status = record.deliveredRevision === record.desiredRevision ? "settled" : "dirty";
+        continue;
+      }
+
+      record.attempts += 1;
+      const maxAttempts = this.options.maxPatchAttempts ?? 2;
+      if (record.attempts >= maxAttempts) {
+        record.status = "failed";
+        return;
+      }
+      record.status = "retrying";
+      await delay(this.options.retryDelayMs ?? 100);
+      record.status = "dirty";
+    }
+  }
+
+  private projectSupplementLatest(record: SupplementDeliveryRecord): ConversationCardView | null {
+    const response = this.snapshotValue.turns.find(
+      (turn) => turn.response.id === record.responseId,
+    )?.response;
+    const card = response?.supplements.find((candidate) => candidate.id === record.cardId);
+    if (response === undefined || card === undefined) {
+      this.supplementRecords.delete(record.cardId);
+      this.supplementAnchors.delete(record.cardId);
+      return null;
+    }
+    const projection = this.projector.projectSupplement(
+      this.snapshotValue,
+      record.responseId,
+      record.cardId,
+    );
+    return this.mapper.toSupplementView(projection, this.options.route);
+  }
+
+  private async writeSupplement(
+    record: SupplementDeliveryRecord,
+    view: ConversationCardView,
+  ): Promise<boolean> {
+    if (record.externalMessageId === null) {
+      const send = this.options.presenter.sendConversationCard;
+      if (typeof send !== "function") return false;
+      const anchor = this.supplementAnchors.get(record.cardId);
+      if (anchor === undefined) {
+        this.options.logger.warn(
+          { responseId: record.responseId, cardId: record.cardId },
+          "supplement Card has no delivery anchor",
+        );
+        return false;
+      }
+      const externalId = await send.call(this.options.presenter, anchor, view);
+      if (externalId === null) return false;
+      record.externalMessageId = externalId;
       return true;
     }
     const update = this.options.presenter.updateConversationCard;
@@ -674,6 +885,8 @@ function appendWarning(view: ConversationCardView): ConversationCardView {
     case "terminal":
       return { ...view, entries: [...view.entries, warning] };
     case "starting":
+      return view;
+    case "supplement":
       return view;
   }
 }

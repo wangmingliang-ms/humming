@@ -5,6 +5,7 @@ import type {
   ResponseId,
   ResponseSnapshot,
   ResponseState,
+  SupplementCardProjection,
   TimelineEntry,
   TopicConversationSnapshot,
 } from "./topic-conversation.js";
@@ -178,6 +179,19 @@ export class ConversationCardViewMapper {
         };
       }
     }
+  }
+
+  /**
+   * Projects a Supplement Card into its fixed neutral view. Unlike
+   * {@link toView}, this never inspects Response phase/outcome: Supplement
+   * Cards never show a processing/ended status, profile, or Cancel.
+   */
+  toSupplementView(projection: SupplementCardProjection, route: CardRoute): ConversationCardView {
+    return {
+      kind: "supplement",
+      entries: entries(projection.entries),
+      route,
+    };
   }
 }
 

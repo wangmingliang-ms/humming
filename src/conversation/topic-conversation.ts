@@ -4,6 +4,7 @@ export type TurnId = string & { readonly __brand: "TurnId" };
 export type RequestId = string & { readonly __brand: "RequestId" };
 export type ResponseId = string & { readonly __brand: "ResponseId" };
 export type ResponseCardId = string & { readonly __brand: "ResponseCardId" };
+export type SupplementCardId = string & { readonly __brand: "SupplementCardId" };
 export type ResponseToken = string & { readonly __brand: "ResponseToken" };
 export type ActionToken = string & { readonly __brand: "ActionToken" };
 export type PermissionToken = string & { readonly __brand: "PermissionToken" };
@@ -81,6 +82,20 @@ export interface ResponseCardSnapshot {
   readonly isTail: boolean;
 }
 
+/**
+ * A neutral, ownerless post-turn Card. Supplement Cards are a Response-owned
+ * collection separate from the primary `cards` tail chain: they never carry
+ * Title/Metadata/Cancel semantics and never turn a terminal primary Card back
+ * into an intermediate one. Only the last Supplement Card is writable; earlier
+ * ones are frozen the same way an intermediate primary Card is frozen.
+ */
+export interface SupplementCardSnapshot {
+  readonly id: SupplementCardId;
+  readonly reason: ResponseCardReason;
+  readonly entries: readonly TimelineEntry[];
+  readonly isTail: boolean;
+}
+
 export interface ResponseSnapshot {
   readonly id: ResponseId;
   readonly token: ResponseToken;
@@ -88,6 +103,7 @@ export interface ResponseSnapshot {
   readonly profile: SessionCardMeta | null;
   readonly cards: readonly ResponseCardSnapshot[];
   readonly terminalToolCallIds: readonly string[];
+  readonly supplements: readonly SupplementCardSnapshot[];
 }
 
 export interface TurnSnapshot {
@@ -117,6 +133,13 @@ export interface TopicConversationSnapshot {
   readonly cancelAuthority: CancelAuthority;
   readonly permission: PermissionArtifact | null;
   readonly pendingBatch: PendingRequestBatchSnapshot | null;
+  /**
+   * The Response currently allowed to receive out-of-turn Supplement Card
+   * updates, or `null` if no Response owns that window. Only a Response that
+   * reached the `complete` terminal outcome may hold this; accepting any new
+   * Turn revokes it synchronously.
+   */
+  readonly supplementOwnerResponseId: ResponseId | null;
 }
 
 export interface CardProjection {
@@ -134,6 +157,16 @@ export interface CardProjection {
   };
 }
 
+/**
+ * A Supplement Card projection never carries Title/Metadata/Cancel; it is a
+ * fixed neutral projection of its entries only.
+ */
+export interface SupplementCardProjection {
+  readonly responseId: ResponseId;
+  readonly cardId: SupplementCardId;
+  readonly entries: readonly TimelineEntry[];
+}
+
 function cloneUnknown<T>(value: T): T {
   return structuredClone(value);
 }
@@ -146,11 +179,24 @@ function cloneRequest(message: RequestMessage): RequestMessage {
   });
 }
 
-class ResponseCard {
+interface CardSnapshot<Id extends string> {
+  readonly id: Id;
+  readonly reason: ResponseCardReason;
+  readonly entries: readonly TimelineEntry[];
+  readonly isTail: boolean;
+}
+
+/**
+ * A single Card-local content segment. Both primary Response Cards and
+ * Supplement Cards reuse this class for text-chunk coalescing, tool-status
+ * monotonicity, and running-tool sealing; only the branded id type and the
+ * collection they belong to differ.
+ */
+class ResponseCard<Id extends string = ResponseCardId> {
   private readonly timeline: TimelineEntry[];
 
   constructor(
-    readonly id: ResponseCardId,
+    readonly id: Id,
     readonly reason: ResponseCardReason,
     entries: readonly TimelineEntry[] = [],
   ) {
@@ -222,7 +268,7 @@ class ResponseCard {
     }
   }
 
-  snapshot(isTail: boolean): ResponseCardSnapshot {
+  snapshot(isTail: boolean): CardSnapshot<Id> {
     return Object.freeze({
       id: this.id,
       reason: this.reason,
@@ -235,6 +281,7 @@ class ResponseCard {
 class ResponseLifecycle {
   private stateValue: ResponseState;
   private readonly responseCards: ResponseCard[];
+  private readonly supplementCards: ResponseCard<SupplementCardId>[] = [];
   private readonly terminalToolIds = new Set<string>();
   private profileValue: SessionCardMeta | null;
 
@@ -265,6 +312,11 @@ class ResponseLifecycle {
       0,
       response.responseCards.length,
       ...snapshot.cards.map((card) => new ResponseCard(card.id, card.reason, card.entries)),
+    );
+    response.supplementCards.push(
+      ...snapshot.supplements.map(
+        (card) => new ResponseCard<SupplementCardId>(card.id, card.reason, card.entries),
+      ),
     );
     for (const toolCallId of snapshot.terminalToolCallIds) {
       response.terminalToolIds.add(toolCallId);
@@ -354,6 +406,7 @@ class ResponseLifecycle {
 
   snapshot(): ResponseSnapshot {
     const tailId = this.tail.id;
+    const supplementTailId = this.supplementTail?.id ?? null;
     return Object.freeze({
       id: this.id,
       token: this.token,
@@ -361,7 +414,64 @@ class ResponseLifecycle {
       profile: this.profileValue === null ? null : Object.freeze({ ...this.profileValue }),
       cards: Object.freeze(this.responseCards.map((card) => card.snapshot(card.id === tailId))),
       terminalToolCallIds: Object.freeze([...this.terminalToolIds]),
+      supplements: Object.freeze(
+        this.supplementCards.map((card) => card.snapshot(card.id === supplementTailId)),
+      ),
     });
+  }
+
+  get supplementTail(): ResponseCard<SupplementCardId> | null {
+    return this.supplementCards.at(-1) ?? null;
+  }
+
+  private assertSupplementEligible(): void {
+    if (this.stateValue.kind !== "terminal" || this.stateValue.outcome !== "complete") {
+      throw new Error("only a normally completed response may hold Supplement Cards");
+    }
+  }
+
+  createSupplementCard(cardId: SupplementCardId): void {
+    this.assertSupplementEligible();
+    if (this.supplementTail !== null) throw new Error("a supplement card already exists");
+    this.supplementCards.push(new ResponseCard<SupplementCardId>(cardId, "initial"));
+  }
+
+  rotateSupplementCard(cardId: SupplementCardId): void {
+    this.assertSupplementEligible();
+    const tail = this.supplementTail;
+    if (tail === null) throw new Error("no supplement card to rotate");
+    tail.sealRunningTools();
+    this.supplementCards.push(new ResponseCard<SupplementCardId>(cardId, "content_rotation"));
+  }
+
+  appendSupplement(entry: TimelineEntry): void {
+    this.assertSupplementEligible();
+    const tail = this.supplementTail;
+    if (tail === null) throw new Error("no supplement card to append to");
+    tail.append(entry);
+  }
+
+  replaceSupplementTailText(kind: TextTimelineEntry["kind"], text: string): void {
+    this.assertSupplementEligible();
+    const tail = this.supplementTail;
+    if (tail === null) throw new Error("no supplement card to replace");
+    tail.replaceLastText(kind, text);
+  }
+
+  updateSupplementTool(
+    toolCallId: string,
+    update: {
+      readonly title?: string;
+      readonly status?: ToolTimelineEntry["status"];
+    },
+  ): boolean {
+    this.assertSupplementEligible();
+    for (let index = this.supplementCards.length - 1; index >= 0; index -= 1) {
+      const card = this.supplementCards[index];
+      if (card === undefined) continue;
+      if (card.updateTool(toolCallId, update)) return true;
+    }
+    return false;
   }
 }
 
@@ -402,6 +512,7 @@ export class TopicConversation {
     carrierResponseId: ResponseId;
     state: "collecting" | "sealed";
   } | null = null;
+  private supplementOwner: ResponseId | null = null;
 
   static fromSnapshot(snapshot: TopicConversationSnapshot): TopicConversation {
     const topic = new TopicConversation();
@@ -432,12 +543,17 @@ export class TopicConversation {
             carrierResponseId: snapshot.pendingBatch.carrierResponseId,
             state: snapshot.pendingBatch.state,
           };
+    topic.supplementOwner = snapshot.supplementOwnerResponseId;
     topic.assertInvariants();
     return topic;
   }
 
   accept(input: AcceptTurnInput): ResponseId {
     this.assertUnique(input);
+    // A new Request always synchronously revokes any Supplement Card
+    // ownership before any of the remaining (still synchronous) domain work
+    // runs, so no out-of-turn update racing this call can attach afterwards.
+    this.supplementOwner = null;
     if (this.pendingBatchValue?.state === "collecting") {
       return this.appendCollectingBatch(input);
     }
@@ -473,6 +589,7 @@ export class TopicConversation {
   appendToInterruptBatch(input: AppendToBatchInput): ResponseId {
     if (this.pendingBatchValue?.state !== "collecting") throw new Error("no collecting batch");
     this.assertUnique(input);
+    this.supplementOwner = null;
     return this.appendCollectingBatch(input);
   }
 
@@ -563,6 +680,7 @@ export class TopicConversation {
     if (this.executionOwner === responseId) return false;
     if (this.pendingBatchValue?.carrierResponseId === responseId) return false;
     if (this.currentPermission?.responseId === responseId) return false;
+    if (this.supplementOwner === responseId) return false;
     const index = this.turns.findIndex((turn) => turn.response.id === responseId);
     if (index < 0) return false;
     const turn = this.turns[index];
@@ -750,6 +868,15 @@ export class TopicConversation {
     ) {
       this.currentPermission = { ...this.currentPermission, status: "expired" };
     }
+    if (
+      outcome === "complete" &&
+      this.pendingBatchValue === null &&
+      !this.hasOtherActiveResponse(responseId)
+    ) {
+      this.supplementOwner = responseId;
+    } else if (this.supplementOwner === responseId) {
+      this.supplementOwner = null;
+    }
     this.assertInvariants();
   }
 
@@ -827,6 +954,7 @@ export class TopicConversation {
     const interrupted: ResponseId[] = [];
     this.pendingBatchValue = null;
     this.cancel = { kind: "none" };
+    this.supplementOwner = null;
     for (const response of this.turns.map((turn) => turn.response)) {
       if (response.state.kind !== "in_progress") continue;
       response.seal("interrupted");
@@ -847,6 +975,7 @@ export class TopicConversation {
       .filter((response) => response.id !== owner && response.state.kind === "in_progress");
     this.pendingBatchValue = null;
     this.cancel = { kind: "none" };
+    this.supplementOwner = null;
     for (const response of unfinishedWaiting) response.seal("cancelled");
     if (this.currentPermission?.status === "current") {
       this.currentPermission = { ...this.currentPermission, status: "expired" };
@@ -875,8 +1004,107 @@ export class TopicConversation {
             }),
       pendingBatch:
         this.pendingBatchValue === null ? null : this.batchSnapshot(this.pendingBatchValue),
+      supplementOwnerResponseId: this.supplementOwner,
     };
     return Object.freeze(snapshot);
+  }
+
+  /**
+   * Creates the first Supplement Card for the current out-of-turn ownership
+   * window.
+   *
+   * @throws when `responseId` does not currently hold Supplement Card
+   *         ownership, or when a Supplement Card already exists.
+   */
+  createSupplementCard(responseId: ResponseId, cardId: SupplementCardId): void {
+    this.assertSupplementOwner(responseId);
+    this.response(responseId).createSupplementCard(cardId);
+    this.assertInvariants();
+  }
+
+  /**
+   * Rotates the current Supplement Card once the existing tail hits the
+   * shared Conversation Card byte budget, freezing the old tail and starting
+   * a new writable one anchored to the same Request.
+   *
+   * @throws when `responseId` does not currently hold Supplement Card
+   *         ownership, or when no Supplement Card exists yet.
+   */
+  rotateSupplementCard(responseId: ResponseId, cardId: SupplementCardId): void {
+    this.assertSupplementOwner(responseId);
+    this.response(responseId).rotateSupplementCard(cardId);
+    this.assertInvariants();
+  }
+
+  /**
+   * @throws when `responseId` does not currently hold Supplement Card
+   *         ownership, or when no Supplement Card exists yet.
+   */
+  appendSupplement(responseId: ResponseId, entry: TimelineEntry): void {
+    this.assertSupplementOwner(responseId);
+    this.response(responseId).appendSupplement(entry);
+    this.assertInvariants();
+  }
+
+  /**
+   * @throws when `responseId` does not currently hold Supplement Card
+   *         ownership, or when no Supplement Card exists yet.
+   */
+  replaceSupplementTailText(
+    responseId: ResponseId,
+    kind: TextTimelineEntry["kind"],
+    text: string,
+  ): void {
+    this.assertSupplementOwner(responseId);
+    this.response(responseId).replaceSupplementTailText(kind, text);
+    this.assertInvariants();
+  }
+
+  /**
+   * @throws when `responseId` does not currently hold Supplement Card
+   *         ownership, or when no Supplement Card exists yet.
+   */
+  updateSupplementTool(
+    responseId: ResponseId,
+    toolCallId: string,
+    update: {
+      readonly title?: string;
+      readonly status?: ToolTimelineEntry["status"];
+    },
+  ): boolean {
+    this.assertSupplementOwner(responseId);
+    const updated = this.response(responseId).updateSupplementTool(toolCallId, update);
+    this.assertInvariants();
+    return updated;
+  }
+
+  /**
+   * Reports whether `responseId` currently owns the Supplement Card window:
+   * it must be the topic's recorded supplement owner and must have reached
+   * the `complete` terminal outcome. This is a pure read used by the
+   * application layer to decide "attached" vs "discarded" for an out-of-turn
+   * ACP update without throwing on the common discard path.
+   */
+  isSupplementOwner(responseId: ResponseId): boolean {
+    if (this.supplementOwner !== responseId) return false;
+    const response = this.response(responseId).state;
+    return response.kind === "terminal" && response.outcome === "complete";
+  }
+
+  hasSupplementCard(responseId: ResponseId): boolean {
+    return this.response(responseId).supplementTail !== null;
+  }
+
+  private assertSupplementOwner(responseId: ResponseId): void {
+    if (!this.isSupplementOwner(responseId)) {
+      throw new Error("response does not currently own the Supplement Card window");
+    }
+  }
+
+  private hasOtherActiveResponse(excluding: ResponseId): boolean {
+    return this.turns.some(
+      (turn) => turn.response.id !== excluding && turn.response.state.kind === "in_progress",
+    );
   }
 
   private batchSnapshot(batch: {
@@ -969,6 +1197,12 @@ export class TopicConversation {
       if (response.cards.length === 0) throw new Error("response has no Card");
       if (response.cards.filter((card) => card.isTail).length !== 1)
         throw new Error("response must have exactly one tail Card");
+      if (
+        response.supplements.length > 0 &&
+        response.supplements.filter((card) => card.isTail).length !== 1
+      ) {
+        throw new Error("response must have exactly one Supplement Card tail when any exist");
+      }
     }
     if (this.executionOwner !== null) {
       const owner = this.response(this.executionOwner);
@@ -990,6 +1224,16 @@ export class TopicConversation {
       const carrier = this.response(batch.carrierResponseId);
       if (carrier.state.kind === "terminal") throw new Error("terminal Response carries batch");
       if (batch.messages.length === 0) throw new Error("pending batch is empty");
+    }
+    if (this.supplementOwner !== null) {
+      const owner = this.response(this.supplementOwner);
+      if (owner.state.kind !== "terminal" || owner.state.outcome !== "complete") {
+        throw new Error("Supplement Card owner must be a normally completed response");
+      }
+      if (this.executionOwner !== null) throw new Error("Supplement ownership requires no owner");
+      if (this.pendingBatchValue !== null) {
+        throw new Error("Supplement ownership requires no pending batch");
+      }
     }
   }
 }
@@ -1028,6 +1272,29 @@ export class ResponseCardProjector {
       titleVisible: card.isTail,
       metadata: card.isTail ? response.profile : null,
       cancelAction,
+    });
+  }
+
+  /**
+   * Projects a Supplement Card. Unlike {@link project}, this never derives
+   * Title, Metadata, or Cancel: Supplement Cards have no execution authority
+   * regardless of tail position or Response state.
+   *
+   * @throws when `responseId` or `cardId` is unknown.
+   */
+  projectSupplement(
+    topic: TopicConversationSnapshot,
+    responseId: ResponseId,
+    cardId: SupplementCardId,
+  ): SupplementCardProjection {
+    const response = topic.turns.find((turn) => turn.response.id === responseId)?.response;
+    if (response === undefined) throw new Error(`unknown response: ${responseId}`);
+    const card = response.supplements.find((candidate) => candidate.id === cardId);
+    if (card === undefined) throw new Error(`unknown supplement card: ${cardId}`);
+    return Object.freeze({
+      responseId,
+      cardId,
+      entries: card.entries,
     });
   }
 }

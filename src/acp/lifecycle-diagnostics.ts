@@ -66,7 +66,7 @@ export interface RouterLifecycleDiagnostic {
   readonly correlation: DiagnosticCorrelation;
   readonly operation:
     "bootstrap_update" | "session_update" | "permission_request" | "route_activate" | "route_close";
-  readonly outcome: "accepted" | "rejected" | "cancelled" | "quarantined";
+  readonly outcome: "accepted" | "rejected" | "cancelled" | "discarded" | "quarantined";
 }
 
 export interface AcknowledgementLifecycleDiagnostic {

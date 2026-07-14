@@ -122,6 +122,16 @@ export type ConversationCardView =
       readonly profile: SessionCardMeta | null;
       readonly body: "content" | "empty_complete";
       readonly route: CardRoute;
+    }
+  | {
+      /**
+       * A neutral post-turn Supplement Card. It never shows a
+       * processing/ended status, profile footer, Cancel, permission, or any
+       * other execution authority — only a fixed "补充更新" label and content.
+       */
+      readonly kind: "supplement";
+      readonly entries: readonly ConversationTimelineEntry[];
+      readonly route: CardRoute;
     };
 
 type DeepReadonly<T> = T extends (...args: never[]) => unknown

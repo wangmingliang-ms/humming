@@ -14,6 +14,13 @@ export interface SessionCallbacks {
   onConfig(update: acp.ConfigOptionUpdate): void;
   onCommands(update: acp.AvailableCommandsUpdate): void;
   onUsage(update: acp.UsageUpdate): void;
+  /**
+   * Offers a renderable session update that arrived with no active or
+   * bootstrap route (i.e. outside any Turn's prompt boundary) a chance to
+   * attach to a post-turn Supplement Card. Returns whether it was attached
+   * or discarded so router diagnostics stay honest about the outcome.
+   */
+  onOutOfTurnUpdate(update: acp.SessionUpdate): Promise<"attached" | "discarded">;
 }
 
 export interface BootstrapCallbacks {
@@ -171,11 +178,10 @@ export class PromptCallbackRouter implements acp.Client {
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
     const route = this.route;
-    if (route.phase === "active") {
+    if (route.phase === "active" && !route.permissionsCancelled) {
       this.record("permission_request", "accepted");
       return route.callbacks.requestPermission(params);
     }
-    this.healthy = false;
     this.record("permission_request", "cancelled");
     return { outcome: { outcome: "cancelled" } };
   }
@@ -215,11 +221,8 @@ export class PromptCallbackRouter implements acp.Client {
       await route.callbacks.sessionUpdate(params);
       return;
     }
-    this.healthy = false;
-    this.record("session_update", "quarantined");
-    throw new Error(
-      "ACP session update entered without an active or bootstrap route: closed prompt route",
-    );
+    const outcome = await this.session.onOutOfTurnUpdate(update);
+    this.record("session_update", outcome === "attached" ? "accepted" : "discarded");
   }
 
   private record(

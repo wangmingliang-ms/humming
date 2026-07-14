@@ -3313,10 +3313,12 @@ function formatUserFacingError(err: unknown): string {
 }
 
 function sameAgentInvocationRecord(a: SessionRecord, b: SessionRecord): boolean {
+  const normalizedA = normalizePersistedAgentInvocation(a);
+  const normalizedB = normalizePersistedAgentInvocation(b);
   return (
-    a.agentCommand === b.agentCommand &&
+    normalizedA.command === normalizedB.command &&
     a.agentLabel === b.agentLabel &&
-    arrayEqual(a.agentArgs, b.agentArgs) &&
+    arrayEqual(normalizedA.args, normalizedB.args) &&
     envEqual(a.agentEnv, b.agentEnv)
   );
 }
@@ -3848,10 +3850,11 @@ function sessionRecordToEffectiveBinding(
   explicit: boolean,
   includeControls: boolean,
 ): EffectiveBinding {
+  const invocation = normalizePersistedAgentInvocation(record);
   return {
     cwd: record.cwd,
-    command: record.agentCommand,
-    args: record.agentArgs,
+    command: invocation.command,
+    args: invocation.args,
     ...(record.agentEnv ? { env: record.agentEnv } : {}),
     label: record.agentLabel ?? record.agentCommand,
     profileSelected: true,
@@ -3859,6 +3862,27 @@ function sessionRecordToEffectiveBinding(
     reception: false,
     ...(includeControls && record.controls ? { inheritedControls: record.controls } : {}),
   };
+}
+
+const DEPRECATED_CLAUDE_ACP_PACKAGE = "@zed-industries/claude-code-acp";
+const MAINTAINED_CLAUDE_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+const CLAUDE_AGENT_LABELS = new Set(["claude", "claude-agent"]);
+
+function normalizePersistedAgentInvocation(record: SessionRecord): {
+  readonly command: string;
+  readonly args: readonly string[];
+} {
+  const isDeprecatedClaudePreset =
+    record.agentCommand === "npx" &&
+    record.agentArgs.length === 2 &&
+    record.agentArgs[0] === "-y" &&
+    record.agentArgs[1] === DEPRECATED_CLAUDE_ACP_PACKAGE &&
+    record.agentLabel !== undefined &&
+    CLAUDE_AGENT_LABELS.has(record.agentLabel);
+  if (!isDeprecatedClaudePreset) {
+    return { command: record.agentCommand, args: record.agentArgs };
+  }
+  return { command: record.agentCommand, args: ["-y", MAINTAINED_CLAUDE_ACP_PACKAGE] };
 }
 
 function buildProbeCapabilitiesSnapshot(

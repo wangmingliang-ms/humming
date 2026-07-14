@@ -7,6 +7,7 @@ import {
   type ResponseCardId,
   type ResponseId,
   type ResponseToken,
+  type SupplementCardId,
   type TurnId,
 } from "./topic-conversation.js";
 import { ConversationCardViewMapper } from "./conversation-card-view-mapper.js";
@@ -141,5 +142,32 @@ describe("ConversationCardViewMapper", () => {
       body: "content",
       route,
     });
+  });
+
+  it("projects a Supplement Card with only a neutral entries payload", () => {
+    const conversation = topic();
+    conversation.prepare(responseId);
+    conversation.activate(responseId, action1);
+    conversation.seal(responseId, "complete");
+    const supplementCardId = "supplement-1" as SupplementCardId;
+    conversation.createSupplementCard(responseId, supplementCardId);
+    conversation.appendSupplement(responseId, { kind: "text", text: "补充内容" });
+
+    const snapshot = conversation.snapshot();
+    const projection = new ResponseCardProjector().projectSupplement(
+      snapshot,
+      responseId,
+      supplementCardId,
+    );
+    const supplementView = new ConversationCardViewMapper().toSupplementView(projection, route);
+
+    expect(supplementView).toEqual({
+      kind: "supplement",
+      entries: [{ kind: "text", text: "补充内容" }],
+      route,
+    });
+    expect(supplementView).not.toHaveProperty("profile");
+    expect(supplementView).not.toHaveProperty("cancelAction");
+    expect(supplementView).not.toHaveProperty("header");
   });
 });

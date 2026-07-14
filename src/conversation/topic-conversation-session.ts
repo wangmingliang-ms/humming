@@ -19,7 +19,9 @@ import {
   type RequestMessage,
   type ResponseCardId,
   type ResponseId,
+  type ResponseSnapshot,
   type ResponseToken,
+  type SupplementCardId,
   type TerminalOutcome,
   type TimelineEntry,
   type TopicConversationSnapshot,
@@ -32,6 +34,7 @@ export interface TopicConversationTokenFactory {
   response(): ResponseId;
   responseToken(): ResponseToken;
   card(): ResponseCardId;
+  supplementCard(): SupplementCardId;
   action(): ActionToken;
   permission(): PermissionToken;
   permissionRequest(): string;
@@ -44,6 +47,7 @@ export function randomConversationTokenFactory(): TopicConversationTokenFactory 
     response: () => crypto.randomUUID() as ResponseId,
     responseToken: () => crypto.randomUUID() as ResponseToken,
     card: () => crypto.randomUUID() as ResponseCardId,
+    supplementCard: () => crypto.randomUUID() as SupplementCardId,
     action: () => crypto.randomUUID() as ActionToken,
     permission: () => crypto.randomUUID() as PermissionToken,
     permissionRequest: () => crypto.randomUUID(),
@@ -130,6 +134,15 @@ export class TopicConversationSession {
           this.settledTerminalResponses.add(responseId);
           this.reclaimOldSettledTerminals();
         }
+      },
+      onSupplementSettled: () => {
+        // A Supplement delivery worker just finished (settled or failed) with
+        // nothing else in flight for its Response. Re-attempt eviction: this
+        // is the only trigger for a Response whose retention overflow was
+        // previously deferred solely because its Supplement delivery was
+        // still dirty/in-flight, and no future unrelated terminal event is
+        // otherwise guaranteed to retry it.
+        this.reclaimOldSettledTerminals();
       },
     });
     let previous = this.store.snapshot;
@@ -322,6 +335,38 @@ export class TopicConversationSession {
         return;
       default:
         return;
+    }
+  }
+
+  /**
+   * Routes an ACP session update that arrived with no active Request routed
+   * to it (i.e. after the owning Response's prompt route already closed).
+   * Only the Response that just completed normally and still holds
+   * Supplement Card ownership may absorb it; every other case — no owner,
+   * a non-renderable update kind, or an owner whose ownership was already
+   * revoked by a newer Request — is discarded and creates no Card.
+   */
+  async applyOutOfTurnUpdate(update: acp.SessionUpdate): Promise<"attached" | "discarded"> {
+    const owner = this.supplementOwnerResponse();
+    if (owner === null) return "discarded";
+    switch (update.sessionUpdate) {
+      case "agent_message_chunk":
+        if (update.content.type !== "text") return "discarded";
+        this.appendSupplementTextChunks(owner.id, "text", update.content.text);
+        return "attached";
+      case "agent_thought_chunk":
+        if (!this.options.showThoughts || update.content.type !== "text") return "discarded";
+        this.appendSupplementTextChunks(owner.id, "thought", update.content.text);
+        return "attached";
+      case "tool_call":
+        if (!this.options.showTools) return "discarded";
+        this.applySupplementToolCall(owner.id, update);
+        return "attached";
+      case "tool_call_update":
+        if (!this.options.showTools) return "discarded";
+        return this.applySupplementToolCallUpdate(owner.id, update) ? "attached" : "discarded";
+      default:
+        return "discarded";
     }
   }
 
@@ -546,6 +591,13 @@ export class TopicConversationSession {
       .filter((responseId) => this.settledTerminalResponses.has(responseId));
     const overflow = ordered.slice(0, -MAX_RETAINED_SETTLED_TERMINALS);
     for (const responseId of overflow) {
+      // A Response that ever held Supplement Cards may only be evicted once
+      // every Supplement delivery record for it is settled/failed with no
+      // worker in flight. Otherwise `projectSupplementLatest` would find its
+      // Response gone mid-delivery and silently drop the still-dirty
+      // content. Skip it for now; `onSupplementSettled` retries this method
+      // once that worker finishes.
+      if (!this.reconciler.isSupplementDeliverySettled(responseId)) continue;
       const tailId = this.snapshot.turns
         .find((turn) => turn.response.id === responseId)
         ?.response.cards.at(-1)?.id;
@@ -555,6 +607,7 @@ export class TopicConversationSession {
       if (!evicted) continue;
       this.settledTerminalResponses.delete(responseId);
       if (tailId !== undefined) this.reconciler.forgetSettledArtifact(tailId);
+      this.reconciler.forgetResponseSupplements(responseId);
       this.accepted.delete(responseId);
       this.acknowledgements.delete(responseId);
     }
@@ -632,6 +685,145 @@ export class TopicConversationSession {
       response.cards.some((card) =>
         card.entries.some((entry) => entry.kind === "tool" && entry.toolCallId === toolCallId),
       )
+    );
+  }
+
+  /**
+   * Resolves the current out-of-turn Supplement Card owner, or `null` when
+   * no Response currently holds that window. A pure snapshot read so callers
+   * can decide "attached" vs "discarded" without throwing on the common
+   * discard path.
+   */
+  private supplementOwnerResponse(): ResponseSnapshot | null {
+    const ownerId = this.snapshot.supplementOwnerResponseId;
+    if (ownerId === null) return null;
+    const response = this.snapshot.turns.find((turn) => turn.response.id === ownerId)?.response;
+    if (response === undefined) return null;
+    if (response.state.kind !== "terminal" || response.state.outcome !== "complete") return null;
+    return response;
+  }
+
+  private ensureSupplementCard(responseId: ResponseId): void {
+    if (this.response(responseId).supplements.at(-1) !== undefined) return;
+    const cardId = this.tokens.supplementCard();
+    this.reconciler.registerSupplementAnchor(cardId, this.acceptedTurn(responseId).sourceMessageId);
+    this.store.transaction((aggregate) => aggregate.createSupplementCard(responseId, cardId));
+  }
+
+  private rotateSupplementCard(responseId: ResponseId): void {
+    const cardId = this.tokens.supplementCard();
+    this.reconciler.registerSupplementAnchor(cardId, this.acceptedTurn(responseId).sourceMessageId);
+    this.store.transaction((aggregate) => aggregate.rotateSupplementCard(responseId, cardId));
+  }
+
+  private appendSupplementTextChunks(
+    responseId: ResponseId,
+    kind: "text" | "thought",
+    text: string,
+  ): void {
+    if (text.length === 0) return;
+    this.ensureSupplementCard(responseId);
+    const initialLast = this.response(responseId).supplements.at(-1)?.entries.at(-1);
+    let remaining = (initialLast?.kind === kind ? initialLast.text : "") + text;
+    let replacing = initialLast?.kind === kind;
+
+    while (remaining.length > 0) {
+      if (!replacing) {
+        this.rotateSupplementBeforeElement(responseId, { kind, text: "" });
+      }
+      const tail = this.response(responseId).supplements.at(-1);
+      if (tail === undefined) throw new Error("Response has no Supplement Card tail");
+      const baseEntries = replacing ? tail.entries.slice(0, -1) : tail.entries;
+      const [part, remainder] = conversationCardBudget.splitText(
+        remaining,
+        conversationCardBudget.contentBytes(baseEntries),
+      );
+      if (part.length === 0) {
+        this.rotateSupplementCard(responseId);
+        replacing = false;
+        continue;
+      }
+      this.store.transaction((aggregate) => {
+        if (replacing) aggregate.replaceSupplementTailText(responseId, kind, part);
+        else aggregate.appendSupplement(responseId, { kind, text: part });
+      });
+      remaining = remainder;
+      if (remaining.length > 0) this.rotateSupplementCard(responseId);
+      replacing = false;
+    }
+  }
+
+  private rotateSupplementBeforeElement(responseId: ResponseId, entry: TimelineEntry): void {
+    const tail = this.response(responseId).supplements.at(-1);
+    if (tail === undefined || tail.entries.length === 0) return;
+    // Supplement Cards never carry a Cancel button or profile footer, so the
+    // shared budget is evaluated against neutral chrome.
+    if (
+      conversationCardBudget.accepts(tail.entries, entry, {
+        showCancelButton: false,
+        profile: null,
+      })
+    )
+      return;
+    this.rotateSupplementCard(responseId);
+  }
+
+  private hasSupplementTool(responseId: ResponseId, toolCallId: string): boolean {
+    return this.response(responseId).supplements.some((card) =>
+      card.entries.some((entry) => entry.kind === "tool" && entry.toolCallId === toolCallId),
+    );
+  }
+
+  private applySupplementToolCall(
+    responseId: ResponseId,
+    update: Extract<acp.SessionUpdate, { sessionUpdate: "tool_call" }>,
+  ): void {
+    this.ensureSupplementCard(responseId);
+    if (!this.hasSupplementTool(responseId, update.toolCallId)) {
+      this.rotateSupplementBeforeElement(responseId, {
+        kind: "tool",
+        toolCallId: update.toolCallId,
+        title: update.title,
+        status:
+          update.status === "completed" || update.status === "failed"
+            ? update.status
+            : "in_progress",
+      });
+    }
+    this.store.transaction((aggregate) => {
+      const status =
+        update.status === "completed" || update.status === "failed" ? update.status : "in_progress";
+      const updated = aggregate.updateSupplementTool(responseId, update.toolCallId, {
+        title: update.title,
+        status,
+      });
+      if (!updated) {
+        aggregate.appendSupplement(responseId, {
+          kind: "tool",
+          toolCallId: update.toolCallId,
+          title: update.title,
+          status,
+        });
+      }
+    });
+  }
+
+  private applySupplementToolCallUpdate(
+    responseId: ResponseId,
+    update: Extract<acp.SessionUpdate, { sessionUpdate: "tool_call_update" }>,
+  ): boolean {
+    if (this.response(responseId).supplements.at(-1) === undefined) return false;
+    const status =
+      update.status === "completed" || update.status === "failed"
+        ? update.status
+        : update.status === "pending" || update.status === "in_progress"
+          ? "in_progress"
+          : undefined;
+    return this.store.transaction((aggregate) =>
+      aggregate.updateSupplementTool(responseId, update.toolCallId, {
+        ...(update.title === null || update.title === undefined ? {} : { title: update.title }),
+        ...(status === undefined ? {} : { status }),
+      }),
     );
   }
 

@@ -75,8 +75,16 @@ describe("agent list", () => {
     } finally {
       capture.restore();
     }
-    const parsed = JSON.parse(capture.logs.join("")) as Array<{ id: string; source: string }>;
+    const parsed = JSON.parse(capture.logs.join("")) as Array<{
+      id: string;
+      source: string;
+      args: string[];
+    }>;
     expect(parsed.find((entry) => entry.id === "claude")).toMatchObject({ source: "built-in" });
+    expect(parsed.find((entry) => entry.id === "claude")?.args).toEqual([
+      "-y",
+      "@agentclientprotocol/claude-agent-acp",
+    ]);
   });
 
   it("does not require --agent", async () => {

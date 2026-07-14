@@ -75,6 +75,10 @@ const EMPTY_OUTPUT_HEADER = { content: "⚠️ 空回复", template: "orange" } 
 const EMPTY_OUTPUT_BODY =
   "Agent 本轮结束了，但没有产生任何可显示内容。可能是 resumed session 空转、上下文过长导致输出被截断，或 agent 只返回了不可渲染的元数据。请重试；如果持续出现，建议新开 session 后继续。";
 
+// Supplement Cards are neutral: they never render a processing/ended status,
+// so this header text never changes with Response phase or outcome.
+const SUPPLEMENT_HEADER = { content: "补充更新", template: "grey" } as const;
+
 const CANCEL_BUTTON_TEXT = "中断当前任务";
 
 // Card JSON 2.0 — required for the `collapsible_panel` element used by
@@ -440,6 +444,8 @@ function semanticEmptyMessage(view: ConversationCardView): string {
         default:
           return "";
       }
+    case "supplement":
+      return "_暂无补充内容。_";
     default:
       return assertNeverConversationView(view);
   }
@@ -461,6 +467,8 @@ function semanticHeader(view: ConversationCardView): { content: string; template
       return view.body === "empty_complete"
         ? EMPTY_OUTPUT_HEADER
         : semanticTerminalHeader(view.header);
+    case "supplement":
+      return SUPPLEMENT_HEADER;
     default:
       return assertNeverConversationView(view);
   }
@@ -512,6 +520,17 @@ function semanticSummary(
       );
     case "terminal":
       return header?.content ?? semanticTerminalHeader(view.header).content;
+    case "supplement": {
+      const latest = view.entries
+        .slice()
+        .reverse()
+        .find((entry) => entry.kind === "text" || entry.kind === "thought");
+      const text =
+        latest?.kind === "text" || latest?.kind === "thought"
+          ? stripMarkdownForSummary(latest.text)
+          : "";
+      return truncateSummary(text || SUPPLEMENT_HEADER.content);
+    }
     default:
       return assertNeverConversationView(view);
   }
@@ -550,6 +569,7 @@ function semanticProfile(view: ConversationCardView): object | null {
       };
     case "orphaned":
     case "archived":
+    case "supplement":
       return null;
     default:
       return assertNeverConversationView(view);
@@ -581,6 +601,7 @@ function buildSemanticConversationCard(view: ConversationCardView): object {
     case "orphaned":
     case "archived":
     case "terminal":
+    case "supplement":
       break;
     default:
       return assertNeverConversationView(view);
@@ -762,6 +783,8 @@ function isConversationCardView(value: unknown): value is ConversationCardView {
             Array.isArray(value.entries) &&
             value.entries.length === 0))
       );
+    case "supplement":
+      return hasOnlyKeys(value, ["kind", "entries", "route"]) && hasEntries(value, true);
     default:
       return false;
   }

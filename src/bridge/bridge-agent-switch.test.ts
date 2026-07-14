@@ -5,7 +5,11 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type * as acp from "@agentclientprotocol/sdk";
 import { LarkBridge, type LarkCommand, type ResolvedAgentInvocation } from "./bridge.js";
-import type { AgentProcess, ProbeAgentSessionCapabilitiesResult } from "../acp/agent-process.js";
+import type {
+  AgentProcess,
+  ProbeAgentSessionCapabilitiesResult,
+  SpawnAgentOptions,
+} from "../acp/agent-process.js";
 import type { BindingStore, ChatBinding } from "../binding-store/binding-store.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type {
@@ -30,7 +34,9 @@ import type {
 const probeAgentSessionCapabilitiesMock = vi.hoisted(() =>
   vi.fn<() => Promise<ProbeAgentSessionCapabilitiesResult>>(),
 );
-const spawnAgentMock = vi.hoisted(() => vi.fn<() => Promise<AgentProcess>>());
+const spawnAgentMock = vi.hoisted(() =>
+  vi.fn<(options: SpawnAgentOptions) => Promise<AgentProcess>>(),
+);
 
 vi.mock("../acp/agent-process.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../acp/agent-process.js")>();
@@ -42,7 +48,10 @@ vi.mock("../acp/agent-process.js", async (importOriginal) => {
     // Agent process factory used for fresh switches, so tests that acquire a
     // runtime for an already-persisted (non-profile-only) session don't hit
     // the real ACP spawn/resume machinery.
-    spawnAndResumeAgent: async () => ({ agent: await spawnAgentMock(), resumed: true }),
+    spawnAndResumeAgent: async (options: SpawnAgentOptions) => ({
+      agent: await spawnAgentMock(options),
+      resumed: true,
+    }),
     killAgent: () => {},
   };
 });
@@ -407,6 +416,49 @@ function fakeAgentProcess(
     getRecentStderr: () => [],
   };
 }
+
+it("migrates a persisted Claude preset to the maintained adapter on resume", async () => {
+  spawnAgentMock.mockReset();
+  spawnAgentMock.mockResolvedValue(fakeAgentProcess("sess_claude"));
+  const store = new MemorySessionStore([existingClaudeSession()]);
+  const events: PresenterEvents = {
+    warnings: [],
+    warningResolutions: [],
+    notices: [],
+    commandResults: [],
+    noticeUpdates: [],
+  };
+  const bridge = makeBridge(store, recordingPresenter(events));
+  const testable = bridge as unknown as {
+    acquireRuntime(
+      chatId: string,
+      threadId: string | null,
+      binding: unknown,
+    ): Promise<{
+      enqueue(message: { prompt: []; messageId: string; chatId: string }): Promise<void>;
+    }>;
+  };
+
+  const runtime = await testable.acquireRuntime("oc_A", "omt_1", {
+    cwd: "/tmp",
+    command: "npx",
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"],
+    label: "claude",
+    explicit: true,
+    reception: false,
+  });
+  await runtime.enqueue({ prompt: [], messageId: "om_resume", chatId: "oc_A" });
+
+  expect(spawnAgentMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      command: "npx",
+      args: ["-y", "@agentclientprotocol/claude-agent-acp"],
+    }),
+  );
+  expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+    agentArgs: ["-y", "@agentclientprotocol/claude-agent-acp"],
+  });
+});
 
 describe("LarkBridge destructive Agent switch confirmation", () => {
   beforeEach(() => {

@@ -10,6 +10,7 @@ import type {
   ResponseCardId,
   ResponseId,
   ResponseToken,
+  SupplementCardId,
   TurnId,
 } from "./topic-conversation.js";
 import {
@@ -38,6 +39,7 @@ function sequentialTokens(): TopicConversationTokenFactory {
     response: () => next("response") as ResponseId,
     responseToken: () => next("response-token") as ResponseToken,
     card: () => next("card") as ResponseCardId,
+    supplementCard: () => next("supplement-card") as SupplementCardId,
     action: () => next("action") as ActionToken,
     permission: () => next("permission") as PermissionToken,
     permissionRequest: () => next("permission-request"),
@@ -763,6 +765,111 @@ describe("TopicConversationSession", () => {
     expect(Object.keys(session.deliveryState.cards)).toHaveLength(0);
   });
 
+  it("keeps a Supplement-holding terminal Response beyond retention overflow while its delivery is blocked, then reclaims it once the delivery settles", async () => {
+    let releaseSupplementSend!: (value: string | null) => void;
+    const supplementBlocked = new Promise<string | null>((resolve) => {
+      releaseSupplementSend = resolve;
+    });
+    let nextExternalId = 0;
+    const { session } = fixture({
+      sendConversationCard: vi.fn(async (_messageId, view) => {
+        if ((view as { kind?: string }).kind === "supplement") return supplementBlocked;
+        nextExternalId += 1;
+        return `external-${nextExternalId}`;
+      }),
+    });
+
+    const waitForCardSettled = async (cardId: string) => {
+      await vi.waitFor(() =>
+        expect((session.deliveryState.cards as Record<string, unknown>)[cardId]).toBeUndefined(),
+      );
+    };
+
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    await session.prepare(a.responseId, profile);
+    await session.activate(a.responseId);
+    await session.finishOwner("complete");
+    await waitForCardSettled(a.initialCardId);
+
+    await expect(
+      session.applyOutOfTurnUpdate({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "补充内容" },
+      }),
+    ).resolves.toBe("attached");
+
+    const others: ResponseId[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const response = session.accept({
+        sourceMessageId: `message-other-${index}`,
+        content: `request-other-${index}`,
+        profile,
+      });
+      others.push(response.responseId);
+      await session.prepare(response.responseId, profile);
+      await session.activate(response.responseId);
+      await session.finishOwner("complete");
+      await waitForCardSettled(response.initialCardId);
+    }
+
+    // Retention overflow (5 settled terminals against a cap of 3) would
+    // normally reclaim the two oldest, but A's Supplement delivery is still
+    // blocked mid-flight: evicting it now would strand that in-flight write
+    // against a Response the domain no longer has, silently dropping it.
+    await vi.waitFor(() => expect(session.snapshot.turns.length).toBeGreaterThanOrEqual(4));
+    expect(session.snapshot.turns.some((turn) => turn.response.id === a.responseId)).toBe(true);
+
+    releaseSupplementSend("external-supplement");
+    await vi.waitFor(() =>
+      expect(session.snapshot.turns.some((turn) => turn.response.id === a.responseId)).toBe(false),
+    );
+
+    // Retention converges back to the cap once the deferred eviction retries
+    // and succeeds, and the last two accepted Responses are always kept.
+    expect(session.snapshot.turns).toHaveLength(3);
+    expect(session.snapshot.turns.map((turn) => turn.response.id)).toEqual(others.slice(-3));
+  });
+
+  it("does not let a permanently failed Supplement delivery create unbounded retention", async () => {
+    const { session } = fixture({
+      sendConversationCard: vi.fn(async (_messageId, view) => {
+        if ((view as { kind?: string }).kind === "supplement") return null;
+        return `external-${Math.random()}`;
+      }),
+    });
+    const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+    await session.prepare(a.responseId, profile);
+    await session.activate(a.responseId);
+    await session.finishOwner("complete");
+    await session.flushPresentation();
+
+    await expect(
+      session.applyOutOfTurnUpdate({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "补充内容" },
+      }),
+    ).resolves.toBe("attached");
+    // The Supplement send exhausts its retries and settles into "failed".
+    // Current conventions treat a failed terminal delivery as settled for
+    // retention purposes, so this must not block eviction forever.
+    await session.flushPresentation();
+
+    for (let index = 0; index < 4; index += 1) {
+      const response = session.accept({
+        sourceMessageId: `message-bound-${index}`,
+        content: `request-bound-${index}`,
+        profile,
+      });
+      await session.prepare(response.responseId, profile);
+      await session.activate(response.responseId);
+      await session.finishOwner("complete");
+      await session.flushPresentation();
+    }
+
+    expect(session.snapshot.turns).toHaveLength(3);
+    expect(session.snapshot.turns.some((turn) => turn.response.id === a.responseId)).toBe(false);
+  });
+
   it("fails Response when mandatory Permission Card is not visible", async () => {
     const { session, cancel } = fixture({
       sendPermissionRequestCard: vi.fn(async () => null),
@@ -793,6 +900,107 @@ describe("TopicConversationSession", () => {
     expect(failed?.cards.at(-1)?.entries).toContainEqual({
       kind: "notice",
       text: "权限请求无法显示，正在停止本次执行。",
+    });
+  });
+
+  describe("applyOutOfTurnUpdate", () => {
+    it("attaches the first out-of-turn text to a neutral Supplement Card anchored to the original Request", async () => {
+      const { session, presenter, sent, patched } = fixture();
+      const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+      await session.prepare(a.responseId, profile);
+      await session.activate(a.responseId);
+      await session.finishOwner("complete");
+
+      const isSupplement = (view: unknown): view is { kind: "supplement" } =>
+        (view as { kind: string }).kind === "supplement";
+
+      await expect(
+        session.applyOutOfTurnUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "补充第一段" },
+        }),
+      ).resolves.toBe("attached");
+      await session.flushPresentation();
+
+      expect(presenter.sendConversationCard).toHaveBeenCalledWith("message-a", expect.anything());
+      const firstRound = [...sent, ...patched].filter(isSupplement);
+      expect(firstRound.at(-1)).toMatchObject({
+        kind: "supplement",
+        entries: [{ kind: "text", text: "补充第一段" }],
+      });
+      expect(firstRound[0]).not.toHaveProperty("profile");
+      expect(firstRound[0]).not.toHaveProperty("cancelAction");
+      expect(firstRound[0]).not.toHaveProperty("header");
+
+      await expect(
+        session.applyOutOfTurnUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "，继续补充" },
+        }),
+      ).resolves.toBe("attached");
+      await session.flushPresentation();
+
+      const secondRound = [...sent, ...patched].filter(isSupplement);
+      expect(secondRound.at(-1)).toMatchObject({
+        kind: "supplement",
+        entries: [{ kind: "text", text: "补充第一段，继续补充" }],
+      });
+    });
+
+    it("leaves the terminal primary Card untouched after a supplement is attached", async () => {
+      const { session } = fixture();
+      const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+      await session.prepare(a.responseId, profile);
+      await session.activate(a.responseId);
+      await session.applyAgentUpdate(a.responseId, {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "primary answer" },
+      });
+      await session.finishOwner("complete");
+      const beforeCards = session.snapshot.turns.find((turn) => turn.response.id === a.responseId)
+        ?.response.cards;
+
+      await session.applyOutOfTurnUpdate({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "补充说明" },
+      });
+
+      const afterCards = session.snapshot.turns.find((turn) => turn.response.id === a.responseId)
+        ?.response.cards;
+      expect(afterCards).toEqual(beforeCards);
+      expect(afterCards?.at(-1)?.entries).toEqual([{ kind: "text", text: "primary answer" }]);
+    });
+
+    it("discards an out-of-turn update when no Response has completed yet", async () => {
+      const { session, sent } = fixture();
+      await expect(
+        session.applyOutOfTurnUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "no owner yet" },
+        }),
+      ).resolves.toBe("discarded");
+      expect(sent).toEqual([]);
+    });
+
+    it("discards out-of-turn content once a new Request synchronously revokes ownership", async () => {
+      const { session, sent } = fixture();
+      const a = session.accept({ sourceMessageId: "message-a", content: "A", profile });
+      await session.prepare(a.responseId, profile);
+      await session.activate(a.responseId);
+      await session.finishOwner("complete");
+      expect(session.snapshot.supplementOwnerResponseId).toBe(a.responseId);
+
+      session.accept({ sourceMessageId: "message-b", content: "B", profile });
+      expect(session.snapshot.supplementOwnerResponseId).toBeNull();
+
+      await expect(
+        session.applyOutOfTurnUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "too late" },
+        }),
+      ).resolves.toBe("discarded");
+      await session.flushPresentation();
+      expect(sent.filter((view) => (view as { kind: string }).kind === "supplement")).toEqual([]);
     });
   });
 });

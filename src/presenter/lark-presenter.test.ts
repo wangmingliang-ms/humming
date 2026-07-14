@@ -391,6 +391,11 @@ describe("LarkCardPresenter semantic conversation cards", () => {
         body: "content",
         route,
       },
+      {
+        kind: "supplement",
+        entries: [{ kind: "text", text: "extra detail" }],
+        route,
+      },
     ];
 
     for (const [index, view] of views.entries()) {
@@ -406,6 +411,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
       "✍️ 回复中...",
       undefined,
       "✅ 已结束",
+      "补充更新",
     ]);
     expect(cards.map((card) => card.config?.summary?.content)).toEqual([
       "📩 Humming 已收到消息",
@@ -415,6 +421,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
       "✍️ answer",
       "history",
       "✅ 已结束",
+      "extra detail",
     ]);
     const serialized = cards.map((card) => JSON.stringify(card));
     expect(serialized[0]).toContain("Agent: Claude");
@@ -427,6 +434,8 @@ describe("LarkCardPresenter semantic conversation cards", () => {
     expect(serialized[5]).not.toContain('"tag":"button"');
     expect(serialized[6]).toContain("Agent: Claude");
     expect(serialized[6]).not.toContain('"tag":"button"');
+    expect(serialized[7]).not.toContain("Agent:");
+    expect(serialized[7]).not.toContain('"tag":"button"');
   });
 
   it("rejects and logs malformed external semantic fixtures without transport calls", async () => {
@@ -493,6 +502,7 @@ describe("LarkCardPresenter semantic conversation cards", () => {
         body: "content",
         route,
       },
+      { kind: "supplement", entries: [], profile, route },
     ] as unknown as ConversationCardView[];
 
     for (const view of malformed) {

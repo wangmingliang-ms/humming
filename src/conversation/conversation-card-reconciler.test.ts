@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkPresenter } from "../presenter/presenter.js";
-import { ConversationCardReconciler } from "./conversation-card-reconciler.js";
+import {
+  ConversationCardReconciler,
+  type ConversationCardReconcilerOptions,
+} from "./conversation-card-reconciler.js";
 import { TopicConversationStore } from "./topic-conversation-store.js";
 import type {
   ActionToken,
@@ -9,6 +12,7 @@ import type {
   ResponseCardId,
   ResponseId,
   ResponseToken,
+  SupplementCardId,
   TurnId,
 } from "./topic-conversation.js";
 
@@ -29,6 +33,7 @@ function ids() {
     response: () => next("response") as ResponseId,
     responseToken: () => next("response-token") as ResponseToken,
     card: () => next("card") as ResponseCardId,
+    supplementCard: () => next("supplement-card") as SupplementCardId,
     action: () => next("action") as ActionToken,
   };
 }
@@ -49,7 +54,10 @@ function accept(store: TopicConversationStore, token: ReturnType<typeof ids>) {
   return { responseId, cardId };
 }
 
-function fixture(overrides: Partial<LarkPresenter> = {}) {
+function fixture(
+  overrides: Partial<LarkPresenter> = {},
+  reconcilerOverrides: Partial<ConversationCardReconcilerOptions> = {},
+) {
   const sent: unknown[] = [];
   const patched: unknown[] = [];
   const store = new TopicConversationStore();
@@ -78,6 +86,7 @@ function fixture(overrides: Partial<LarkPresenter> = {}) {
         store.transactionIfChanged((topic) => topic.evictSettledIntermediate(responseId, cardId));
       }
     },
+    ...reconcilerOverrides,
   });
   return { store, presenter, reconciler, sent, patched, evicted };
 }
@@ -462,5 +471,302 @@ describe("ConversationCardReconciler", () => {
     await reconciler.flush();
 
     expect(evicted).toContainEqual({ cardId: a.cardId, kind: "intermediate" });
+  });
+
+  it("delivers a Supplement Card using its own anchor, distinct from the primary Card anchor", async () => {
+    const { store, reconciler, sent, patched } = fixture();
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+    await reconciler.flush();
+
+    const supplementCardId = token.supplementCard();
+    reconciler.registerSupplementAnchor(supplementCardId, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, supplementCardId));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "补充内容" }),
+    );
+    await reconciler.flush();
+
+    const supplementViews = [...sent, ...patched].filter(
+      (view): view is { kind: "supplement" } => (view as { kind: string }).kind === "supplement",
+    );
+    expect(supplementViews.at(-1)).toMatchObject({
+      kind: "supplement",
+      entries: [{ kind: "text", text: "补充内容" }],
+    });
+    expect(reconciler.hasVisibleSupplementCard(a.responseId)).toBe(true);
+  });
+
+  it("re-projects the latest Supplement Card content after a stale in-flight write completes", async () => {
+    let releaseSend!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const views: unknown[] = [];
+    const { store, reconciler } = fixture({
+      sendConversationCard: vi.fn(async (_anchor, view) => {
+        views.push(view);
+        await blocked;
+        return "external-supplement";
+      }),
+      updateConversationCard: vi.fn(async (_id, view) => {
+        views.push(view);
+        return true;
+      }),
+    });
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+
+    const supplementCardId = token.supplementCard();
+    reconciler.registerSupplementAnchor(supplementCardId, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, supplementCardId));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "first" }),
+    );
+    // The initial send is now blocked mid-flight. Advance the domain again
+    // before it resolves; the stale in-flight write must not settle this
+    // newer revision or freeze the Card at the outdated content.
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "second" }),
+    );
+    releaseSend();
+    await reconciler.flush();
+
+    const supplementViews = views.filter(
+      (view): view is { kind: "supplement"; entries: readonly { text?: string }[] } =>
+        (view as { kind: string }).kind === "supplement",
+    );
+    expect(supplementViews.at(-1)?.entries.at(-1)).toMatchObject({ text: "firstsecond" });
+    expect(reconciler.hasVisibleSupplementCard(a.responseId)).toBe(true);
+  });
+
+  it("keeps a rotated Supplement Card frozen and routes further content only to its successor", async () => {
+    const { store, reconciler, sent, patched } = fixture();
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+    await reconciler.flush();
+
+    const firstSupplementCard = token.supplementCard();
+    reconciler.registerSupplementAnchor(firstSupplementCard, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, firstSupplementCard));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "first" }),
+    );
+    await reconciler.flush();
+
+    const secondSupplementCard = token.supplementCard();
+    reconciler.registerSupplementAnchor(secondSupplementCard, "original-request-message");
+    store.transaction((topic) => topic.rotateSupplementCard(a.responseId, secondSupplementCard));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "second" }),
+    );
+    await reconciler.flush();
+
+    const response = store.snapshot.turns.find(
+      (turn) => turn.response.id === a.responseId,
+    )?.response;
+    expect(response?.supplements).toHaveLength(2);
+    expect(response?.supplements[0]).toMatchObject({
+      isTail: false,
+      entries: [{ kind: "text", text: "first" }],
+    });
+    expect(response?.supplements[1]).toMatchObject({
+      isTail: true,
+      entries: [{ kind: "text", text: "second" }],
+    });
+    const supplementViews = [...sent, ...patched].filter(
+      (view): view is { kind: "supplement"; entries: readonly { text?: string }[] } =>
+        (view as { kind: string }).kind === "supplement",
+    );
+    // The frozen first Card's delivered projection must never carry the
+    // successor's content, and vice versa.
+    expect(supplementViews.some((view) => view.entries.at(-1)?.text === "first")).toBe(true);
+    expect(supplementViews.some((view) => view.entries.at(-1)?.text === "second")).toBe(true);
+  });
+
+  it("does not redeliver a settled Supplement Card after an unrelated domain change", async () => {
+    const { store, reconciler, presenter } = fixture();
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+    await reconciler.flush();
+
+    const supplementCardId = token.supplementCard();
+    reconciler.registerSupplementAnchor(supplementCardId, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, supplementCardId));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "补充内容" }),
+    );
+    await reconciler.flush();
+
+    const callsBeforeUnrelatedTurn =
+      vi.mocked(presenter.sendConversationCard).mock.calls.length +
+      vi.mocked(presenter.updateConversationCard).mock.calls.length;
+    const b = accept(store, token);
+    reconciler.registerAnchor(b.cardId, "unrelated-message");
+    await reconciler.flush();
+
+    const callsAfterUnrelatedTurn =
+      vi.mocked(presenter.sendConversationCard).mock.calls.length +
+      vi.mocked(presenter.updateConversationCard).mock.calls.length;
+    expect(callsAfterUnrelatedTurn).toBe(callsBeforeUnrelatedTurn + 1);
+    expect(reconciler.isSupplementDeliverySettled(a.responseId)).toBe(true);
+  });
+
+  it("reports Supplement delivery unsettled while a send is in flight, and settled once it resolves", async () => {
+    let releaseSend!: (value: string | null) => void;
+    const blocked = new Promise<string | null>((resolve) => {
+      releaseSend = resolve;
+    });
+    const { store, reconciler } = fixture({
+      sendConversationCard: vi.fn(async (_anchor, view) => {
+        if ((view as { kind?: string }).kind === "supplement") return blocked;
+        return "external-primary";
+      }),
+    });
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+    await reconciler.flush();
+
+    // No Supplement Card exists yet: the precondition is trivially satisfied.
+    expect(reconciler.isSupplementDeliverySettled(a.responseId)).toBe(true);
+
+    const supplementCardId = token.supplementCard();
+    reconciler.registerSupplementAnchor(supplementCardId, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, supplementCardId));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "补充内容" }),
+    );
+
+    expect(reconciler.isSupplementDeliverySettled(a.responseId)).toBe(false);
+
+    releaseSend("external-supplement");
+    await reconciler.flush();
+
+    expect(reconciler.isSupplementDeliverySettled(a.responseId)).toBe(true);
+  });
+
+  it("fires onSupplementSettled only after the delivery worker has fully cleared", async () => {
+    let releaseSend!: (value: string | null) => void;
+    const blocked = new Promise<string | null>((resolve) => {
+      releaseSend = resolve;
+    });
+    const settledResponses: ResponseId[] = [];
+    const { store, reconciler } = fixture(
+      {
+        sendConversationCard: vi.fn(async (_anchor, view) => {
+          if ((view as { kind?: string }).kind === "supplement") return blocked;
+          return "external-primary";
+        }),
+      },
+      {
+        onSupplementSettled: (responseId) => {
+          // The precondition query must already report settled by the time
+          // this fires, otherwise the caller it is meant to unblock (the
+          // domain retention retry) would spuriously re-defer eviction.
+          expect(reconciler.isSupplementDeliverySettled(responseId)).toBe(true);
+          settledResponses.push(responseId);
+        },
+      },
+    );
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+    await reconciler.flush();
+
+    const supplementCardId = token.supplementCard();
+    reconciler.registerSupplementAnchor(supplementCardId, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, supplementCardId));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "补充内容" }),
+    );
+
+    expect(settledResponses).toEqual([]);
+    releaseSend("external-supplement");
+    await reconciler.flush();
+
+    expect(settledResponses).toEqual([a.responseId]);
+  });
+
+  it("treats a Supplement Card that exhausts its delivery retries as settled", async () => {
+    const { store, reconciler } = fixture(
+      { sendConversationCard: vi.fn(async () => null) },
+      { maxPatchAttempts: 1 },
+    );
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+    await reconciler.flush();
+
+    const supplementCardId = token.supplementCard();
+    reconciler.registerSupplementAnchor(supplementCardId, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, supplementCardId));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "补充内容" }),
+    );
+    await reconciler.flush();
+
+    // A Supplement delivery that permanently failed must not block eviction
+    // forever, matching the existing convention that a failed terminal Card
+    // delivery counts as settled.
+    expect(reconciler.isSupplementDeliverySettled(a.responseId)).toBe(true);
+  });
+
+  it("releases Supplement delivery records and anchors for an evicted Response", async () => {
+    const { store, reconciler } = fixture();
+    const token = ids();
+    const a = accept(store, token);
+    reconciler.registerAnchor(a.cardId, "primary-message");
+    store.transaction((topic) => topic.prepare(a.responseId));
+    store.transaction((topic) => topic.activate(a.responseId, token.action()));
+    store.transaction((topic) => topic.seal(a.responseId, "complete"));
+    await reconciler.flush();
+
+    const supplementCardId = token.supplementCard();
+    reconciler.registerSupplementAnchor(supplementCardId, "original-request-message");
+    store.transaction((topic) => topic.createSupplementCard(a.responseId, supplementCardId));
+    store.transaction((topic) =>
+      topic.appendSupplement(a.responseId, { kind: "text", text: "补充内容" }),
+    );
+    await reconciler.flush();
+
+    expect(reconciler.supplementDeliveryRecordCount(a.responseId)).toBe(1);
+
+    // A later Request synchronously revokes Supplement Card ownership, which
+    // is the domain precondition for eviction alongside delivery settlement.
+    accept(store, token);
+    const evicted = store.transactionIfChanged((topic) =>
+      topic.evictTerminalAfterDeliverySettled(a.responseId),
+    );
+    expect(evicted).toBe(true);
+
+    reconciler.forgetResponseSupplements(a.responseId);
+
+    expect(reconciler.supplementDeliveryRecordCount(a.responseId)).toBe(0);
   });
 });

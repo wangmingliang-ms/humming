@@ -46,14 +46,14 @@ export const BUILT_IN_AGENTS: Readonly<Record<string, AgentPreset>> = {
   claude: {
     label: "Claude Code",
     command: "npx",
-    args: ["-y", "@zed-industries/claude-code-acp"],
-    description: "Claude Code via Zed's ACP adapter (uses local `claude` CLI auth)",
+    args: ["-y", "@agentclientprotocol/claude-agent-acp"],
+    description: "Claude Code via the maintained ACP adapter (uses local Claude Code auth)",
   },
   "claude-agent": {
     label: "Claude Agent SDK",
     command: "npx",
     args: ["-y", "@agentclientprotocol/claude-agent-acp"],
-    description: "Direct Anthropic API via the Claude Agent SDK (needs ANTHROPIC_API_KEY)",
+    description: "Compatibility alias for the maintained Claude Agent SDK ACP adapter",
   },
   codex: {
     label: "Codex CLI",

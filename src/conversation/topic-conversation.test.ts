@@ -8,6 +8,7 @@ import {
   type ResponseCardId,
   type ResponseId,
   type ResponseToken,
+  type SupplementCardId,
   type TurnId,
 } from "./topic-conversation.js";
 
@@ -16,6 +17,7 @@ const id = {
   request: (value: string) => value as RequestId,
   response: (value: string) => value as ResponseId,
   card: (value: string) => value as ResponseCardId,
+  supplementCard: (value: string) => value as SupplementCardId,
   responseToken: (value: string) => value as ResponseToken,
   action: (value: string) => value as ActionToken,
   permission: (value: string) => value as PermissionToken,
@@ -655,5 +657,141 @@ describe("TopicConversation canonical lifecycle", () => {
         token: id.action("action-a"),
       }),
     ).toBe("stale");
+  });
+});
+
+describe("Supplement Card ownership", () => {
+  it("grants Supplement Card ownership only to a normally completed Response", () => {
+    for (const outcome of ["failed", "interrupted", "cancelled"] as const) {
+      const topic = new TopicConversation();
+      const a = accept(topic, "a");
+      start(topic, a, "a");
+      topic.seal(a, outcome);
+      expect(topic.snapshot().supplementOwnerResponseId).toBeNull();
+      expect(topic.isSupplementOwner(a)).toBe(false);
+    }
+
+    const merged = new TopicConversation();
+    const a = accept(merged, "a");
+    start(merged, a, "a");
+    const b = accept(merged, "b");
+    accept(merged, "c");
+    expect(response(merged, b).state).toEqual({ kind: "terminal", outcome: "merged" });
+    expect(merged.isSupplementOwner(b)).toBe(false);
+
+    const completed = new TopicConversation();
+    const d = accept(completed, "d");
+    start(completed, d, "d");
+    completed.seal(d, "complete");
+    expect(completed.snapshot().supplementOwnerResponseId).toBe(d);
+    expect(completed.isSupplementOwner(d)).toBe(true);
+  });
+
+  it("appends the first out-of-turn text as a new neutral Supplement Card and coalesces the next chunk", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.seal(a, "complete");
+
+    topic.createSupplementCard(a, id.supplementCard("supplement-a-1"));
+    topic.appendSupplement(a, { kind: "text", text: "补充第一段" });
+    topic.appendSupplement(a, { kind: "text", text: "，继续" });
+
+    const supplements = response(topic, a).supplements;
+    expect(supplements).toHaveLength(1);
+    expect(supplements[0]).toMatchObject({
+      isTail: true,
+      entries: [{ kind: "text", text: "补充第一段，继续" }],
+    });
+  });
+
+  it("never mutates the frozen terminal primary Card when a supplement is appended", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.append(a, { kind: "text", text: "primary answer" });
+    topic.seal(a, "complete");
+    const before = response(topic, a).cards;
+
+    topic.createSupplementCard(a, id.supplementCard("supplement-a-1"));
+    topic.appendSupplement(a, { kind: "text", text: "补充说明" });
+
+    const after = response(topic, a).cards;
+    expect(after).toEqual(before);
+    expect(after).toMatchObject([
+      { entries: [{ kind: "text", text: "primary answer" }], isTail: true },
+    ]);
+  });
+
+  it("rotates Supplement Cards under the shared byte budget without touching primary Cards", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.seal(a, "complete");
+
+    topic.createSupplementCard(a, id.supplementCard("supplement-a-1"));
+    topic.appendSupplement(a, { kind: "text", text: "x".repeat(20_000) });
+    topic.rotateSupplementCard(a, id.supplementCard("supplement-a-2"));
+    topic.appendSupplement(a, { kind: "text", text: "第二段" });
+
+    const supplements = response(topic, a).supplements;
+    expect(supplements).toHaveLength(2);
+    expect(supplements[0]).toMatchObject({ isTail: false });
+    expect(supplements[1]).toMatchObject({
+      isTail: true,
+      entries: [{ kind: "text", text: "第二段" }],
+    });
+    expect(response(topic, a).cards).toHaveLength(1);
+  });
+
+  it("synchronously revokes Supplement Card ownership when a new Request is accepted", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.seal(a, "complete");
+    expect(topic.snapshot().supplementOwnerResponseId).toBe(a);
+
+    accept(topic, "b");
+
+    expect(topic.snapshot().supplementOwnerResponseId).toBeNull();
+    expect(topic.isSupplementOwner(a)).toBe(false);
+    expect(() => topic.appendSupplement(a, { kind: "text", text: "too late" })).toThrow(
+      "does not currently own",
+    );
+  });
+
+  it("discards an out-of-turn append when no Response currently owns the Supplement Card window", () => {
+    const topic = new TopicConversation();
+    const a = accept(topic, "a");
+    start(topic, a, "a");
+    topic.seal(a, "interrupted");
+
+    expect(topic.snapshot().supplementOwnerResponseId).toBeNull();
+    expect(() => topic.createSupplementCard(a, id.supplementCard("supplement-a-1"))).toThrow(
+      "does not currently own",
+    );
+  });
+
+  it("revokes Supplement Card ownership on topic interrupt, /cancel, and protects the owner from eviction", () => {
+    const interrupted = new TopicConversation();
+    const a = accept(interrupted, "a");
+    start(interrupted, a, "a");
+    interrupted.seal(a, "complete");
+    interrupted.interruptTopic();
+    expect(interrupted.snapshot().supplementOwnerResponseId).toBeNull();
+
+    const cancelled = new TopicConversation();
+    const b = accept(cancelled, "b");
+    start(cancelled, b, "b");
+    cancelled.seal(b, "complete");
+    cancelled.beginTopicCancel();
+    expect(cancelled.snapshot().supplementOwnerResponseId).toBeNull();
+
+    const retained = new TopicConversation();
+    const c = accept(retained, "c");
+    start(retained, c, "c");
+    retained.seal(c, "complete");
+    expect(retained.evictTerminalAfterDeliverySettled(c)).toBe(false);
+    expect(retained.snapshot().supplementOwnerResponseId).toBe(c);
   });
 });

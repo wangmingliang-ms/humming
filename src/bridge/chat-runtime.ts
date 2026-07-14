@@ -25,7 +25,7 @@ import {
   type LifecycleDiagnosticSink,
 } from "../acp/lifecycle-diagnostics.js";
 import type { AcknowledgementPort } from "../conversation/topic-conversation-session.js";
-import { PromptCallbackRouter } from "../acp/prompt-callback-router.js";
+import { PromptCallbackRouter, type PromptRouteHandle } from "../acp/prompt-callback-router.js";
 import { TopicConversationSession } from "../conversation/topic-conversation-session.js";
 import { ConversationResponseHandle } from "../conversation/conversation-response-handle.js";
 import type { RequestMessage, ResponseId } from "../conversation/topic-conversation.js";
@@ -143,6 +143,7 @@ export class ChatRuntime {
   private readonly lifecycleDiagnostics: LifecycleDiagnosticSink;
   private readonly conversation: TopicConversationSession;
   private activeResponse: ConversationResponseHandle | null = null;
+  private activeRouteHandle: PromptRouteHandle | null = null;
   private pendingCarrier: PendingMessage | null = null;
   private committedCarrierResponseId: ResponseId | null = null;
   private committedPendingBatch: readonly RequestMessage[] | null = null;
@@ -479,6 +480,7 @@ export class ChatRuntime {
   ): Promise<void> {
     if (this.followupInterruptRequested) return;
     this.followupInterruptRequested = true;
+    this.cancelActiveRoute(state);
 
     try {
       await state.agent.connection.cancel({ sessionId: state.agent.sessionId });
@@ -498,11 +500,18 @@ export class ChatRuntime {
     } else {
       this.responseCancelRequested = responseId;
     }
+    this.cancelActiveRoute(state);
     try {
       await state.agent.connection.cancel({ sessionId: state.agent.sessionId });
     } catch (err) {
       this.logger.warn({ err, responseId }, "Response cancel notification rejected");
     }
+  }
+
+  private cancelActiveRoute(state: ChatRuntimeState): void {
+    const handle = this.activeRouteHandle;
+    if (handle === null) return;
+    state.router?.cancel(handle);
   }
 
   private clearAdmissionState(reason: string): void {
@@ -532,6 +541,7 @@ export class ChatRuntime {
     this.logger.info("cancelling current task");
     this.topicCancelRequested = true;
     await this.conversation.beginTopicCancel();
+    this.cancelActiveRoute(state);
 
     try {
       await state.agent.connection.cancel({ sessionId: state.agent.sessionId });
@@ -554,6 +564,7 @@ export class ChatRuntime {
     this.logger.info("shutting down chat runtime");
     await this.conversation.interruptTopic();
     this.clearAdmissionState("runtime was shut down");
+    this.cancelActiveRoute(state);
 
     this.state = null;
     killAgent(state.agent.process);
@@ -620,6 +631,7 @@ export class ChatRuntime {
     }
 
     let cancel: DrainResult["cancel"] = "sent";
+    this.cancelActiveRoute(drainState);
     try {
       await withTimeout(
         drainState.agent.connection.cancel({ sessionId: drainState.agent.sessionId }),
@@ -712,6 +724,7 @@ export class ChatRuntime {
     this.topicCancelRequested = true;
     await this.conversation.interruptTopic();
     this.clearAdmissionState("runtime was superseded");
+    this.cancelActiveRoute(state);
 
     await withTimeout(
       this.promptInFlight
@@ -880,6 +893,7 @@ export class ChatRuntime {
         onConfig: () => undefined,
         onCommands: () => undefined,
         onUsage: () => undefined,
+        onOutOfTurnUpdate: (update) => this.conversation.applyOutOfTurnUpdate(update),
       },
       this.lifecycleDiagnostics,
     );
@@ -985,6 +999,7 @@ export class ChatRuntime {
       agent.process.on("exit", (code, signal) => {
         this.handleUnexpectedExit(code, signal);
       });
+      void agent.connection.closed.then(() => router?.connectionShutdown());
       return state;
     } catch (err) {
       killAgent(agent.process);
@@ -1383,6 +1398,7 @@ export class ChatRuntime {
       },
       cancelPendingPermissions: () => response.cancelPendingPermissions(),
     });
+    this.activeRouteHandle = routeHandle;
 
     let result: Awaited<ReturnType<typeof state.agent.connection.prompt>>;
     let promptCompleted = false;
@@ -1405,6 +1421,7 @@ export class ChatRuntime {
         "prompt timing",
       );
       state.router?.close(routeHandle);
+      if (this.activeRouteHandle === routeHandle) this.activeRouteHandle = null;
     }
 
     if (this.activeResponse === response) {

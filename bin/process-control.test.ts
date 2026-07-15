@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   bridgeControlSocketPath,
   bridgeControlSocketPathForPlatform,
@@ -23,6 +23,7 @@ import {
   readPid,
   rewriteSubcommand,
   sameProcessControlGroup,
+  statusBridge,
   ProcessControlError,
 } from "./process-control.js";
 
@@ -226,6 +227,30 @@ describe("parseProcessElapsedSeconds", () => {
     for (const bad of ["abc", "-5", "3.14", "10 20"]) {
       expect(parseProcessElapsedSeconds(bad)).toBeNull();
     }
+  });
+});
+
+describe("statusBridge", () => {
+  it("prints the Lark event-stream state separately from process liveness", async () => {
+    fs.writeFileSync(bridgePidPath(dir), `${process.pid}\n`, "utf-8");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    let output = "";
+
+    try {
+      await statusBridge({
+        homeDir: dir,
+        requestControl: async () => ({
+          ok: true,
+          result: { ready: true, lark: { state: "reconnecting", reconnectAttempts: 2 } },
+        }),
+      });
+      output = write.mock.calls.map(([chunk]) => String(chunk)).join("");
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(output).toContain("bridge: running");
+    expect(output).toContain("lark: reconnecting");
   });
 });
 

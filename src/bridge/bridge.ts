@@ -739,6 +739,8 @@ export class LarkBridge {
       this.settingsWatcher.close();
       this.settingsWatcher = null;
     }
+    this.ws?.close();
+    this.ws = null;
     // If beginLifecycle already drained runtimes and emitted its terminal old-process
     // notice, stop() only releases process resources. Compatibility signal/control
     // shutdowns still use the legacy best-effort drain and notice path.
@@ -900,6 +902,7 @@ export class LarkBridge {
     this.controlServer = new BridgeControlServer({
       socketPath: this.controlSocketPath,
       logger: this.logger,
+      status: () => ({ lark: this.ws?.getConnectionStatus() ?? null }),
       handlers: {
         beginLifecycle: (transaction) => this.beginLifecycle(transaction),
         shutdown: async () => {

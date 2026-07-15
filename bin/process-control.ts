@@ -636,6 +636,7 @@ export async function stopBridge(opts: StopOptions): Promise<boolean> {
 
 export interface StatusOptions {
   readonly homeDir: string;
+  readonly requestControl?: typeof sendControlRequest;
 }
 
 /**
@@ -655,7 +656,7 @@ export function isBridgeRunning(homeDir: string): boolean {
  * Print whether the bridge is running, with PID and approximate uptime (from
  * the PID file's mtime). Clears a stale PID file as a side effect.
  */
-export function statusBridge(opts: StatusOptions): void {
+export async function statusBridge(opts: StatusOptions): Promise<void> {
   const pidPath = bridgePidPath(opts.homeDir);
   const unitName = bridgeUnitName(opts.homeDir);
   const unitPid = isUserSystemdAvailable() ? systemdMainPid(unitName) : null;
@@ -666,6 +667,7 @@ export function statusBridge(opts: StatusOptions): void {
     const suffix = uptime.length > 0 ? `, up ${uptime}` : "";
     process.stdout.write(`bridge: running (PID ${unitPid}${suffix}, systemd unit ${unitName})\n`);
     process.stdout.write(`  logs: ${bridgeLogPath(opts.homeDir)}\n`);
+    await printLarkStatus(opts);
     return;
   }
 
@@ -679,6 +681,30 @@ export function statusBridge(opts: StatusOptions): void {
   const suffix = uptime.length > 0 ? `, up ${uptime}` : "";
   process.stdout.write(`bridge: running (PID ${pid}${suffix})\n`);
   process.stdout.write(`  logs: ${bridgeLogPath(opts.homeDir)}\n`);
+  await printLarkStatus(opts);
+}
+
+async function printLarkStatus(opts: StatusOptions): Promise<void> {
+  const requestControl = opts.requestControl ?? sendControlRequest;
+  let state = "unavailable";
+  try {
+    const response = await requestControl(bridgeControlSocketPath(opts.homeDir), {
+      method: "ping",
+      params: {},
+    });
+    if (response.ok) state = readLarkConnectionState(response.result) ?? "unknown";
+  } catch {
+    // Process liveness remains useful even when the local control socket is unavailable.
+  }
+  process.stdout.write(`  lark: ${state}\n`);
+}
+
+function readLarkConnectionState(result: unknown): string | null {
+  if (typeof result !== "object" || result === null || !("lark" in result)) return null;
+  const lark = result.lark;
+  if (typeof lark !== "object" || lark === null || !("state" in lark)) return null;
+  const state = lark.state;
+  return typeof state === "string" ? state : null;
 }
 
 export interface LogsOptions {

@@ -112,9 +112,9 @@ function registerBridgeActions(parent: Command, opts: RegisterBridgeCommandOptio
   parent
     .command("status")
     .description("show whether the bridge is running")
-    .action(function (this: Command) {
+    .action(async function (this: Command) {
       const globals = this.optsWithGlobals<GlobalOptions>();
-      statusBridge({ homeDir: loadCliBase(globals).homeDir });
+      await statusBridge({ homeDir: loadCliBase(globals).homeDir });
     });
 
   parent

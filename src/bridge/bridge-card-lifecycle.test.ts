@@ -38,6 +38,32 @@ function dispatchCardAction(bridge: LarkBridge, value: object): void {
   testable.handleCardAction({ action: { value }, messageId: "message" });
 }
 
+describe("LarkBridge shutdown", () => {
+  it("closes the Lark event stream when the bridge stops", async () => {
+    const closeWs = vi.fn();
+    const closeSessionStore = vi.fn(async () => {});
+    const closeBindingStore = vi.fn(async () => {});
+    const bridge = new LarkBridge({
+      lark: { appId: "test", appSecret: "test" },
+      agent: { resolver: () => ({ command: "test", args: [], label: "test" }) },
+      bindingStore: { close: closeBindingStore } as unknown as BindingStore,
+      sessionStore: { close: closeSessionStore } as unknown as SessionStore,
+      presenter: {} as LarkPresenter,
+      logger,
+    });
+    const testable = bridge as unknown as {
+      started: boolean;
+      ws: { close(): void } | null;
+    };
+    testable.started = true;
+    testable.ws = { close: closeWs };
+
+    await bridge.stop();
+
+    expect(closeWs).toHaveBeenCalledOnce();
+  });
+});
+
 describe("LarkBridge prompt ingress ordering", () => {
   it("quiesces ingress synchronously and waits for every runtime before lifecycle notice", async () => {
     const notices: Array<{ title: string; body: string }> = [];

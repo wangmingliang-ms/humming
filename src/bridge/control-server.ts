@@ -2,6 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import type { LarkLogger } from "../logger/logger.js";
+import type { LarkWsConnectionStatus } from "../lark/lark-ws.js";
 import type {
   PendingSessionMessage,
   PendingTargetAgent,
@@ -144,21 +145,28 @@ export interface BridgeControlHandlers {
   ): Promise<unknown>;
 }
 
+export interface BridgeControlStatus {
+  readonly lark: LarkWsConnectionStatus | null;
+}
+
 export interface BridgeControlServerOptions {
   readonly socketPath: string;
   readonly logger: LarkLogger;
+  readonly status?: () => BridgeControlStatus;
   readonly handlers: BridgeControlHandlers;
 }
 
 export class BridgeControlServer {
   private readonly socketPath: string;
   private readonly logger: LarkLogger;
+  private readonly status: (() => BridgeControlStatus) | undefined;
   private readonly handlers: BridgeControlHandlers;
   private server: net.Server | null = null;
 
   constructor(opts: BridgeControlServerOptions) {
     this.socketPath = opts.socketPath;
     this.logger = opts.logger.child({ name: "control" });
+    this.status = opts.status;
     this.handlers = opts.handlers;
   }
 
@@ -240,7 +248,7 @@ export class BridgeControlServer {
           return {
             ok: true,
             id: parsed.id,
-            result: { ready: true },
+            result: { ready: true, ...(this.status?.() ?? {}) },
           };
         case "beginLifecycle":
           return {

@@ -5,6 +5,9 @@ import path from "node:path";
 import { CommanderError } from "commander";
 import { buildProgram } from "./cli/program.js";
 import { buildBridgeRunArgv, hasExplicitBridgeRunOptions } from "./cli/commands/bridge.js";
+import { bridgeControlSocketPath, bridgePidPath } from "./process-control.js";
+import { BridgeControlServer } from "../src/bridge/control-server.js";
+import { createPinoLogger } from "../src/logger/logger.js";
 
 const HUMMING_ENV_KEYS = [
   "HUMMING_CHAT_ID",
@@ -91,6 +94,31 @@ describe("bridge command tree — Commander parsing", () => {
       process.stdout.write = original;
     }
     expect(logs.join("")).toContain("not running");
+  });
+
+  it("`bridge status` waits for and prints the live Lark state", async () => {
+    fs.writeFileSync(bridgePidPath(dir), `${process.pid}\n`, "utf-8");
+    const server = new BridgeControlServer({
+      socketPath: bridgeControlSocketPath(dir),
+      logger: createPinoLogger(),
+      status: () => ({ lark: { state: "connected", reconnectAttempts: 0 } }),
+      handlers: {} as never,
+    });
+    await server.start();
+    const logs: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      logs.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await parse(["bridge", "status", "--home", dir]);
+    } finally {
+      process.stdout.write = original;
+      await server.stop();
+    }
+
+    expect(logs.join("")).toContain("lark: connected");
   });
 
   it("`bridge stop` errors when the bridge is not running", async () => {

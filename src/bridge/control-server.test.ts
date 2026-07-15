@@ -27,6 +27,7 @@ describe("BridgeControlServer", () => {
     server = new BridgeControlServer({
       socketPath,
       logger: createPinoLogger(),
+      status: () => ({ lark: { state: "reconnecting", reconnectAttempts: 2 } }),
       handlers: {
         shutdown: async () => ({ accepted: true }),
         restart: async () => ({ accepted: true, restarting: true }),
@@ -73,7 +74,10 @@ describe("BridgeControlServer", () => {
 
     await expect(
       sendControlRequest(socketPath, { method: "ping", params: {} }),
-    ).resolves.toMatchObject({ ok: true, result: { ready: true } });
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { ready: true, lark: { state: "reconnecting", reconnectAttempts: 2 } },
+    });
 
     await expect(
       sendControlRequest(socketPath, { method: "shutdown", params: {} }),
@@ -296,6 +300,36 @@ describe("BridgeControlServer", () => {
         params: { transaction: { ...transaction, intent: "reload" } },
       } as never),
     ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
+  });
+
+  it("publishes the production Lark connection state through control ping", async () => {
+    const socketPath = path.join(dir, "control.sock");
+    const bridge = new LarkBridge({
+      lark: { appId: "cli_test", appSecret: "secret" },
+      agent: { resolver: async () => ({ command: "node", args: [] }) },
+      sessionStore: {},
+      bindingStore: {},
+      presenter: {},
+      controlSocketPath: socketPath,
+    } as unknown as LarkBridgeOptions);
+    (
+      bridge as unknown as {
+        ws: { getConnectionStatus(): { state: "connected"; reconnectAttempts: number } };
+      }
+    ).ws = {
+      getConnectionStatus: () => ({ state: "connected", reconnectAttempts: 0 }),
+    };
+
+    await (bridge as unknown as { startControlServer(): Promise<void> }).startControlServer();
+    const response = await sendControlRequest(socketPath, { method: "ping", params: {} });
+
+    expect(response).toMatchObject({
+      ok: true,
+      result: { ready: true, lark: { state: "connected", reconnectAttempts: 0 } },
+    });
+    await (
+      bridge as unknown as { controlServer: { stop(): Promise<void> } | null }
+    ).controlServer?.stop();
   });
 
   it("routes a restart request through the production bridge callback", async () => {

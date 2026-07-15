@@ -2,6 +2,8 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import { adaptToSdkLogger, type LarkLogger } from "../logger/logger.js";
 
 const LARK_LOGGER_LEVEL = Lark.LoggerLevel.info;
+const LARK_WS_HANDSHAKE_TIMEOUT_MS = 15_000;
+const LARK_WS_PING_TIMEOUT_SECONDS = 15;
 
 const CARD_ACTION_TOAST_OK = {
   toast: { type: "success" as const, content: "已确认" },
@@ -14,6 +16,8 @@ export interface LarkWsOptions {
   onMessage: (event: Lark.RawMessageEvent) => void;
   onCardAction: (event: Lark.CardActionEvent) => void;
 }
+
+export type LarkWsConnectionStatus = ReturnType<Lark.WSClient["getConnectionStatus"]>;
 
 /**
  * Long-lived WebSocket connection to Lark's event stream. Subscribes to
@@ -36,6 +40,12 @@ export class LarkWsConnection {
       appSecret: opts.appSecret,
       loggerLevel: LARK_LOGGER_LEVEL,
       logger: sdkLogger,
+      handshakeTimeoutMs: LARK_WS_HANDSHAKE_TIMEOUT_MS,
+      wsConfig: { pingTimeout: LARK_WS_PING_TIMEOUT_SECONDS },
+      onReady: () => this.logger.info("WebSocket connected; listening for events"),
+      onReconnecting: () => this.logger.warn("Lark WebSocket disconnected; reconnecting"),
+      onReconnected: () => this.logger.info("Lark WebSocket reconnected; listening for events"),
+      onError: (err) => this.logger.error({ err }, "Lark WebSocket failed"),
     });
   }
 
@@ -74,6 +84,13 @@ export class LarkWsConnection {
 
     this.logger.info("connecting to Lark via WebSocket");
     this.wsClient.start({ eventDispatcher: dispatcher });
-    this.logger.info("WebSocket connected; listening for events");
+  }
+
+  getConnectionStatus(): LarkWsConnectionStatus {
+    return this.wsClient.getConnectionStatus();
+  }
+
+  close(): void {
+    this.wsClient.close({ force: true });
   }
 }

@@ -174,4 +174,19 @@ describe("LarkHttpClient outbound images", () => {
       },
     });
   });
+
+  it("replies in-thread when replyInThread is set", async () => {
+    sdkMocks.replyMessage.mockResolvedValue({ code: 0, data: { message_id: "om_reply" } });
+    const client = createClient();
+
+    await client.replyImage("om_anchor", "img_v3_abc", { replyInThread: true });
+    expect(sdkMocks.replyMessage).toHaveBeenCalledWith({
+      path: { message_id: "om_anchor" },
+      data: {
+        content: JSON.stringify({ image_key: "img_v3_abc" }),
+        msg_type: "image",
+        reply_in_thread: true,
+      },
+    });
+  });
 });

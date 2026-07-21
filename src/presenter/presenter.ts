@@ -113,7 +113,7 @@ export interface LarkPresenter {
    *
    * @throws when the underlying transport rejects.
    */
-  replyText(messageId: string, text: string): Promise<void>;
+  replyText(messageId: string, text: string, opts?: { replyInThread?: boolean }): Promise<void>;
 
   /**
    * Reply to `messageId` with a standalone image message. Uploads `bytes` to
@@ -121,7 +121,7 @@ export interface LarkPresenter {
    * `false` when upload or send fails (the caller degrades to a text
    * placeholder). Never throws.
    */
-  replyImage(messageId: string, bytes: Buffer): Promise<boolean>;
+  replyImage(messageId: string, bytes: Buffer, opts?: { replyInThread?: boolean }): Promise<boolean>;
 
   /** Replace a permission card with a "no longer actionable" notice. */
   expirePermissionCard(messageId: string, reason: string): Promise<void>;

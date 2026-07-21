@@ -1581,10 +1581,15 @@ export class ChatRuntime {
     anchorMessageId: string,
     sources: readonly OutboundImageSource[],
   ): Promise<void> {
+    // Reply inside the topic thread (when this runtime serves one) so images
+    // land next to the conversation card rather than in the parent group chat.
+    const replyInThread = this.opts.threadId !== null;
     for (const source of sources) {
       try {
         const { bytes } = await resolveImageBytes(source);
-        const delivered = await this.opts.presenter.replyImage(anchorMessageId, bytes);
+        const delivered = await this.opts.presenter.replyImage(anchorMessageId, bytes, {
+          replyInThread,
+        });
         if (!delivered) {
           await this.replyOutboundImageFallback(anchorMessageId, source);
         }
@@ -1604,7 +1609,9 @@ export class ChatRuntime {
     source: OutboundImageSource,
   ): Promise<void> {
     try {
-      await this.opts.presenter.replyText(anchorMessageId, outboundImagePlaceholder(source));
+      await this.opts.presenter.replyText(anchorMessageId, outboundImagePlaceholder(source), {
+        replyInThread: this.opts.threadId !== null,
+      });
     } catch (err) {
       this.logger.warn({ err, kind: source.kind }, "outbound image placeholder reply failed");
     }

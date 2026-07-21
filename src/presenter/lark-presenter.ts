@@ -923,17 +923,25 @@ export class LarkCardPresenter implements LarkPresenter {
     }
   }
 
-  async replyText(messageId: string, text: string): Promise<void> {
+  async replyText(
+    messageId: string,
+    text: string,
+    opts: { replyInThread?: boolean } = {},
+  ): Promise<void> {
     for (const chunk of splitMarkdown(text)) {
       const post = markdownToPost(chunk);
-      await this.http.replyPost(messageId, post);
+      await this.http.replyPost(messageId, post, opts);
     }
   }
 
-  async replyImage(messageId: string, bytes: Buffer): Promise<boolean> {
+  async replyImage(
+    messageId: string,
+    bytes: Buffer,
+    opts: { replyInThread?: boolean } = {},
+  ): Promise<boolean> {
     try {
       const imageKey = await this.http.uploadImage(bytes);
-      await this.http.replyImage(messageId, imageKey);
+      await this.http.replyImage(messageId, imageKey, opts);
       return true;
     } catch (err) {
       this.logger.warn({ err: conciseError(err), messageId }, "replyImage failed");

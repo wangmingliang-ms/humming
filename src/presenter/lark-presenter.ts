@@ -3,7 +3,7 @@ import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
 
 import type { ConversationCardView, ConversationTimelineEntry } from "./conversation-card-view.js";
-import { markdownToPost, splitMarkdown } from "./lark-markdown.js";
+import { markdownToPost, splitMarkdown, stripCardImageMarkdown } from "./lark-markdown.js";
 import { buildSessionProfileFooter } from "./profile-footer.js";
 import {
   CARD_MARKDOWN_ROTATION_BYTE_LIMIT,
@@ -309,12 +309,15 @@ function buildThoughtPanel(text: string): object {
 function semanticEntryToCardElement(entry: ConversationTimelineEntry): object {
   switch (entry.kind) {
     case "text":
-      return { tag: "markdown", content: entry.text };
+      return { tag: "markdown", content: stripCardImageMarkdown(entry.text) };
     case "thought":
       return buildThoughtPanel(entry.text);
     case "tool": {
       const head = `**${entry.toolKind}**: ${entry.title}`;
-      return { tag: "markdown", content: entry.detail ? `${head}\n\n${entry.detail}` : head };
+      return {
+        tag: "markdown",
+        content: stripCardImageMarkdown(entry.detail ? `${head}\n\n${entry.detail}` : head),
+      };
     }
     default:
       return assertNeverConversationEntry(entry);

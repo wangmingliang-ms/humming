@@ -1556,6 +1556,13 @@ export class ChatRuntime {
         (handoff) => this.commitPendingCarrier(handoff),
       );
     }
+    // Flush the sealed conversation card to Lark BEFORE sending images. The
+    // reconciler delivers card patches via fire-and-forget workers; without an
+    // explicit flush the terminal seal can still be in-flight while we spend
+    // seconds uploading images, leaving the card stuck at "回复中" with a live
+    // cancel button even though the turn is done. Flushing first also gives the
+    // natural ordering: finalized text card, then the image messages.
+    await this.conversation.flushPresentation();
     // Pull markdown-embedded images out of the finalized agent text and deliver
     // every collected image as a standalone Lark image message, in order.
     const { sources: markdownImages } = extractMarkdownImages(agentMessageText);

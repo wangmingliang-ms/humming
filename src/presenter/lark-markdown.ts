@@ -51,6 +51,22 @@ export function markdownToPost(text: string): PostPayload {
   return { content: [[{ tag: "md", text: md }]] };
 }
 
+/** Matches a markdown image span `![alt](href)` (alt/href may be empty). */
+const CARD_IMAGE_MARKDOWN_RE = /!\[[^\]]*\]\([^)]*\)/g;
+
+/**
+ * Remove markdown image spans from text rendered into a Lark card's `markdown`
+ * element. Outbound images are delivered as their own image messages, so a
+ * leftover `![](...)` would make Lark's card renderer try to resolve the href
+ * as an uploaded `image_key` and reject the ENTIRE card (ErrCode 200570) — a
+ * `file://`, `https://`, or any non-key href is never valid. Leaving the card
+ * unpatchable is what stranded the card at "回复中". Does not trim/collapse, so
+ * streamed intermediate text keeps a stable layout across patches.
+ */
+export function stripCardImageMarkdown(text: string): string {
+  return text.replaceAll(CARD_IMAGE_MARKDOWN_RE, "");
+}
+
 /**
  * Split a markdown blob into chunks no larger than `limit` UTF-8 bytes,
  * preferring to break on paragraph boundaries (`\n\n`) and falling back

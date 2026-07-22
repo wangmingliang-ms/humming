@@ -4,12 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createPinoLogger } from "../logger/logger.js";
-import { BridgeControlServer, sendControlRequest } from "./control-server.js";
-import type { LarkBridgeOptions } from "./bridge.js";
-import { LarkBridge } from "./bridge.js";
+import { GatewayControlServer, sendControlRequest } from "./control-server.js";
+import type { LarkGatewayOptions } from "./gateway.js";
+import { LarkGateway } from "./gateway.js";
 
 let dir: string;
-let server: BridgeControlServer | null;
+let server: GatewayControlServer | null;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-control-"));
@@ -21,10 +21,10 @@ afterEach(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe("BridgeControlServer", () => {
+describe("GatewayControlServer", () => {
   it("serves capabilities, configureSession, and sendMessage over a local socket", async () => {
     const socketPath = path.join(dir, "control.sock");
-    server = new BridgeControlServer({
+    server = new GatewayControlServer({
       socketPath,
       logger: createPinoLogger(),
       status: () => ({ lark: { state: "reconnecting", reconnectAttempts: 2 } }),
@@ -38,8 +38,8 @@ describe("BridgeControlServer", () => {
             currentModeId: "ask",
             availableModes: [{ id: "ask", name: "Ask" }],
           },
-          bridgePermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
-          bridgePermissionMode: "alwaysAsk",
+          gatewayPermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
+          gatewayPermissionMode: "alwaysAsk",
         }),
         configureSession: async (chatId, threadId, input, noticeMessageId) => ({
           applied: true,
@@ -280,7 +280,7 @@ describe("BridgeControlServer", () => {
       bindSession: async () => ({ bound: true }),
       agentProbeFailed: async () => ({ notified: true }),
     };
-    server = new BridgeControlServer({ socketPath, logger: createPinoLogger(), handlers });
+    server = new GatewayControlServer({ socketPath, logger: createPinoLogger(), handlers });
     await server.start();
 
     const response = await sendControlRequest(socketPath, {
@@ -304,23 +304,23 @@ describe("BridgeControlServer", () => {
 
   it("publishes the production Lark connection state through control ping", async () => {
     const socketPath = path.join(dir, "control.sock");
-    const bridge = new LarkBridge({
+    const gateway = new LarkGateway({
       lark: { appId: "cli_test", appSecret: "secret" },
       agent: { resolver: async () => ({ command: "node", args: [] }) },
       sessionStore: {},
       bindingStore: {},
       presenter: {},
       controlSocketPath: socketPath,
-    } as unknown as LarkBridgeOptions);
+    } as unknown as LarkGatewayOptions);
     (
-      bridge as unknown as {
+      gateway as unknown as {
         ws: { getConnectionStatus(): { state: "connected"; reconnectAttempts: number } };
       }
     ).ws = {
       getConnectionStatus: () => ({ state: "connected", reconnectAttempts: 0 }),
     };
 
-    await (bridge as unknown as { startControlServer(): Promise<void> }).startControlServer();
+    await (gateway as unknown as { startControlServer(): Promise<void> }).startControlServer();
     const response = await sendControlRequest(socketPath, { method: "ping", params: {} });
 
     expect(response).toMatchObject({
@@ -328,14 +328,14 @@ describe("BridgeControlServer", () => {
       result: { ready: true, lark: { state: "connected", reconnectAttempts: 0 } },
     });
     await (
-      bridge as unknown as { controlServer: { stop(): Promise<void> } | null }
+      gateway as unknown as { controlServer: { stop(): Promise<void> } | null }
     ).controlServer?.stop();
   });
 
-  it("routes a restart request through the production bridge callback", async () => {
+  it("routes a restart request through the production gateway callback", async () => {
     const socketPath = path.join(dir, "control.sock");
     let restartRequested = false;
-    const bridge = new LarkBridge({
+    const gateway = new LarkGateway({
       lark: { appId: "cli_test", appSecret: "secret" },
       agent: { resolver: async () => ({ command: "node", args: [] }) },
       sessionStore: {},
@@ -345,21 +345,21 @@ describe("BridgeControlServer", () => {
       onRestartRequested: () => {
         restartRequested = true;
       },
-    } as unknown as LarkBridgeOptions);
+    } as unknown as LarkGatewayOptions);
 
-    await (bridge as unknown as { startControlServer(): Promise<void> }).startControlServer();
+    await (gateway as unknown as { startControlServer(): Promise<void> }).startControlServer();
     const response = await sendControlRequest(socketPath, { method: "restart", params: {} });
 
     expect(response).toMatchObject({ ok: true, result: { accepted: true } });
     expect(restartRequested).toBe(true);
     await (
-      bridge as unknown as { controlServer: { stop(): Promise<void> } | null }
+      gateway as unknown as { controlServer: { stop(): Promise<void> } | null }
     ).controlServer?.stop();
   });
 
   it("responds to newline-framed requests before the client half-closes", async () => {
     const socketPath = path.join(dir, "control.sock");
-    server = new BridgeControlServer({
+    server = new GatewayControlServer({
       socketPath,
       logger: createPinoLogger(),
       handlers: {
@@ -368,8 +368,8 @@ describe("BridgeControlServer", () => {
         capabilities: async (chatId, threadId) => ({
           session: { chatId, threadId, sessionId: "sess_pipe" },
           agent: { command: "node", args: [], cwd: "/repo" },
-          bridgePermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
-          bridgePermissionMode: "alwaysAsk",
+          gatewayPermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
+          gatewayPermissionMode: "alwaysAsk",
         }),
         configureSession: async () => ({ applied: true }),
         sendMessage: async () => ({ sent: true }),
@@ -422,15 +422,15 @@ describe("BridgeControlServer", () => {
   it("rejects malformed session control payloads before invoking handlers", async () => {
     const socketPath = path.join(dir, "control.sock");
     let configureSessionCalled = false;
-    server = new BridgeControlServer({
+    server = new GatewayControlServer({
       socketPath,
       logger: createPinoLogger(),
       handlers: {
         capabilities: async (chatId, threadId) => ({
           session: { chatId, threadId, sessionId: "sess_pipe" },
           agent: { command: "node", args: [], cwd: "/repo" },
-          bridgePermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
-          bridgePermissionMode: "alwaysAsk",
+          gatewayPermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
+          gatewayPermissionMode: "alwaysAsk",
         }),
         configureSession: async () => {
           configureSessionCalled = true;
@@ -466,7 +466,7 @@ describe("BridgeControlServer", () => {
             agentArgs: ["agent"],
             cwd: "/repo",
           },
-          controls: { bridgePermissionMode: "bypass" },
+          controls: { gatewayPermissionMode: "bypass" },
         },
       } as never),
     ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
@@ -480,7 +480,7 @@ describe("BridgeControlServer", () => {
     const release = new Promise<void>((resolve) => {
       releaseHandler = resolve;
     });
-    server = new BridgeControlServer({
+    server = new GatewayControlServer({
       socketPath,
       logger: createPinoLogger(),
       handlers: {
@@ -489,8 +489,8 @@ describe("BridgeControlServer", () => {
           return {
             session: { chatId, threadId, sessionId: "sess_slow" },
             agent: { command: "node", args: [], cwd: "/repo" },
-            bridgePermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
-            bridgePermissionMode: "alwaysAsk",
+            gatewayPermissionModes: ["alwaysAsk", "alwaysAllow", "alwaysDeny"],
+            gatewayPermissionMode: "alwaysAsk",
           };
         },
         configureSession: async () => ({ applied: true }),

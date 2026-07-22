@@ -27,7 +27,7 @@
 - Modify: `src/presenter/lark-presenter.ts`
 - Modify: `src/index.ts`
 - Modify: `src/presenter/index.ts`
-- Test: `src/presenter/lark-presenter.test.ts` (covered indirectly by bridge tests; presenter builds card via new methods)
+- Test: `src/presenter/lark-presenter.test.ts` (covered indirectly by gateway tests; presenter builds card via new methods)
 
 **Interfaces:**
 
@@ -44,8 +44,8 @@
 
 **Files:**
 
-- Modify: `src/bridge/bridge.ts`
-- Test: `src/bridge/bridge-agent-switch.test.ts`
+- Modify: `src/gateway/gateway.ts`
+- Test: `src/gateway/gateway-agent-switch.test.ts`
 - Test: `tests/reception-hot-reload.test.ts`
 
 **Interfaces:**

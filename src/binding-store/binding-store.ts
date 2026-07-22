@@ -9,7 +9,7 @@
  *
  * The library does **not** ship a default — callers construct a
  * {@link SettingsBindingStore} (or their own implementation) and pass it to
- * `LarkBridge`.
+ * `LarkGateway`.
  */
 
 /**

@@ -6,7 +6,7 @@ const DEFAULT_LEVEL = "info";
 
 // pino-pretty emits ANSI color codes when `colorize` is on. Those render as
 // garbage (`^[[32m…`) once stdout is redirected into a file — which is exactly
-// what the background supervisor does when piping the bridge into bridge.log.
+// what the background supervisor does when piping the gateway into gateway.log.
 // Only colorize for an interactive terminal (foreground `humming proxy`); a
 // redirected/piped stream gets clean, plain-text pretty output instead.
 const STDOUT_IS_TTY = process.stdout.isTTY === true;

@@ -4,9 +4,9 @@
 
 **Goal:** Add slash-only Feishu commands for Agent/model/mode/permission/profile session-profile control, sharing Humming's existing control semantics and notice-card UX.
 
-**Architecture:** Extend the pure Lark interpreter to classify compact slash commands, then keep bridge command handlers as thin adapters into the existing `controlSetAgent`, `controlSetControls`, and notice-building paths. Add an explicit session-control patch type for `/model auto` so the operation can clear a stored model override without persisting a literal `auto` model id.
+**Architecture:** Extend the pure Lark interpreter to classify compact slash commands, then keep gateway command handlers as thin adapters into the existing `controlSetAgent`, `controlSetControls`, and notice-building paths. Add an explicit session-control patch type for `/model auto` so the operation can clear a stored model override without persisting a literal `auto` model id.
 
-**Tech Stack:** TypeScript, Node >=20, Vitest, ACP SDK, Feishu/Lark bridge presenter cards.
+**Tech Stack:** TypeScript, Node >=20, Vitest, ACP SDK, Feishu/Lark gateway presenter cards.
 
 ## Global Constraints
 
@@ -55,7 +55,7 @@ describe("interpretLarkMessage — compact session profile commands", () => {
     expect(expectCommand("/profile")).toEqual({ kind: "profile" });
   });
 
-  it("rejects missing args and lookalikes as prompts so the bridge can show usage only for exact command tokens", () => {
+  it("rejects missing args and lookalikes as prompts so the gateway can show usage only for exact command tokens", () => {
     expect(interpretLarkMessage(textEvent("/agent")).kind).toBe("command");
     expect(expectCommand("/agent")).toEqual({ kind: "profile-command-usage", command: "agent" });
     expect(interpretLarkMessage(textEvent("/agentx copilot")).kind).toBe("prompt");
@@ -112,7 +112,7 @@ git push
 - Modify: `src/session-store/session-store.ts`
 - Modify: `src/session-store/file-session-store.ts`
 - Modify: `src/session-store/file-session-store.test.ts`
-- Modify: `src/bridge/control-server.ts`
+- Modify: `src/gateway/control-server.ts`
 - Modify: `bin/humming.ts`
 
 **Interfaces:**
@@ -194,7 +194,7 @@ export interface SessionControlPatch {
   readonly modelId?: string;
   readonly clearModelId?: true;
   readonly modeId?: string;
-  readonly bridgePermissionMode?: PermissionMode;
+  readonly gatewayPermissionMode?: PermissionMode;
   readonly config?: Readonly<Record<string, SessionConfigControlValue>>;
 }
 ```
@@ -203,7 +203,7 @@ Change `pendingControls` and store method signatures to `SessionControlPatch`.
 
 Update `mergeControls()` in `file-session-store.ts` to delete `modelId` when `clearModelId` is true, then apply any explicit `modelId`. Add a separate `mergeControlPatches()` for `pendingControls` so queued clears are preserved as patch operations.
 
-Update `src/bridge/control-server.ts` and `bin/humming.ts` types/validation so `setControls` accepts `SessionControlPatch` and CLI JSON accepts `{ "clearModelId": true }`.
+Update `src/gateway/control-server.ts` and `bin/humming.ts` types/validation so `setControls` accepts `SessionControlPatch` and CLI JSON accepts `{ "clearModelId": true }`.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -219,7 +219,7 @@ Expected: store tests and TypeScript build pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/session-store/session-store.ts src/session-store/file-session-store.ts src/session-store/file-session-store.test.ts src/bridge/control-server.ts bin/humming.ts
+git add src/session-store/session-store.ts src/session-store/file-session-store.ts src/session-store/file-session-store.test.ts src/gateway/control-server.ts bin/humming.ts
 git commit -m "feat: support clearing session model override"
 git push
 ```
@@ -228,8 +228,8 @@ git push
 
 **Files:**
 
-- Modify: `src/bridge/chat-runtime.ts`
-- Test: `src/bridge/chat-runtime.test.ts`
+- Modify: `src/gateway/chat-runtime.ts`
+- Test: `src/gateway/chat-runtime.test.ts`
 
 **Interfaces:**
 
@@ -239,7 +239,7 @@ git push
 
 - [ ] **Step 1: Write failing runtime test**
 
-Add to `src/bridge/chat-runtime.test.ts`:
+Add to `src/gateway/chat-runtime.test.ts`:
 
 ```ts
 it("clears an explicit live model override for /model auto without sending literal auto", async () => {
@@ -291,7 +291,7 @@ it("clears an explicit live model override for /model auto without sending liter
 Run:
 
 ```bash
-npm test -- src/bridge/chat-runtime.test.ts -t "clears an explicit live model override"
+npm test -- src/gateway/chat-runtime.test.ts -t "clears an explicit live model override"
 ```
 
 Expected: fails because `clearModelId` is not applied/displayed.
@@ -313,7 +313,7 @@ Update `chat-runtime.ts`:
 Run:
 
 ```bash
-npm test -- src/bridge/chat-runtime.test.ts
+npm test -- src/gateway/chat-runtime.test.ts
 npm run build
 ```
 
@@ -322,16 +322,16 @@ Expected: runtime tests and build pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/bridge/chat-runtime.ts src/bridge/chat-runtime.test.ts
+git add src/gateway/chat-runtime.ts src/gateway/chat-runtime.test.ts
 git commit -m "feat: apply model auto as clearing model override"
 git push
 ```
 
-### Task 4: Bridge slash commands to shared control operations
+### Task 4: Gateway slash commands to shared control operations
 
 **Files:**
 
-- Modify: `src/bridge/bridge.ts`
+- Modify: `src/gateway/gateway.ts`
 - Test: `tests/reception-hot-reload.test.ts`
 
 **Interfaces:**
@@ -340,7 +340,7 @@ git push
 - `controlSetControls(chatId, threadId, controls, noticeMessageId?)` anchors slash responses to the command message.
 - `/agent` probe failure calls `controlAgentProbeFailed()`.
 
-- [ ] **Step 1: Write failing bridge tests**
+- [ ] **Step 1: Write failing gateway tests**
 
 Add to `tests/reception-hot-reload.test.ts` internals:
 
@@ -358,8 +358,8 @@ Add tests:
 
 ```ts
 it("handles /model auto through the shared setControls path and replies to the slash message", async () => {
-  bridge = makeBridge({ unboundCwd: home });
-  const b = asInternals(bridge);
+  gateway = makeGateway({ unboundCwd: home });
+  const b = asInternals(gateway);
   await sessionStore.save({
     chatId: "oc_x",
     threadId: "th_topic",
@@ -402,13 +402,13 @@ npm test -- tests/reception-hot-reload.test.ts -t "/model auto"
 
 Expected: fails because slash commands are not routed yet.
 
-- [ ] **Step 3: Implement bridge command handlers**
+- [ ] **Step 3: Implement gateway command handlers**
 
-Update `bridge.ts`:
+Update `gateway.ts`:
 
 - Add `set-agent`, `set-model`, `set-mode`, `set-permission`, `profile`, and `profile-command-usage` cases in `handleCommand()`.
 - Add `handleSetAgentCommand()` that resolves binding, resolves target agent, probes with `probeAgentSessionCapabilities()`, calls `controlAgentProbeFailed()` on failure, then calls `controlSetAgent()` on success.
-- Add `handleSetControlsCommand()` that maps `/model auto` to `{ clearModelId: true }`, `/model id` to `{ modelId: id }`, `/mode id` to `{ modeId: id }`, and `/permission mode` to `{ bridgePermissionMode: mode }`, then calls `controlSetControls(..., messageId)`.
+- Add `handleSetControlsCommand()` that maps `/model auto` to `{ clearModelId: true }`, `/model id` to `{ modelId: id }`, `/mode id` to `{ modeId: id }`, and `/permission mode` to `{ gatewayPermissionMode: mode }`, then calls `controlSetControls(..., messageId)`.
 - Add `handleProfileCommand()` that shows a profile notice from live runtime capabilities or stored session record.
 - Add usage notice builders for missing arguments.
 - Update `controlSetControls()` to accept `noticeMessageId?: string | null` and pass it to `ChatRuntime.applyControls()`.
@@ -422,12 +422,12 @@ npm test -- tests/reception-hot-reload.test.ts
 npm run build
 ```
 
-Expected: bridge tests and build pass.
+Expected: gateway tests and build pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/bridge/bridge.ts tests/reception-hot-reload.test.ts
+git add src/gateway/gateway.ts tests/reception-hot-reload.test.ts
 git commit -m "feat: handle compact session profile slash commands"
 git push
 ```
@@ -441,7 +441,7 @@ git push
 
 **Interfaces:**
 
-- Home guide documents that explicit slash commands are bridge-native and `/model auto` clears explicit model override.
+- Home guide documents that explicit slash commands are gateway-native and `/model auto` clears explicit model override.
 
 - [ ] **Step 1: Write failing home-template test**
 
@@ -464,7 +464,7 @@ Add a section to `templates/home/AGENTS.md`:
 ```md
 ## Compact slash commands
 
-If the user sends `/agent <agent>`, `/model <model-id|auto>`, `/mode <mode-id>`, `/permission <alwaysAsk|alwaysAllow|alwaysDeny>`, or `/profile`, Humming handles that message in the bridge and does not forward it to the Agent. Do not reinterpret those slash commands yourself.
+If the user sends `/agent <agent>`, `/model <model-id|auto>`, `/mode <mode-id>`, `/permission <alwaysAsk|alwaysAllow|alwaysDeny>`, or `/profile`, Humming handles that message in the gateway and does not forward it to the Agent. Do not reinterpret those slash commands yourself.
 
 `/model auto` means clearing the explicit model override so the Agent uses its own default/automatic model. It is not a literal ACP model id.
 ```
@@ -493,7 +493,7 @@ humming restart
 humming status
 ```
 
-Expected: bridge restarts and reports running.
+Expected: gateway restarts and reports running.
 
 - [ ] **Step 6: Commit final docs/fixes**
 
@@ -505,6 +505,6 @@ git push
 
 ## Self-review
 
-- Spec coverage: parser, bridge-native Agent switch, model auto clear, shared command/control UX, failure notices, in-flight queueing, `/profile`, docs, and verification are covered.
+- Spec coverage: parser, gateway-native Agent switch, model auto clear, shared command/control UX, failure notices, in-flight queueing, `/profile`, docs, and verification are covered.
 - Placeholder scan: no TBD/TODO placeholders are present; all tasks have exact files, commands, and expected outcomes.
-- Type consistency: `SessionControlPatch` is introduced before use in runtime/control/bridge tasks; slash commands call existing bridge control operations for sharing.
+- Type consistency: `SessionControlPatch` is introduced before use in runtime/control/gateway tasks; slash commands call existing gateway control operations for sharing.

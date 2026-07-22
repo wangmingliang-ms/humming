@@ -1,5 +1,5 @@
 /**
- * Prompt hydrator — the effectful bridge-layer counterpart of the pure
+ * Prompt hydrator — the effectful gateway-layer counterpart of the pure
  * interpreter. Turns interpreter {@link PromptSegment}s into ACP
  * {@link acp.ContentBlock}s, downloading referenced images/resources along the
  * way.

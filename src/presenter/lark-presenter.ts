@@ -100,9 +100,9 @@ export const NOTICE_BODY_BYTE_LIMIT = 1_500;
 export const COMMAND_RESULT_BODY_BYTE_LIMIT = CARD_MARKDOWN_ROTATION_BYTE_LIMIT;
 const COMMAND_RESULT_MARKDOWN_ELEMENT_BYTE_LIMIT = 3_000;
 const NOTICE_TRUNCATION_SUFFIX =
-  "\n\n…\n\n_内容过长，已截断；完整细节请查看 bridge.log 或本地日志。_";
+  "\n\n…\n\n_内容过长，已截断；完整细节请查看 gateway.log 或本地日志。_";
 const COMMAND_RESULT_TRUNCATION_SUFFIX =
-  "\n\n…\n\n_结果内容超过限制，已截断；完整细节请查看 bridge.log 或本地日志。_";
+  "\n\n…\n\n_结果内容超过限制，已截断；完整细节请查看 gateway.log 或本地日志。_";
 
 function buildV2Card(
   headerContent: string | null,

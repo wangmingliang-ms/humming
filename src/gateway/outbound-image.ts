@@ -4,7 +4,7 @@
  * Agents emit images in three forms: ACP `image` content blocks (handled at the
  * session layer), and two markdown-embedded forms — local files (`![](file://…)`
  * or a bare path) and remote URLs (`![](https://…)`). Feishu renders images only
- * as uploaded `image_key`s, so the bridge pulls image references *out* of the
+ * as uploaded `image_key`s, so the gateway pulls image references *out* of the
  * agent's text and sends them as standalone `image` messages.
  *
  * This module walks the `marked` inline token tree to find image references and

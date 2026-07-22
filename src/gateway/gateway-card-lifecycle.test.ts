@@ -5,7 +5,7 @@ import type { LarkPresenter } from "../presenter/presenter.js";
 import type { SessionStore } from "../session-store/session-store.js";
 import type { LifecycleTransaction } from "../../bin/lifecycle-coordinator.js";
 import type { DrainResult } from "./chat-runtime.js";
-import { LarkBridge } from "./bridge.js";
+import { LarkGateway } from "./gateway.js";
 
 const logger: LarkLogger = {
   debug: () => {},
@@ -15,8 +15,8 @@ const logger: LarkLogger = {
   child: () => logger,
 };
 
-function makeBridge(presenter: LarkPresenter = {} as LarkPresenter): LarkBridge {
-  return new LarkBridge({
+function makeGateway(presenter: LarkPresenter = {} as LarkPresenter): LarkGateway {
+  return new LarkGateway({
     lark: { appId: "test", appSecret: "test" },
     agent: {
       resolver: () => ({ command: "test", args: [], label: "test" }),
@@ -28,8 +28,8 @@ function makeBridge(presenter: LarkPresenter = {} as LarkPresenter): LarkBridge 
   });
 }
 
-function dispatchCardAction(bridge: LarkBridge, value: object): void {
-  const testable = bridge as unknown as {
+function dispatchCardAction(gateway: LarkGateway, value: object): void {
+  const testable = gateway as unknown as {
     handleCardAction(event: {
       readonly action: { readonly value: object };
       readonly messageId: string;
@@ -38,12 +38,12 @@ function dispatchCardAction(bridge: LarkBridge, value: object): void {
   testable.handleCardAction({ action: { value }, messageId: "message" });
 }
 
-describe("LarkBridge shutdown", () => {
-  it("closes the Lark event stream when the bridge stops", async () => {
+describe("LarkGateway shutdown", () => {
+  it("closes the Lark event stream when the gateway stops", async () => {
     const closeWs = vi.fn();
     const closeSessionStore = vi.fn(async () => {});
     const closeBindingStore = vi.fn(async () => {});
-    const bridge = new LarkBridge({
+    const gateway = new LarkGateway({
       lark: { appId: "test", appSecret: "test" },
       agent: { resolver: () => ({ command: "test", args: [], label: "test" }) },
       bindingStore: { close: closeBindingStore } as unknown as BindingStore,
@@ -51,20 +51,20 @@ describe("LarkBridge shutdown", () => {
       presenter: {} as LarkPresenter,
       logger,
     });
-    const testable = bridge as unknown as {
+    const testable = gateway as unknown as {
       started: boolean;
       ws: { close(): void } | null;
     };
     testable.started = true;
     testable.ws = { close: closeWs };
 
-    await bridge.stop();
+    await gateway.stop();
 
     expect(closeWs).toHaveBeenCalledOnce();
   });
 });
 
-describe("LarkBridge prompt ingress ordering", () => {
+describe("LarkGateway prompt ingress ordering", () => {
   it("quiesces ingress synchronously and waits for every runtime before lifecycle notice", async () => {
     const notices: Array<{ title: string; body: string }> = [];
     const presenter = {
@@ -75,7 +75,7 @@ describe("LarkBridge prompt ingress ordering", () => {
         },
       ),
     } as unknown as LarkPresenter;
-    const bridge = makeBridge(presenter);
+    const gateway = makeGateway(presenter);
     const events: string[] = [];
     let releaseFirst!: () => void;
     let releaseSecond!: () => void;
@@ -117,7 +117,7 @@ describe("LarkBridge prompt ingress ordering", () => {
       deadlines: { readyToExitAt: 1, oldPidExitAt: 2, restartReadyAt: 3 },
       statePath: "/tmp/lifecycle.json",
     } satisfies LifecycleTransaction;
-    const testable = bridge as unknown as {
+    const testable = gateway as unknown as {
       chats: Map<string, typeof first | typeof second>;
       beginLifecycle(transaction: LifecycleTransaction): Promise<unknown>;
       enqueueWithContextSerial(
@@ -179,7 +179,7 @@ describe("LarkBridge prompt ingress ordering", () => {
       sessionStore: { close: vi.fn(async () => {}) },
       bindingStore: { close: vi.fn(async () => {}) },
     });
-    await bridge.stop();
+    await gateway.stop();
     expect(shutdownAllRuntimes).not.toHaveBeenCalled();
     expect(first.drain).toHaveBeenCalledOnce();
     expect(second.drain).toHaveBeenCalledOnce();
@@ -187,13 +187,13 @@ describe("LarkBridge prompt ingress ordering", () => {
   });
 
   it("serializes admission per topic while allowing hydration to finish out of order", async () => {
-    const bridge = makeBridge();
+    const gateway = makeGateway();
     let releaseB!: () => void;
     const bHydration = new Promise<void>((resolve) => {
       releaseB = resolve;
     });
     const calls: string[] = [];
-    const testable = bridge as unknown as {
+    const testable = gateway as unknown as {
       enqueueWithContext(
         event: unknown,
         chatId: string,
@@ -225,9 +225,9 @@ describe("LarkBridge prompt ingress ordering", () => {
   });
 
   it("continues the same topic after an admission failure and releases the chain", async () => {
-    const bridge = makeBridge();
+    const gateway = makeGateway();
     const calls: string[] = [];
-    const testable = bridge as unknown as {
+    const testable = gateway as unknown as {
       enqueueWithContext(
         event: unknown,
         chatId: string,
@@ -256,38 +256,38 @@ describe("LarkBridge prompt ingress ordering", () => {
   });
 });
 
-describe("LarkBridge Cancel card compatibility", () => {
+describe("LarkGateway Cancel card compatibility", () => {
   it("rejects a versioned Cancel action before runtime lookup", () => {
-    const bridge = makeBridge();
+    const gateway = makeGateway();
     const get = vi.fn();
-    (bridge as unknown as { chats: { get: typeof get } }).chats = { get };
+    (gateway as unknown as { chats: { get: typeof get } }).chats = { get };
 
-    dispatchCardAction(bridge, { v: 2, cancel: true, c: "chat", th: "topic" });
+    dispatchCardAction(gateway, { v: 2, cancel: true, c: "chat", th: "topic" });
 
     expect(get).not.toHaveBeenCalled();
   });
 
   it("makes unversioned legacy Cancel actions inert", () => {
-    const bridge = makeBridge();
+    const gateway = makeGateway();
     const cancel = vi.fn(async () => {});
     const get = vi.fn(() => ({ cancel }));
-    (bridge as unknown as { chats: { get: typeof get } }).chats = { get };
+    (gateway as unknown as { chats: { get: typeof get } }).chats = { get };
 
-    dispatchCardAction(bridge, { cancel: true, c: "chat", th: "topic" });
+    dispatchCardAction(gateway, { cancel: true, c: "chat", th: "topic" });
 
     expect(get).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
   });
 });
 
-describe("LarkBridge semantic card actions", () => {
+describe("LarkGateway semantic card actions", () => {
   it("routes only the exact v2 Cancel schema to runtime token authority", () => {
-    const bridge = makeBridge();
+    const gateway = makeGateway();
     const consumeCancelAction = vi.fn(() => "accepted" as const);
     const get = vi.fn(() => ({ consumeCancelAction }));
-    (bridge as unknown as { chats: { get: typeof get } }).chats = { get };
+    (gateway as unknown as { chats: { get: typeof get } }).chats = { get };
 
-    dispatchCardAction(bridge, {
+    dispatchCardAction(gateway, {
       v: 2,
       c: "chat",
       th: "topic",
@@ -307,18 +307,18 @@ describe("LarkBridge semantic card actions", () => {
       { v: 2, c: "chat", cancel: true },
       { v: 2, c: "chat", cancel: true, p: "prompt", s: "segment", a: "action", x: 1 },
     ]) {
-      dispatchCardAction(bridge, invalid);
+      dispatchCardAction(gateway, invalid);
     }
     expect(get).toHaveBeenCalledTimes(1);
   });
 
   it("routes only the exact v2 permission schema to runtime token authority", () => {
-    const bridge = makeBridge();
+    const gateway = makeGateway();
     const consumePermissionAction = vi.fn(() => "accepted" as const);
     const get = vi.fn(() => ({ consumePermissionAction }));
-    (bridge as unknown as { chats: { get: typeof get } }).chats = { get };
+    (gateway as unknown as { chats: { get: typeof get } }).chats = { get };
 
-    dispatchCardAction(bridge, {
+    dispatchCardAction(gateway, {
       v: 2,
       c: "chat",
       p: "prompt",
@@ -338,20 +338,20 @@ describe("LarkBridge semantic card actions", () => {
       { v: 2, c: "chat", r: "request", o: "option" },
       { v: 2, c: "chat", p: "prompt", q: "permission", r: "request", o: "option", n: "old" },
     ]) {
-      dispatchCardAction(bridge, invalid);
+      dispatchCardAction(gateway, invalid);
     }
     expect(get).toHaveBeenCalledTimes(1);
   });
 
   it("wires production acknowledgement removal as best effort", async () => {
-    const bridge = makeBridge();
+    const gateway = makeGateway();
     const removeMessageReaction = vi.fn(async () => {});
-    (bridge as unknown as { http: { removeMessageReaction: typeof removeMessageReaction } }).http =
+    (gateway as unknown as { http: { removeMessageReaction: typeof removeMessageReaction } }).http =
       {
         removeMessageReaction,
       };
     const acknowledgement = (
-      bridge as unknown as {
+      gateway as unknown as {
         acknowledgement: {
           remove(messageId: string, reactionId: string): Promise<boolean>;
         };

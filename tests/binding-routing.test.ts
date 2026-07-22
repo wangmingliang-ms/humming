@@ -6,7 +6,7 @@
  * notice cards and the real SettingsBindingStore / FileSessionStore persist to a
  * temp dir.
  *
- * The bridge's inbound entry points (handleMessage / routeMessage) are private
+ * The gateway's inbound entry points (handleMessage / routeMessage) are private
  * and driven by the Lark WebSocket. We reach the command + routing layer
  * through a narrow typed view of those private methods — acceptable in a test
  * (CLAUDE.md §4 allows a documented cast here) and still observes results only
@@ -17,7 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  LarkBridge,
+  LarkGateway,
   FileSessionStore,
   SettingsBindingStore,
   type LarkPresenter,
@@ -30,7 +30,7 @@ import {
   type SlashCommandInvocation,
 } from "../src/interpreter/commands.js";
 
-/** Records every notice card the bridge tries to render. */
+/** Records every notice card the gateway tries to render. */
 class RecordingPresenter implements LarkPresenter {
   readonly notices: NoticeCardSpec[] = [];
   readonly commandResults: NoticeCardSpec[] = [];
@@ -66,7 +66,7 @@ class RecordingPresenter implements LarkPresenter {
 }
 
 /** Minimal view of the private methods this test drives. */
-interface BridgeInternals {
+interface GatewayInternals {
   handleCommand(
     command: SlashCommandInvocation,
     chatId: string,
@@ -76,19 +76,19 @@ interface BridgeInternals {
   resolveBinding(chatId: string): Promise<{ cwd: string; label: string; explicit: boolean } | null>;
 }
 
-function asInternals(bridge: LarkBridge): BridgeInternals {
-  return bridge as unknown as BridgeInternals;
+function asInternals(gateway: LarkGateway): GatewayInternals {
+  return gateway as unknown as GatewayInternals;
 }
 
 async function dispatchCommand(
-  bridge: LarkBridge,
+  gateway: LarkGateway,
   input: string,
   chatId: string,
   messageId: string,
 ): Promise<void> {
   const invocation = slashCommandController.resolve(input);
   if (invocation === null) throw new Error(`expected slash command: ${input}`);
-  await asInternals(bridge).handleCommand(invocation, chatId, null, messageId);
+  await asInternals(gateway).handleCommand(invocation, chatId, null, messageId);
 }
 
 const resolver: AgentResolver = (selection: string): ResolvedAgentInvocation => {
@@ -110,13 +110,13 @@ let repoB: string;
 let presenter: RecordingPresenter;
 let bindingStore: SettingsBindingStore;
 let sessionStore: FileSessionStore;
-let bridge: LarkBridge;
+let gateway: LarkGateway;
 
-function makeBridge(defaults?: {
+function makeGateway(defaults?: {
   defaultAgent?: ResolvedAgentInvocation;
   defaultCwd?: string;
-}): LarkBridge {
-  return new LarkBridge({
+}): LarkGateway {
+  return new LarkGateway({
     lark: { appId: "cli_test", appSecret: "secret_test" },
     agent: {
       resolver,
@@ -154,13 +154,13 @@ afterEach(async () => {
 
 describe("per-chat repo routing (integration)", () => {
   it("binds two chats to two different repos, isolated", async () => {
-    bridge = makeBridge({
+    gateway = makeGateway({
       defaultAgent: { command: "npx", args: ["-y", "claude-code-acp"], label: "claude" },
     });
-    const b = asInternals(bridge);
+    const b = asInternals(gateway);
 
-    await dispatchCommand(bridge, `/bind ${repoA}`, "oc_A", "om_1");
-    await dispatchCommand(bridge, `/bind ${repoB}`, "oc_B", "om_2");
+    await dispatchCommand(gateway, `/bind ${repoA}`, "oc_A", "om_1");
+    await dispatchCommand(gateway, `/bind ${repoB}`, "oc_B", "om_2");
 
     expect(await bindingStore.get("oc_A")).toMatchObject({ cwd: repoA });
     expect(await bindingStore.get("oc_B")).toMatchObject({ cwd: repoB });
@@ -184,9 +184,9 @@ describe("per-chat repo routing (integration)", () => {
     expect(bindNotices[0]?.body).not.toContain("Agent：");
   });
 
-  it("persists bindings across a bridge/process restart", async () => {
-    bridge = makeBridge();
-    await dispatchCommand(bridge, `/bind ${repoA}`, "oc_A", "om_1");
+  it("persists bindings across a gateway/process restart", async () => {
+    gateway = makeGateway();
+    await dispatchCommand(gateway, `/bind ${repoA}`, "oc_A", "om_1");
     await bindingStore.close();
 
     const store2 = new SettingsBindingStore(settingsPath);
@@ -198,48 +198,48 @@ describe("per-chat repo routing (integration)", () => {
   });
 
   it("rejects /bind to a non-existent directory (no binding written)", async () => {
-    bridge = makeBridge();
-    await dispatchCommand(bridge, `/bind ${path.join(repoA, "does-not-exist")}`, "oc_A", "om_1");
+    gateway = makeGateway();
+    await dispatchCommand(gateway, `/bind ${path.join(repoA, "does-not-exist")}`, "oc_A", "om_1");
     expect(await bindingStore.get("oc_A")).toBeNull();
     expect(presenter.notices.some((n) => n.title === "⚠️ 绑定失败")).toBe(true);
   });
 
   it("rejects /bind agent arguments because Agent belongs to session profile", async () => {
-    bridge = makeBridge();
-    await dispatchCommand(bridge, `/bind ${repoA} codex`, "oc_A", "om_1");
+    gateway = makeGateway();
+    await dispatchCommand(gateway, `/bind ${repoA} codex`, "oc_A", "om_1");
     expect(await bindingStore.get("oc_A")).toBeNull();
     const notice = presenter.notices.at(-1);
     expect(notice).toMatchObject({ title: "⚠️ 绑定失败", template: "red" });
     expect(notice?.body).toContain("/bind 现在只绑定 repo");
   });
 
-  it("unbound chat with no default resolves to null (bridge asks for /bind)", async () => {
-    bridge = makeBridge();
-    expect(await asInternals(bridge).resolveBinding("oc_new")).toBeNull();
+  it("unbound chat with no default resolves to null (gateway asks for /bind)", async () => {
+    gateway = makeGateway();
+    expect(await asInternals(gateway).resolveBinding("oc_new")).toBeNull();
   });
 
   it("falls back to the configured default when a chat has no explicit bind", async () => {
-    bridge = makeBridge({
+    gateway = makeGateway({
       defaultAgent: { command: "npx", args: ["-y", "claude-code-acp"], label: "claude" },
       defaultCwd: repoA,
     });
-    const resolved = await asInternals(bridge).resolveBinding("oc_unbound");
+    const resolved = await asInternals(gateway).resolveBinding("oc_unbound");
     expect(resolved).toMatchObject({ cwd: repoA, explicit: false, label: "claude" });
   });
 
   it("/unbind removes the binding", async () => {
-    bridge = makeBridge();
-    await dispatchCommand(bridge, `/bind ${repoA}`, "oc_A", "om_1");
+    gateway = makeGateway();
+    await dispatchCommand(gateway, `/bind ${repoA}`, "oc_A", "om_1");
     expect(await bindingStore.get("oc_A")).not.toBeNull();
 
-    await dispatchCommand(bridge, "/unbind", "oc_A", "om_2");
+    await dispatchCommand(gateway, "/unbind", "oc_A", "om_2");
     expect(await bindingStore.get("oc_A")).toBeNull();
   });
 
   it("rebinding a chat overwrites only its repo", async () => {
-    bridge = makeBridge();
-    await dispatchCommand(bridge, `/bind ${repoA}`, "oc_A", "om_1");
-    await dispatchCommand(bridge, `/bind ${repoB}`, "oc_A", "om_2");
+    gateway = makeGateway();
+    await dispatchCommand(gateway, `/bind ${repoA}`, "oc_A", "om_1");
+    await dispatchCommand(gateway, `/bind ${repoB}`, "oc_A", "om_2");
 
     expect(await bindingStore.get("oc_A")).toMatchObject({ cwd: repoB });
     expect((await bindingStore.list()).length).toBe(1);

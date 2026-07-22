@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * `humming-mock` — minimal ACP agent that always returns the same scripted
- * turn. Useful for end-to-end testing the Lark <-> ACP bridge UI without
+ * turn. Useful for end-to-end testing the Lark <-> ACP gateway UI without
  * spending real model tokens.
  *
- * The scripted turn covers every surface the bridge is expected to render:
+ * The scripted turn covers every surface the gateway is expected to render:
  *
  *   1. an `agent_thought_chunk` (思考) so the presenter exercises the
  *      thought timeline branch.

@@ -2,7 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 
 /**
  * Persistent mapping from a `(chatId, threadId)` pair → ACP session(s), used
- * so the bridge can resume the agent's conversation across process restarts.
+ * so the gateway can resume the agent's conversation across process restarts.
  *
  * A chat's Feishu "topics" (话题) map to distinct sessions: each topic thread
  * carries its own {@link SessionRecord.threadId}. Messages sent outside any
@@ -11,7 +11,7 @@ import type * as acp from "@agentclientprotocol/sdk";
  *
  * The library does **not** ship a default — callers must construct a
  * {@link FileSessionStore} or their own implementation, and pass it to
- * `LarkBridge`.
+ * `LarkGateway`.
  */
 
 export interface SessionRecord {
@@ -41,7 +41,7 @@ export interface SessionRecord {
   controls?: SessionControls;
   /**
    * The single canonical not-yet-applied desired profile change for this
-   * chat/thread (see docs/cli-command-model-SPEC.md §9.3). The Bridge is its
+   * chat/thread (see docs/cli-command-model-SPEC.md §9.3). The Gateway is its
    * sole semantic owner: it merges later `configure`/`send` requests into
    * this field and validates the complete candidate before replacing it.
    */
@@ -99,7 +99,7 @@ export interface SessionControls {
   /** ACP `session/set_mode` payload field. */
   modeId?: string;
   /** humming client-side permission policy, not an ACP-native field. */
-  bridgePermissionMode?: PermissionMode;
+  gatewayPermissionMode?: PermissionMode;
   /** ACP `session/set_config_option` values, keyed by configId. */
   config?: Readonly<Record<string, SessionConfigControlValue>>;
 }
@@ -137,8 +137,8 @@ export interface SessionCapabilitiesSnapshot {
   readonly models?: HummingSessionModelState | null;
   readonly modes?: acp.SessionModeState | null;
   readonly configOptions?: readonly acp.SessionConfigOption[] | null;
-  readonly bridgePermissionModes: readonly PermissionMode[];
-  readonly bridgePermissionMode: PermissionMode;
+  readonly gatewayPermissionModes: readonly PermissionMode[];
+  readonly gatewayPermissionMode: PermissionMode;
 }
 
 export interface SessionControlTarget {
@@ -196,7 +196,7 @@ export interface SessionStore {
 
   /**
    * Replace the single canonical Pending Configuration for one
-   * existing/current session. Callers (the Bridge) must have already merged
+   * existing/current session. Callers (the Gateway) must have already merged
    * and validated the complete candidate (spec §9.4) — this store performs
    * no merging or validation of its own.
    *

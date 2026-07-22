@@ -2,7 +2,7 @@
  * Slash command definitions and the sole command registry.
  *
  * Each registered command owns matching/parsing, execution, and help. The
- * interpreter and Bridge both delegate to this controller instead of keeping
+ * interpreter and Gateway both delegate to this controller instead of keeping
  * parallel parser and dispatch tables.
  */
 

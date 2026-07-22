@@ -103,7 +103,7 @@ export type ControlResponse =
   | { readonly ok: true; readonly result: unknown; readonly id?: string | number }
   | { readonly ok: false; readonly error: string; readonly id?: string | number };
 
-export interface BridgeControlHandlers {
+export interface GatewayControlHandlers {
   beginLifecycle(transaction: LifecycleTransaction): Promise<{
     readonly accepted: true;
     readonly transactionId: string;
@@ -145,25 +145,25 @@ export interface BridgeControlHandlers {
   ): Promise<unknown>;
 }
 
-export interface BridgeControlStatus {
+export interface GatewayControlStatus {
   readonly lark: LarkWsConnectionStatus | null;
 }
 
-export interface BridgeControlServerOptions {
+export interface GatewayControlServerOptions {
   readonly socketPath: string;
   readonly logger: LarkLogger;
-  readonly status?: () => BridgeControlStatus;
-  readonly handlers: BridgeControlHandlers;
+  readonly status?: () => GatewayControlStatus;
+  readonly handlers: GatewayControlHandlers;
 }
 
-export class BridgeControlServer {
+export class GatewayControlServer {
   private readonly socketPath: string;
   private readonly logger: LarkLogger;
-  private readonly status: (() => BridgeControlStatus) | undefined;
-  private readonly handlers: BridgeControlHandlers;
+  private readonly status: (() => GatewayControlStatus) | undefined;
+  private readonly handlers: GatewayControlHandlers;
   private server: net.Server | null = null;
 
-  constructor(opts: BridgeControlServerOptions) {
+  constructor(opts: GatewayControlServerOptions) {
     this.socketPath = opts.socketPath;
     this.logger = opts.logger.child({ name: "control" });
     this.status = opts.status;

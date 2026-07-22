@@ -12,17 +12,17 @@ re-running the whole install one-liner**. There is no `humming update`.
 
 We want a persistent, machine-managed checkout plus a first-class
 `humming update` that keeps the local `main` in lockstep with GitHub `main`,
-rebuilds, and (if the bridge is running) restarts it automatically.
+rebuilds, and (if the gateway is running) restarts it automatically.
 
 ## Goals
 
 - Persistent managed checkout at a well-known path under the humming home.
 - `humming update`: hard-sync local `main` → `origin/main`, reinstall deps,
-  rebuild, refresh the global command, and auto-restart a running bridge.
+  rebuild, refresh the global command, and auto-restart a running gateway.
 - After update, the global `humming` reflects the new build with no reinstall.
 - Auto-restart must preserve the **original launch arguments** (e.g.
   `--agent codex`), not silently drop them.
-- Clear, actionable errors; a failed update never takes down a running bridge.
+- Clear, actionable errors; a failed update never takes down a running gateway.
 
 ## Non-goals (YAGNI)
 
@@ -105,27 +105,27 @@ Flow:
    checkout dir.
 4. **Refresh global command:** `npm link` (idempotent — ensures the global bin
    still points at this checkout).
-5. **Auto-restart:** read `<home>/bridge.launch.json` (see below) to learn the
+5. **Auto-restart:** read `<home>/gateway.launch.json` (see below) to learn the
    original launch argv.
-   - If a bridge is running → `stopBridge` then `startBridge` with the exact
+   - If a gateway is running → `stopGateway` then `startGateway` with the exact
      persisted argv.
    - If not running → skip restart, print a hint (`humming start` to launch).
-   - If the launch file is missing/unreadable while a bridge **is** running →
+   - If the launch file is missing/unreadable while a gateway **is** running →
      hard error telling the user to `humming restart` manually, rather than
      guessing arguments.
 
-Ordering guarantees the running bridge is only touched **after** git+build
-succeed, so a failed update leaves the old bridge untouched.
+Ordering guarantees the running gateway is only touched **after** git+build
+succeed, so a failed update leaves the old gateway untouched.
 
-## Preserving launch arguments: `bridge.launch.json`
+## Preserving launch arguments: `gateway.launch.json`
 
 **Problem:** `runRestart` currently rebuilds `spawnArgv` from the argv the user
 typed _on the restart command_ (`rawArgv` + `subcommandIndex` →
 `rewriteSubcommand(... "proxy")`). An `update`-triggered restart has no such
 argv, so `--agent` and other flags would be lost.
 
-**Fix:** when `start` / `restart` launch the bridge, persist the resolved
-`spawnArgv` to `<home>/bridge.launch.json`:
+**Fix:** when `start` / `restart` launch the gateway, persist the resolved
+`spawnArgv` to `<home>/gateway.launch.json`:
 
 ```jsonc
 {
@@ -148,7 +148,7 @@ the same read path; the write already happens on every `start`/`restart`.
 | File                     | Change                                                                                                                                                                              |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bin/humming.ts`         | `command` union + dispatch add `"update"`; `runUpdate()`; help text; persist launch argv on start/restart; read it in restart/update.                                               |
-| `bin/process-control.ts` | `managedCheckoutDir(home)`, `bridgeLaunchPath(home)`, `persistLaunchArgv()`, `readLaunchArgv()`, and `runGit`/`runNpm` spawn helpers with a typed `ProcessControlError` on failure. |
+| `bin/process-control.ts` | `managedCheckoutDir(home)`, `gatewayLaunchPath(home)`, `persistLaunchArgv()`, `readLaunchArgv()`, and `runGit`/`runNpm` spawn helpers with a typed `ProcessControlError` on failure. |
 | `install.sh`             | Temp-dir → persistent `<home>/humming-project`; `npm link`.                                                                                                                         |
 | `install.ps1`            | Same, in PowerShell.                                                                                                                                                                |
 | `README.md`              | Document `humming update` and the managed checkout.                                                                                                                                 |
@@ -158,29 +158,29 @@ the same read path; the write already happens on every `start`/`restart`.
 - Missing managed checkout → `ProcessControlError`, non-zero exit, remedy
   (re-run install).
 - `git` / `npm` not on PATH, or any git/npm/build step exiting non-zero →
-  abort with the failing stage named; the running bridge is left alone.
+  abort with the failing stage named; the running gateway is left alone.
 - Errors are typed (`ProcessControlError` / `CliError`), never swallowed;
   original `cause` preserved when wrapping.
 - All failure branches happen **before** the stop/start, upholding "a failed
-  update never kills a running bridge".
+  update never kills a running gateway".
 
 ## Testing
 
 Unit (vitest, colocated `*.test.ts`), pure/injectable logic only:
 
 - argv parsing accepts `update` and rejects stray options.
-- `bridge.launch.json` round-trip: `persistLaunchArgv` → `readLaunchArgv`
+- `gateway.launch.json` round-trip: `persistLaunchArgv` → `readLaunchArgv`
   returns the same argv; malformed JSON → typed error, not a throw-through.
-- path helpers (`managedCheckoutDir`, `bridgeLaunchPath`) honor `--home` /
+- path helpers (`managedCheckoutDir`, `gatewayLaunchPath`) honor `--home` /
   `$HUMMING_HOME`.
-- "missing checkout" and "running bridge + missing launch file" decision
+- "missing checkout" and "running gateway + missing launch file" decision
   branches return the expected error (git/npm/process calls injected as fakes).
 
 Manual E2E (documented, not automated — touches the real global install):
 
-- From a managed-checkout machine: `humming update` with the bridge **stopped**
+- From a managed-checkout machine: `humming update` with the gateway **stopped**
   → syncs, rebuilds, prints the start hint.
-- With the bridge **running under `--agent <x>`** → `humming update` restarts it
+- With the gateway **running under `--agent <x>`** → `humming update` restarts it
   and `humming status` + `logs` confirm the same agent and `WebSocket connected`.
 - On a machine with no `<home>/humming-project` → `humming update` errors with
   the re-install remedy and exits non-zero.

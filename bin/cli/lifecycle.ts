@@ -1,7 +1,7 @@
 /**
  * Shared lifecycle handoff: arm an independent coordinator process before
- * asking the Bridge to quiesce for a `stop` or `restart`. Used by both the
- * `bridge stop`/`bridge restart` commands and the post-`update` restart.
+ * asking the Gateway to quiesce for a `stop` or `restart`. Used by both the
+ * `gateway stop`/`gateway restart` commands and the post-`update` restart.
  */
 import path from "node:path";
 import process from "node:process";
@@ -16,11 +16,11 @@ import {
   type LifecycleTransaction,
 } from "../lifecycle-coordinator.js";
 import {
-  bridgePidPath,
+  gatewayPidPath,
   isAlive,
   isUserSystemdAvailable,
   readPid,
-  bridgeUnitName,
+  gatewayUnitName,
   ProcessControlError,
 } from "../process-control.js";
 
@@ -33,15 +33,15 @@ export interface LaunchForHandoff {
   readonly workingDirectory: string;
 }
 
-/** Resolve the running bridge PID, checking the systemd unit first when available. */
-export function resolveRunningBridgePid(homeDir: string): number | null {
-  const pidPath = bridgePidPath(homeDir);
+/** Resolve the running gateway PID, checking the systemd unit first when available. */
+export function resolveRunningGatewayPid(homeDir: string): number | null {
+  const pidPath = gatewayPidPath(homeDir);
   const persisted = readPid(pidPath);
   if (persisted !== null && isAlive(persisted)) return persisted;
   if (process.platform === "linux" && isUserSystemdAvailable()) {
     const shown = spawnSync(
       "systemctl",
-      ["--user", "show", bridgeUnitName(homeDir), "-p", "MainPID", "--value"],
+      ["--user", "show", gatewayUnitName(homeDir), "-p", "MainPID", "--value"],
       { encoding: "utf-8" },
     );
     const pid = Number((shown.stdout ?? "").trim());
@@ -55,19 +55,19 @@ export function resolveRunningBridgePid(homeDir: string): number | null {
 }
 
 /**
- * Arm an independent lifecycle coordinator before asking the Bridge to
+ * Arm an independent lifecycle coordinator before asking the Gateway to
  * quiesce for `stop`/`restart`.
  *
- * @throws {ProcessControlError} when no bridge is currently running.
+ * @throws {ProcessControlError} when no gateway is currently running.
  */
 export function handoffLifecycle(
   homeDir: string,
   intent: LifecycleIntent,
   launch: LaunchForHandoff,
 ): LifecycleTransaction {
-  const oldPid = resolveRunningBridgePid(homeDir);
+  const oldPid = resolveRunningGatewayPid(homeDir);
   if (oldPid === null || !isAlive(oldPid)) {
-    throw new ProcessControlError("bridge is not running");
+    throw new ProcessControlError("gateway is not running");
   }
   const now = Date.now();
   const transaction = buildLifecycleTransaction({

@@ -151,7 +151,7 @@ async function fetchAgentCapabilities(
       cwd: target.cwd,
     },
     ...result.capabilities,
-    bridgePermissionModes: PERMISSION_MODES,
-    bridgePermissionMode: base.file.runtime.permissionMode ?? DEFAULT_PERMISSION_MODE,
+    gatewayPermissionModes: PERMISSION_MODES,
+    gatewayPermissionMode: base.file.runtime.permissionMode ?? DEFAULT_PERMISSION_MODE,
   };
 }

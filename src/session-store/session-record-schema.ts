@@ -7,7 +7,7 @@ import { z } from "zod";
 import { SESSION_PERMISSION_MODES } from "./session-controls.js";
 import type { PermissionMode, SessionControls, SessionRecord } from "./session-store.js";
 
-/** ACP permission policy — the canonical `bridgePermissionMode` validator. */
+/** ACP permission policy — the canonical `gatewayPermissionMode` validator. */
 export const permissionModeSchema: z.ZodType<PermissionMode> = z.enum(SESSION_PERMISSION_MODES);
 
 const sessionConfigControlValueSchema = z.union([
@@ -18,7 +18,7 @@ const sessionConfigControlValueSchema = z.union([
 const sessionControlsShape = {
   modelId: z.string().min(1).optional(),
   modeId: z.string().min(1).optional(),
-  bridgePermissionMode: permissionModeSchema.optional(),
+  gatewayPermissionMode: permissionModeSchema.optional(),
   config: z.record(z.string(), sessionConfigControlValueSchema).optional(),
 };
 

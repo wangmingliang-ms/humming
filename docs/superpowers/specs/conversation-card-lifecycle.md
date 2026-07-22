@@ -1002,7 +1002,7 @@ I31. Subagent panels count toward the final rendered Card budget and cannot rota
 | Response is cancelled                        | final tail cancelled Title + Metadata                                              | none                                                                  | none                                    |
 | Card Cancel on A while [B,C] waits           | A cancelled Title + Metadata                                                       | carrier C continues preparing/active                                  | C once active                           |
 | `/cancel` with unfinished work               | owner and waiting carrier tails become cancelled; merged tails stay merged         | no successor starts                                                   | none                                    |
-| Bridge restarts                              | final tail interrupted Title + Metadata                                            | optional non-actionable notice only                                   | none                                    |
+| Gateway restarts                              | final tail interrupted Title + Metadata                                            | optional non-actionable notice only                                   | none                                    |
 | Late callback arrives                        | no change                                                                          | no new Card                                                           | none                                    |
 
 ## 16. Change-control rule

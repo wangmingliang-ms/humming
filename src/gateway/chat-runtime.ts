@@ -136,11 +136,11 @@ export interface ChatRuntimeOptions {
    * topic sessions keep their own persisted controls.
    */
   inheritedControls?: SessionControls;
-  /** Persist inherited/default controls even when every field is bridge-side only. */
+  /** Persist inherited/default controls even when every field is gateway-side only. */
   persistInheritedControls?: boolean;
   /**
    * Start a new ACP session even if sessions.json has a saved session for this
-   * chat/thread. Used when a repo binding is unavailable and the bridge falls
+   * chat/thread. Used when a repo binding is unavailable and the gateway falls
    * back to the Humming home reception area — the old session belongs to the
    * missing repo and must not be resumed in the fallback cwd.
    */
@@ -172,7 +172,7 @@ interface ChatRuntimeState {
  * Per-chat ACP runtime: owns one agent subprocess, one `HummingClient`,
  * and a FIFO queue of pending Lark messages.
  *
- * Constructed lazily by {@link LarkBridge} on the first message for a
+ * Constructed lazily by {@link LarkGateway} on the first message for a
  * chat. Subsequent messages are enqueued via {@link enqueue}; the runtime
  * processes them serially.
  */
@@ -652,7 +652,7 @@ export class ChatRuntime {
     killAgent(state.agent.process);
   }
 
-  /** Gracefully quiesce this runtime for coordinated bridge Stop/Restart. */
+  /** Gracefully quiesce this runtime for coordinated gateway Stop/Restart. */
   drain(intent: LifecycleIntent): Promise<DrainResult> {
     if (this.lifecycleIntent !== null && this.lifecycleIntent !== intent) {
       return Promise.reject(new Error(`runtime is already draining for ${this.lifecycleIntent}`));
@@ -880,7 +880,7 @@ export class ChatRuntime {
     if (!state) throw new Error("session runtime is not started yet");
     return {
       ...state.sessionCapabilities,
-      bridgePermissionMode: state.client.getPermissionMode(),
+      gatewayPermissionMode: state.client.getPermissionMode(),
     };
   }
 
@@ -894,13 +894,13 @@ export class ChatRuntime {
     }
     const beforeSnapshot = cloneCapabilitiesSnapshot({
       ...state.sessionCapabilities,
-      bridgePermissionMode: state.client.getPermissionMode(),
+      gatewayPermissionMode: state.client.getPermissionMode(),
     });
     try {
       this.validateControls(state.sessionCapabilities, controls);
       const nextCapabilities = await this.applyControlsToState(state, controls);
-      if (controls.bridgePermissionMode !== undefined) {
-        state.client.setPermissionMode(controls.bridgePermissionMode);
+      if (controls.gatewayPermissionMode !== undefined) {
+        state.client.setPermissionMode(controls.gatewayPermissionMode);
       }
       state.sessionCapabilities = nextCapabilities;
       await this.persistSession(state.agent.sessionId, controls);
@@ -909,7 +909,7 @@ export class ChatRuntime {
         beforeSnapshot,
         {
           ...state.sessionCapabilities,
-          bridgePermissionMode: state.client.getPermissionMode(),
+          gatewayPermissionMode: state.client.getPermissionMode(),
         },
         controls,
       );
@@ -940,7 +940,7 @@ export class ChatRuntime {
       stateRef
         ? sessionMetaFromSnapshot({
             ...stateRef.sessionCapabilities,
-            bridgePermissionMode: stateRef.client.getPermissionMode(),
+            gatewayPermissionMode: stateRef.client.getPermissionMode(),
           })
         : {
             agent: displayAgent({
@@ -951,7 +951,7 @@ export class ChatRuntime {
             }),
             mode: "—",
             model: "—",
-            permission: bridgePermissionLabel(currentClient.getPermissionMode()),
+            permission: gatewayPermissionLabel(currentClient.getPermissionMode()),
           };
     const applySessionInfo = (update: acp.SessionInfoUpdate): void => {
       if (stateRef === null) return;
@@ -970,8 +970,8 @@ export class ChatRuntime {
     };
     const client = new HummingClient({
       permissionMode:
-        latest?.controls?.bridgePermissionMode ??
-        this.opts.inheritedControls?.bridgePermissionMode ??
+        latest?.controls?.gatewayPermissionMode ??
+        this.opts.inheritedControls?.gatewayPermissionMode ??
         this.opts.permissionMode,
     });
     currentClient = client;
@@ -1059,8 +1059,8 @@ export class ChatRuntime {
         }
         if (hasSessionControls(controls)) {
           state.sessionCapabilities = await this.applyControlsToState(state, controls);
-          if (controls.bridgePermissionMode !== undefined) {
-            state.client.setPermissionMode(controls.bridgePermissionMode);
+          if (controls.gatewayPermissionMode !== undefined) {
+            state.client.setPermissionMode(controls.gatewayPermissionMode);
           }
         }
       } else if (this.opts.inheritedControls) {
@@ -1071,8 +1071,8 @@ export class ChatRuntime {
         if (hasSessionControls(controls)) {
           try {
             state.sessionCapabilities = await this.applyControlsToState(state, controls);
-            if (controls.bridgePermissionMode !== undefined) {
-              state.client.setPermissionMode(controls.bridgePermissionMode);
+            if (controls.gatewayPermissionMode !== undefined) {
+              state.client.setPermissionMode(controls.gatewayPermissionMode);
             }
             await this.persistSession(agent.sessionId, controls);
           } catch (err) {
@@ -1118,8 +1118,8 @@ export class ChatRuntime {
         cwd: this.opts.agentCwd,
       },
       ...agent.sessionCapabilities,
-      bridgePermissionModes: PERMISSION_MODES,
-      bridgePermissionMode: client.getPermissionMode(),
+      gatewayPermissionModes: PERMISSION_MODES,
+      gatewayPermissionMode: client.getPermissionMode(),
     };
   }
 
@@ -1310,10 +1310,10 @@ export class ChatRuntime {
           );
         }
       }
-      if (controls.bridgePermissionMode !== undefined) {
+      if (controls.gatewayPermissionMode !== undefined) {
         next = {
           ...next,
-          bridgePermissionMode: controls.bridgePermissionMode,
+          gatewayPermissionMode: controls.gatewayPermissionMode,
         };
       }
       return next;
@@ -1392,9 +1392,9 @@ export class ChatRuntime {
   /**
    * Apply an already-validated control patch to the live ACP session,
    * bypassing the "not busy" guard used by {@link applyControls}. Used by
-   * the Bridge to apply a queued Pending Configuration exactly at the Turn
+   * the Gateway to apply a queued Pending Configuration exactly at the Turn
    * boundary — after the prompt has resolved but before `processing` resets.
-   * The Bridge owns notification of the outcome; this method does not send
+   * The Gateway owns notification of the outcome; this method does not send
    * any notice itself.
    *
    * @throws {ControlApplyError} when the patch is invalid for the live
@@ -1406,8 +1406,8 @@ export class ChatRuntime {
     if (!state) throw new Error("session runtime is not started yet");
     this.validateControls(state.sessionCapabilities, controls);
     const nextCapabilities = await this.applyControlsToState(state, controls);
-    if (controls.bridgePermissionMode !== undefined) {
-      state.client.setPermissionMode(controls.bridgePermissionMode);
+    if (controls.gatewayPermissionMode !== undefined) {
+      state.client.setPermissionMode(controls.gatewayPermissionMode);
     }
     state.sessionCapabilities = nextCapabilities;
     await this.persistSession(state.agent.sessionId, controls);
@@ -1423,7 +1423,7 @@ export class ChatRuntime {
     response.setProfile(
       sessionMetaFromSnapshot({
         ...state.sessionCapabilities,
-        bridgePermissionMode: state.client.getPermissionMode(),
+        gatewayPermissionMode: state.client.getPermissionMode(),
       }),
     );
     await response.activate();
@@ -1627,8 +1627,8 @@ export class ChatRuntime {
       }),
       mode: "—",
       model: "—",
-      permission: bridgePermissionLabel(
-        this.opts.inheritedControls?.bridgePermissionMode ?? this.opts.permissionMode,
+      permission: gatewayPermissionLabel(
+        this.opts.inheritedControls?.gatewayPermissionMode ?? this.opts.permissionMode,
       ),
     };
   }
@@ -1873,7 +1873,7 @@ function displayModel(snapshot: SessionCapabilitiesSnapshot): string {
 function displayPermission(snapshot: SessionCapabilitiesSnapshot): string {
   const explicit = permissionLikeConfigOptions(snapshot);
   if (explicit.length > 0) return explicit.join(" · ");
-  return bridgePermissionLabel(snapshot.bridgePermissionMode);
+  return gatewayPermissionLabel(snapshot.gatewayPermissionMode);
 }
 
 function permissionLikeConfigOptions(snapshot: SessionCapabilitiesSnapshot): string[] {
@@ -1928,7 +1928,7 @@ function findSelectOptionName(
   return undefined;
 }
 
-function bridgePermissionLabel(mode: SessionCapabilitiesSnapshot["bridgePermissionMode"]): string {
+function gatewayPermissionLabel(mode: SessionCapabilitiesSnapshot["gatewayPermissionMode"]): string {
   switch (mode) {
     case "alwaysAsk":
       return "Ask approvals";
@@ -1974,9 +1974,9 @@ function controlChangeLines(
   if (controls.clearModelId === true || controls.modelId !== undefined) {
     lines.push(`• Model：${displayModel(before)} → ${displayModel(after)}`);
   }
-  if (controls.bridgePermissionMode !== undefined) {
+  if (controls.gatewayPermissionMode !== undefined) {
     lines.push(
-      `• Permission：${bridgePermissionLabel(before.bridgePermissionMode)} → ${bridgePermissionLabel(after.bridgePermissionMode)}`,
+      `• Permission：${gatewayPermissionLabel(before.gatewayPermissionMode)} → ${gatewayPermissionLabel(after.gatewayPermissionMode)}`,
     );
   }
   for (const configId of Object.keys(controls.config ?? {})) {
@@ -2081,13 +2081,13 @@ export function validateSessionControls(
   }
 
   if (
-    controls.bridgePermissionMode !== undefined &&
-    !PERMISSION_MODES.includes(controls.bridgePermissionMode)
+    controls.gatewayPermissionMode !== undefined &&
+    !PERMISSION_MODES.includes(controls.gatewayPermissionMode)
   ) {
     throw new ControlApplyError(
       "Permission",
-      controls.bridgePermissionMode,
-      "bridgePermissionMode is not supported",
+      controls.gatewayPermissionMode,
+      "gatewayPermissionMode is not supported",
     );
   }
 }
@@ -2192,14 +2192,14 @@ function filterSessionControls(
   }
   if (Object.keys(validConfig).length > 0) out.config = validConfig;
 
-  if (controls.bridgePermissionMode !== undefined) {
-    if (PERMISSION_MODES.includes(controls.bridgePermissionMode)) {
-      out.bridgePermissionMode = controls.bridgePermissionMode;
+  if (controls.gatewayPermissionMode !== undefined) {
+    if (PERMISSION_MODES.includes(controls.gatewayPermissionMode)) {
+      out.gatewayPermissionMode = controls.gatewayPermissionMode;
     } else {
       ignored.push({
         kind: "Permission",
-        target: controls.bridgePermissionMode,
-        reason: "bridgePermissionMode is not supported",
+        target: controls.gatewayPermissionMode,
+        reason: "gatewayPermissionMode is not supported",
       });
     }
   }
@@ -2294,7 +2294,7 @@ const STDERR_NOTICE_CHAR_LIMIT = 1_500;
 
 function truncateUserVisibleText(text: string, limit = USER_VISIBLE_ERROR_LIMIT): string {
   if (text.length <= limit) return text;
-  return `${text.slice(0, Math.max(0, limit)).trimEnd()}…（已截断，完整错误见 bridge.log）`;
+  return `${text.slice(0, Math.max(0, limit)).trimEnd()}…（已截断，完整错误见 gateway.log）`;
 }
 
 function formatExitCode(code: number | null, signal: NodeJS.Signals | null | undefined): string {
@@ -2307,7 +2307,7 @@ function formatExitBody(reason: string, stderrTail: readonly string[]): string {
   const visibleTail = stderrTail.slice(-STDERR_NOTICE_LINE_LIMIT);
   const stderrText = truncateUserVisibleText(visibleTail.join("\n"), STDERR_NOTICE_CHAR_LIMIT);
   const omitted = Math.max(0, stderrTail.length - visibleTail.length);
-  const omittedLine = omitted > 0 ? `（已省略 ${omitted} 行；完整 stderr 见 bridge.log）\n` : "";
+  const omittedLine = omitted > 0 ? `（已省略 ${omitted} 行；完整 stderr 见 gateway.log）\n` : "";
   return `${safeReason}\n\nstderr (最后 ${visibleTail.length} 行):\n${omittedLine}${stderrText}`;
 }
 

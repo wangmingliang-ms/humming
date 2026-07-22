@@ -109,5 +109,5 @@ Add regression tests before production changes:
 
 - Determining the exact undocumented internal Feishu limit behind every `11310` response.
 - Deleting or reliably patching the abandoned card after Feishu has rejected it.
-- Persisting recovery state across a bridge process restart.
+- Persisting recovery state across a gateway process restart.
 - Adding an independent element-count budget in this change.

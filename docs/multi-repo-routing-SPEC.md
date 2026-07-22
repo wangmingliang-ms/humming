@@ -25,15 +25,15 @@ one project (Azure-IntelliJ / Copilot-IntelliJ / Copilot-Rewrite / Daily-Work).
 
 Confirmed by reading the source:
 
-- The router key is **already `chatId`**. `LarkBridge.acquireRuntime(chatId)`
-  (`src/bridge/bridge.ts:361`) creates one `ChatRuntime` per chat, each with its
+- The router key is **already `chatId`**. `LarkGateway.acquireRuntime(chatId)`
+  (`src/gateway/gateway.ts:361`) creates one `ChatRuntime` per chat, each with its
   own agent subprocess and ACP session. Groups are already isolated.
 - `ChatRuntime` **already accepts per-chat** `agentCommand` / `agentArgs` /
-  `agentCwd` / `agentEnv` (`src/bridge/chat-runtime.ts:20`). The bridge just
+  `agentCwd` / `agentEnv` (`src/gateway/chat-runtime.ts:20`). The gateway just
   happens to feed every chat the same global values from `this.agentOpts`
-  (`src/bridge/bridge.ts:178`, `:367-380`).
+  (`src/gateway/gateway.ts:178`, `:367-380`).
 - `SessionStore.save()` **already persists** `cwd` / `agentCommand` /
-  `agentArgs` per chatId (`src/bridge/chat-runtime.ts:302-313`).
+  `agentArgs` per chatId (`src/gateway/chat-runtime.ts:302-313`).
 
 So the only thing hardcoded "global" is the choice of which cwd/agent a chat
 gets. We make that a per-chat lookup. Core streaming / card / permission /
@@ -45,7 +45,7 @@ Support BOTH, dynamic preferred:
 
 ### 4a. Dynamic command (primary UX)
 
-In a group (after @mention), the user sends bridge-level commands:
+In a group (after @mention), the user sends gateway-level commands:
 
 - `/bind <path> [agent]` — bind this chat to `<path>` running `[agent]`
   (agent defaults to a configured default preset, e.g. `claude`).
@@ -75,7 +75,7 @@ Precedence: live `/bind` (persisted) overrides static config for that chat.
 ## 5. Behavior when a chat is UNBOUND
 
 First message in an unbound chat does **not** spawn against a wrong default.
-Instead the bridge replies with a notice card: "This chat isn't bound to a repo
+Instead the gateway replies with a notice card: "This chat isn't bound to a repo
 yet — send `/bind <path> [agent]`." (Optional escape hatch: a configured
 `defaultCwd` that, if set, auto-binds unbound chats to it.)
 
@@ -86,17 +86,17 @@ yet — send `/bind <path> [agent]`." (Optional escape hatch: a configured
 2. **Interpreter** — `src/interpreter/lark-interpreter.ts`: extend `LarkCommand`
    with `bind` / `unbind` / `where`; parse args in `detectCommand` (currently
    only exact-match `cancel` / `new`, line 217).
-3. **Bridge** — `src/bridge/bridge.ts`:
+3. **Gateway** — `src/gateway/gateway.ts`:
    - `handleCommand` (line 295): handle the 3 new commands.
    - `acquireRuntime` (line 361): resolve binding → per-chat `{cwd, command,
 args}`; if none, return null and let caller send the "please /bind" card.
-   - Bridge needs a **preset→command resolver** (today that mapping lives in the
+   - Gateway needs a **preset→command resolver** (today that mapping lives in the
      CLI layer `bin/agents.ts`). Pass the resolved registry (or a resolver fn)
-     into `LarkBridge` so it can map an agent id → `{command, args, env}` at
+     into `LarkGateway` so it can map an agent id → `{command, args, env}` at
      spawn time.
 4. **CLI** — `bin/humming.ts`: parse `bindings` / `defaultAgent` / `defaultCwd`
    from config; build the registry and hand it (plus binding store) to the
-   bridge. `--cwd` / `--agent` become the _default_ binding, not a global lock.
+   gateway. `--cwd` / `--agent` become the _default_ binding, not a global lock.
 
 `ChatRuntime` and `SessionStore`: **no change** (already per-key).
 
@@ -112,16 +112,16 @@ message event already carries `thread_id` — confirmed present in
 - Path must exist + be a directory; `~` expanded; relative resolved against a
   configured root (or require absolute). Reject with a clear card otherwise.
 - Rebind mid-session: graceful teardown, fresh session next message.
-- Group chats still require @mention (unchanged, `bridge.ts:262-278`).
+- Group chats still require @mention (unchanged, `gateway.ts:262-278`).
 - **Security note:** `/bind` lets a Lark user point the agent at any local dir.
-  Acceptable for a single-user personal bridge; optionally constrain to an
+  Acceptable for a single-user personal gateway; optionally constrain to an
   allowlist root via config. Flag for Miller's call.
 
 ## 9. Testing plan
 
 - Unit: binding parse/validate, preset resolver, routeKey.
 - Manual E2E: two Lark groups → `/bind` each to a different repo → confirm (a)
-  isolation, (b) correct cwd per group, (c) persistence across bridge restart,
+  isolation, (b) correct cwd per group, (c) persistence across gateway restart,
   (d) rebind works, (e) unbound chat gets the notice card.
 - Self-tested & working before handing back (per Miller's quality gate).
 

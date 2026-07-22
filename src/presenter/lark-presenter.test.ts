@@ -335,7 +335,7 @@ describe("LarkCardPresenter card summary", () => {
     expect(content.length).toBeLessThanOrEqual(NOTICE_BODY_BYTE_LIMIT);
     expect(contents).toHaveLength(1);
     expect(content).toContain("内容过长，已截断");
-    expect(content).toContain("bridge.log");
+    expect(content).toContain("gateway.log");
   });
 
   it("renders command result cards with the message-card 4096 character budget", async () => {

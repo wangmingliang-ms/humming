@@ -13,7 +13,7 @@ Humming already supports changing a topic's session profile through the Humming 
 
 That works when the current ACP Agent is healthy enough to receive a natural-language request, inspect Humming docs, and run the CLI. It fails in the exact recovery case we care about: the current Agent may be unavailable, unauthenticated, hung, or crashing. In that state, asking the Agent to switch itself is unreliable because the request must pass through the broken Agent first.
 
-We need a compact, bridge-native slash command path that lets the user manually change the topic profile from Feishu/Lark without involving the current ACP Agent.
+We need a compact, gateway-native slash command path that lets the user manually change the topic profile from Feishu/Lark without involving the current ACP Agent.
 
 ## 2. Product direction
 
@@ -81,7 +81,7 @@ type SessionControlPatch = {
   readonly modelId?: string;
   readonly clearModelId?: true;
   readonly modeId?: string;
-  readonly bridgePermissionMode?: PermissionMode;
+  readonly gatewayPermissionMode?: PermissionMode;
   readonly config?: Readonly<Record<string, SessionConfigControlValue>>;
 };
 ```
@@ -98,9 +98,9 @@ Persisted `SessionRecord.controls` should remain clean ACP-ish state and should 
 
 ### 4.4 `/permission <mode>`
 
-`/permission <alwaysAsk|alwaysAllow|alwaysDeny>` updates Humming's bridge-side permission policy for the current topic.
+`/permission <alwaysAsk|alwaysAllow|alwaysDeny>` updates Humming's gateway-side permission policy for the current topic.
 
-This is not ACP-native and should use the same `bridgePermissionMode` path as the existing Humming command/control flow.
+This is not ACP-native and should use the same `gatewayPermissionMode` path as the existing Humming command/control flow.
 
 ### 4.5 `/profile`
 
@@ -123,14 +123,14 @@ The slash-command path must not become a parallel implementation of Humming comm
 Current relevant paths:
 
 - Feishu command recognition already exists in `src/interpreter/lark-interpreter.ts`.
-- Bridge-native command dispatch already exists in `LarkBridge.handleCommand()`.
-- Humming CLI sends control requests to `BridgeControlServer`.
-- `LarkBridge.controlSetAgent()`, `controlSetControls()`, and `controlAgentProbeFailed()` already own the user-facing notice cards for set-agent, set-control, and probe failure.
+- Gateway-native command dispatch already exists in `LarkGateway.handleCommand()`.
+- Humming CLI sends control requests to `GatewayControlServer`.
+- `LarkGateway.controlSetAgent()`, `controlSetControls()`, and `controlAgentProbeFailed()` already own the user-facing notice cards for set-agent, set-control, and probe failure.
 - Existing notice builders include `buildSessionAgentSwitchedNotice()`, `buildStoredControlUpdatedNotice()`, `buildPendingControlQueuedNotice()`, and `buildAgentProbeFailedNotice()`.
 
 Refactor target:
 
-1. Extract session-profile operations and notice rendering into a shared bridge module, for example `src/bridge/session-profile-commands.ts` or `src/session-profile/session-profile-service.ts`.
+1. Extract session-profile operations and notice rendering into a shared gateway module, for example `src/gateway/session-profile-commands.ts` or `src/session-profile/session-profile-service.ts`.
 2. Keep adapters thin:
    - Humming CLI parses CLI flags and sends/constructs a shared request.
    - Feishu slash commands parse compact text and construct the same shared request.
@@ -138,7 +138,7 @@ Refactor target:
 3. All user-visible success/failure/queued cards come from the same builders.
 4. Tests should assert the slash path and control path return/render equivalent notices for the same operation.
 
-A lighter implementation is acceptable only if it still achieves real sharing: slash commands may call the same bridge control methods directly, provided those methods are the single source of truth for mutation and notice cards. If private-method coupling makes that awkward, refactor rather than duplicating behavior.
+A lighter implementation is acceptable only if it still achieves real sharing: slash commands may call the same gateway control methods directly, provided those methods are the single source of truth for mutation and notice cards. If private-method coupling makes that awkward, refactor rather than duplicating behavior.
 
 ## 6. Error handling and UX
 
@@ -181,9 +181,9 @@ Responsibilities:
 - Decide live vs stored vs pending behavior.
 - Build/send the canonical notice cards.
 
-### 7.3 Bridge dispatch
+### 7.3 Gateway dispatch
 
-`src/bridge/bridge.ts`:
+`src/gateway/gateway.ts`:
 
 - Add command branches in `handleCommand()`.
 - Pass `messageId` as the notice anchor so slash command responses reply to the command message.

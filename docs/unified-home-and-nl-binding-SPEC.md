@@ -94,7 +94,7 @@ works exactly as before.
   settings.json. Two viable shapes; chosen: **a `SettingsBindingStore` that
   reads/writes the `bindings` key of settings.json** (so bindings live in the
   one file, per Miller). It implements the existing `BindingStore` interface,
-  so `LarkBridge` is unchanged. `FileBindingStore` is kept for compatibility /
+  so `LarkGateway` is unchanged. `FileBindingStore` is kept for compatibility /
   tests but no longer wired by the CLI.
 
 #### 1.4 Logging
@@ -132,7 +132,7 @@ On startup, if `~/.humming/settings.json` does NOT exist:
 - Fresh start with no `~/.humming` → dir + settings.json created.
 - Existing install (our machine) → creds + the current binding migrate; the
   live bot keeps working with no re-`/bind`.
-- Real-run smoke: bridge boots reading `~/.humming/settings.json`, Feishu WS
+- Real-run smoke: gateway boots reading `~/.humming/settings.json`, Feishu WS
   connects, an existing chat still routes to its repo.
 
 ---

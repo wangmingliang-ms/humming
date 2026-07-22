@@ -22,8 +22,8 @@ export function mergeSessionControls(
   if (patch?.clearModelId === true) delete out.modelId;
   if (patch?.modelId !== undefined) out.modelId = patch.modelId;
   if (patch?.modeId !== undefined) out.modeId = patch.modeId;
-  if (patch?.bridgePermissionMode !== undefined) {
-    out.bridgePermissionMode = patch.bridgePermissionMode;
+  if (patch?.gatewayPermissionMode !== undefined) {
+    out.gatewayPermissionMode = patch.gatewayPermissionMode;
   }
   const config = mergeSessionConfig(existing?.config, patch?.config);
   if (config) out.config = config;
@@ -49,8 +49,8 @@ export function mergeSessionControlPatches(
     out.modelId = patch.modelId;
   }
   if (patch.modeId !== undefined) out.modeId = patch.modeId;
-  if (patch.bridgePermissionMode !== undefined) {
-    out.bridgePermissionMode = patch.bridgePermissionMode;
+  if (patch.gatewayPermissionMode !== undefined) {
+    out.gatewayPermissionMode = patch.gatewayPermissionMode;
   }
   const config = mergeSessionConfig(existing?.config, patch.config);
   if (config) out.config = config;
@@ -123,7 +123,7 @@ export function hasSessionControls(controls: SessionControlPatch | SessionContro
     ("clearModelId" in controls && controls.clearModelId === true) ||
     controls.modelId !== undefined ||
     controls.modeId !== undefined ||
-    controls.bridgePermissionMode !== undefined ||
+    controls.gatewayPermissionMode !== undefined ||
     Object.keys(controls.config ?? {}).length > 0
   );
 }
@@ -141,8 +141,8 @@ export function isSessionControlPatch(value: unknown): value is SessionControlPa
   const modeId = value["modeId"];
   if (modeId !== undefined && !isNonEmptyString(modeId)) return false;
 
-  const bridgePermissionMode = value["bridgePermissionMode"];
-  if (bridgePermissionMode !== undefined && !isSessionPermissionMode(bridgePermissionMode)) {
+  const gatewayPermissionMode = value["gatewayPermissionMode"];
+  if (gatewayPermissionMode !== undefined && !isSessionPermissionMode(gatewayPermissionMode)) {
     return false;
   }
 
@@ -153,7 +153,7 @@ export function isSessionControlPatch(value: unknown): value is SessionControlPa
     modelId !== undefined ||
     clearModelId !== undefined ||
     modeId !== undefined ||
-    bridgePermissionMode !== undefined ||
+    gatewayPermissionMode !== undefined ||
     config !== undefined
   );
 }

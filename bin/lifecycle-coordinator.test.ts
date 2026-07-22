@@ -75,7 +75,7 @@ describe("coordinator CLI entrypoint", () => {
 });
 
 describe("coordinator lifecycle execution", () => {
-  it("waits for Bridge readiness, old PID exit, starts restart, and waits for new readiness", async () => {
+  it("waits for Gateway readiness, old PID exit, starts restart, and waits for new readiness", async () => {
     const calls: string[] = [];
     const tx = transaction();
     await runLifecycleCoordinator(tx, {
@@ -89,7 +89,7 @@ describe("coordinator lifecycle execution", () => {
         return calls.filter((item) => item === `alive:${pid}`).length === 1;
       },
       delay: async () => {},
-      startBridge: async (received) => {
+      startGateway: async (received) => {
         calls.push(`start:${received.launch.spawnArgv.join(" ")}`);
       },
       isReady: async () => {
@@ -117,7 +117,7 @@ describe("coordinator lifecycle execution", () => {
     ]);
   });
 
-  it("does not start a bridge for Stop", async () => {
+  it("does not start a gateway for Stop", async () => {
     const complete: string[] = [];
     await runLifecycleCoordinator(transaction({ intent: "stop" }), {
       arm: async () => {},
@@ -128,7 +128,7 @@ describe("coordinator lifecycle execution", () => {
       }),
       isAlive: () => false,
       delay: async () => {},
-      startBridge: async () => {
+      startGateway: async () => {
         throw new Error("must not start");
       },
       isReady: async () => false,
@@ -151,7 +151,7 @@ describe("coordinator lifecycle execution", () => {
         },
         isAlive: () => true,
         delay: async () => {},
-        startBridge: async () => {},
+        startGateway: async () => {},
         isReady: async () => false,
         forceTerminate: async () => {},
         complete: async (result) => {
@@ -163,7 +163,7 @@ describe("coordinator lifecycle execution", () => {
     expect(complete).toEqual(["restartFailed"]);
   });
 
-  it("records restartFailed when the new Bridge cannot start", async () => {
+  it("records restartFailed when the new Gateway cannot start", async () => {
     const complete: string[] = [];
     await expect(
       runLifecycleCoordinator(transaction(), {
@@ -175,7 +175,7 @@ describe("coordinator lifecycle execution", () => {
         }),
         isAlive: () => false,
         delay: async () => {},
-        startBridge: async () => {
+        startGateway: async () => {
           throw new Error("spawn failed");
         },
         isReady: async () => false,

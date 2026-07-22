@@ -45,32 +45,32 @@ export type LifecycleDefaultProfile = {
 const LIFECYCLE_NOTICE_SPECS: Readonly<Record<LifecycleNoticeKind, LifecycleNoticeSpec>> = {
   started: {
     title: "✅ Humming 已启动",
-    body: "Bridge 进程已启动，可以继续使用。",
+    body: "Gateway 进程已启动，可以继续使用。",
     template: "green",
   },
   stopped: {
     title: "⏹️ Humming 已停止",
-    body: "Bridge 进程已停止，bot 当前不会响应消息。",
+    body: "Gateway 进程已停止，bot 当前不会响应消息。",
     template: "blue",
   },
   restarting: {
     title: "🔄 Humming 正在重启",
-    body: "Bridge 进程正在重启，稍后会恢复响应。",
+    body: "Gateway 进程正在重启，稍后会恢复响应。",
     template: "orange",
   },
   restarted: {
     title: "✅ Humming 已重启",
-    body: "Bridge 进程已重启完成，可以继续使用。",
+    body: "Gateway 进程已重启完成，可以继续使用。",
     template: "green",
   },
   restartFailed: {
     title: "❌ Humming 重启失败",
-    body: "Bridge 未能在截止时间内恢复。请检查 bridge.log 并从外部终端重新启动。",
+    body: "Gateway 未能在截止时间内恢复。请检查 gateway.log 并从外部终端重新启动。",
     template: "red",
   },
   crashed: {
     title: "⚠️ Humming 发生未捕获错误",
-    body: "Bridge 捕获到未处理异常/Promise rejection，已写入日志。进程将退出，期间 bot 暂时不会响应消息。",
+    body: "Gateway 捕获到未处理异常/Promise rejection，已写入日志。进程将退出，期间 bot 暂时不会响应消息。",
     template: "red",
   },
 };
@@ -141,7 +141,7 @@ export function buildLifecycleNoticeCard(
 
 /**
  * Best-effort lifecycle broadcast. Individual chat failures are logged and do
- * not reject the whole bridge startup/shutdown path.
+ * not reject the whole gateway startup/shutdown path.
  */
 export async function sendLifecycleNotice(
   opts: LifecycleNoticeOptions,

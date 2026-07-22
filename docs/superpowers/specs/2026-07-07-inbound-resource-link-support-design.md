@@ -126,7 +126,7 @@ The interpreter stays **pure** — it never downloads. `normalizeSegments` passe
 
 ### 4.2 Hydrator (effect) — new `resource-ref` branch
 
-`src/bridge/prompt-hydrator.ts` gains a branch that turns a `resource-ref` into
+`src/gateway/prompt-hydrator.ts` gains a branch that turns a `resource-ref` into
 a `resource_link` block:
 
 1. Compute the destination path via `inboundResourcePath(inboundDir, messageId, name)`
@@ -179,7 +179,7 @@ export interface HydrateDeps {
 ```
 
 `LarkHttpClient` implements both `ImageDownloader` and `ResourceDownloader`, so
-`bridge.ts` passes `this.http` for both.
+`gateway.ts` passes `this.http` for both.
 
 ### 4.3 Lark HTTP — `downloadMessageResourceToFile`
 
@@ -211,10 +211,10 @@ file, audio, and video (only images use `type: "image"`). Lark caps resources at
 The `content-type` header parsing (`split(";")[0].trim()`) is factored into a
 small shared helper reused by `downloadMessageImage`.
 
-### 4.4 Temp-file lifecycle — `src/bridge/inbound-store.ts`
+### 4.4 Temp-file lifecycle — `src/gateway/inbound-store.ts`
 
-A new small module `src/bridge/inbound-store.ts` owns every pure decision about
-where inbound resources live and when they expire, so the hydrator and bridge
+A new small module `src/gateway/inbound-store.ts` owns every pure decision about
+where inbound resources live and when they expire, so the hydrator and gateway
 depend on named helpers rather than ad-hoc path math:
 
 - `DEFAULT_INBOUND_DIR` — `path.join(os.homedir(), ".humming", "inbound")`.
@@ -228,12 +228,12 @@ depend on named helpers rather than ad-hoc path math:
 other `~/.humming/` state, namespaced by `messageId` so concurrent messages and
 identical filenames never collide, and cleanup is per-message granular.
 
-**Cleanup:** best-effort **age-based sweep** on bridge startup — delete
+**Cleanup:** best-effort **age-based sweep** on gateway startup — delete
 `~/.humming/inbound/*` entries whose mtime is older than 24 h. This is simple,
 bounded, and safe: a coding agent may open a linked file many turns after the
 message arrives, and 24 h comfortably outlives a live session, while preventing
 unbounded disk growth. `sweepInboundDir` takes an injected clock + fs surface so
-it is unit-testable, and is wired into bridge startup as a fire-and-forget effect
+it is unit-testable, and is wired into gateway startup as a fire-and-forget effect
 that logs but never blocks or throws.
 
 ### 4.5 Filename sanitization
@@ -252,7 +252,7 @@ Unit-tested in isolation (no disk).
 ```
 Lark file/audio/media event
   → interpretLarkMessage (pure)         → PromptSegment { kind:"resource-ref", ... }
-  → bridge.enqueueWithContext
+  → gateway.enqueueWithContext
   → hydratePrompt (effect)
       → resourceDownloader.downloadMessageResourceToFile → ~/.humming/inbound/<mid>/<name>
       → { type:"resource_link", uri:"file://…", name, description, mimeType?, size? }
@@ -287,8 +287,8 @@ directly.
 
 **Regression** — full `tsc --noEmit` + `vitest run` + `prettier --check` green,
 then `npm run build` and a manual E2E (send a file/voice/video in a bound chat,
-confirm the agent receives a `resource_link` and can open the temp file). Bridge
-restart is a manual step (the agent cannot restart the bridge it runs inside).
+confirm the agent receives a `resource_link` and can open the temp file). Gateway
+restart is a manual step (the agent cannot restart the gateway it runs inside).
 
 ## 7. Risks & mitigations
 
@@ -307,14 +307,14 @@ restart is a manual step (the agent cannot restart the bridge it runs inside).
   / `parseAudio` / `parseMedia` emit it; name/label helpers.
 - `src/interpreter/index.ts` — no change (re-exports `PromptSegment` already).
 - `src/interpreter/lark-interpreter.test.ts` — updated file/audio/media cases.
-- `src/bridge/prompt-hydrator.ts` — `ResourceDownloader`, `inboundDir`,
+- `src/gateway/prompt-hydrator.ts` — `ResourceDownloader`, `inboundDir`,
   `resource-ref` branch, `resourcePlaceholder`.
-- `src/bridge/prompt-hydrator.test.ts` — resource-ref tests.
+- `src/gateway/prompt-hydrator.test.ts` — resource-ref tests.
 - `src/lark/lark-http.ts` — `downloadMessageResourceToFile`, shared content-type
   helper.
-- `src/bridge/bridge.ts` — pass `resourceDownloader: this.http` into
+- `src/gateway/gateway.ts` — pass `resourceDownloader: this.http` into
   `hydratePrompt`; call `sweepInboundDir` at startup (fire-and-forget).
-- (new) `src/bridge/inbound-store.ts` — `DEFAULT_INBOUND_DIR`,
+- (new) `src/gateway/inbound-store.ts` — `DEFAULT_INBOUND_DIR`,
   `inboundResourcePath`, `safeAttachmentName`, `isExpired`, `sweepInboundDir`.
-- (new) `src/bridge/inbound-store.test.ts` — sanitizer, path builder, and sweep
+- (new) `src/gateway/inbound-store.test.ts` — sanitizer, path builder, and sweep
   predicate tests.

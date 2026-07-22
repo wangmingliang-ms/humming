@@ -3,7 +3,7 @@
 - 日期：2026-07-06
 - 状态：已实现；2026-07-06 补充 topic-level Agent switch 与 capabilities probe
 - 取代：Per-Agent `defaultControls` 设计
-- 涉及范围：`src/binding-store/*`、`src/session-store/*`、`src/bridge/bridge.ts`、`src/bridge/chat-runtime.ts`、`bin/humming.ts`、`src/interpreter/lark-interpreter.ts`、`templates/home/AGENTS.md` / `CLAUDE.md`
+- 涉及范围：`src/binding-store/*`、`src/session-store/*`、`src/gateway/gateway.ts`、`src/gateway/chat-runtime.ts`、`bin/humming.ts`、`src/interpreter/lark-interpreter.ts`、`templates/home/AGENTS.md` / `CLAUDE.md`
 
 ## 1. 背景与决策
 
@@ -32,7 +32,7 @@ Humming 的实际工作模型是：
 - Controls
   - `modelId`
   - `modeId`
-  - `bridgePermissionMode`
+  - `gatewayPermissionMode`
   - `config`
 
 不克隆对话历史、不克隆 agent 内部 session 上下文。
@@ -100,7 +100,7 @@ SessionRecord {
   controls?: {
     modelId?: string;
     modeId?: string;
-    bridgePermissionMode?: "alwaysAsk" | "alwaysAllow" | "alwaysDeny";
+    gatewayPermissionMode?: "alwaysAsk" | "alwaysAllow" | "alwaysDeny";
     config?: Record<string, SessionConfigControlValue>;
   };
 }
@@ -150,7 +150,7 @@ resume 当前 topic 自己的 session record
 使用 global default agent 创建新 session
 ```
 
-controls 为空；`bridgePermissionMode` 走 `runtime.permissionMode` fallback。
+controls 为空；`gatewayPermissionMode` 走 `runtime.permissionMode` fallback。
 
 ### 3.4 当前绑定 repo 不存在
 
@@ -355,7 +355,7 @@ export interface ChatBinding {
 - `/bind <repo>` → bind
 - `/bind <repo> <anything>` → 第一版建议报 usage/warning：`/bind` no longer accepts agent; Agent belongs to session profile.
 
-### 8.3 Bridge profile resolution
+### 8.3 Gateway profile resolution
 
 `resolveBinding(chatId)` 只解析 repo cwd，不解析 agent。
 
@@ -369,7 +369,7 @@ export interface ChatBinding {
 
 ### 8.4 SessionStore helper
 
-新增方法或 bridge 内部 helper：
+新增方法或 gateway 内部 helper：
 
 ```ts
 findRecentProfileByRepo(chatId, cwd, excludeThreadId): Promise<SessionRecord | null>
@@ -389,10 +389,10 @@ inheritedControls?: SessionControls
 
 - `latest.controls`：resume 分支，保持现状。
 - `inheritedControls`：new session 分支，filter/apply/persist，非法项 warning。
-- `bridgePermissionMode` 初始值：
+- `gatewayPermissionMode` 初始值：
   ```ts
-  latest?.controls?.bridgePermissionMode ??
-    inheritedControls?.bridgePermissionMode ??
+  latest?.controls?.gatewayPermissionMode ??
+    inheritedControls?.gatewayPermissionMode ??
     this.opts.permissionMode;
   ```
 

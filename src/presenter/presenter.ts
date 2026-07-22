@@ -83,7 +83,7 @@ export interface PermissionCardView {
 }
 
 /**
- * Surface the bridge uses to render itself to the user — every visible
+ * Surface the gateway uses to render itself to the user — every visible
  * artefact (replies, reactions, permission cards, unified timeline card)
  * goes through this interface.
  *
@@ -145,7 +145,7 @@ export interface LarkPresenter {
   /**
    * Reply with a destructive Agent-switch warning that requires explicit user
    * confirmation. Optional so non-Lark test/dummy presenters can omit the
-   * interactive path; the bridge falls back to a plain notice if absent.
+   * interactive path; the gateway falls back to a plain notice if absent.
    */
   replyAgentSwitchWarningCard?(
     replyToMessageId: string,

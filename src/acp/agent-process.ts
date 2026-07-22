@@ -22,7 +22,7 @@ export const ACP_CLIENT_CAPABILITIES = {
  * `claude` CLI refuses to launch nested inside another Claude Code session
  * (it aborts with "Claude Code cannot be launched inside another Claude Code
  * session"), which makes `session/new` fail with "Query closed before response
- * received". When the bridge itself is started from within a Claude Code
+ * received". When the gateway itself is started from within a Claude Code
  * session, these leak into every spawned agent — so strip them before spawn.
  *
  * `CLAUDECODE` is the exact flag the guard checks; the `CLAUDE_CODE_*` family is
@@ -160,7 +160,7 @@ class ListingClient implements acp.Client {
 /**
  * Thrown when an agent rejects session creation because it is not
  * authenticated (e.g. Codex without ChatGPT login / OPENAI_API_KEY). Carries
- * the agent label so the bridge can show the user an actionable message
+ * the agent label so the gateway can show the user an actionable message
  * instead of an opaque "failed to create session".
  */
 export class AgentAuthError extends Error {
@@ -178,7 +178,7 @@ export class AgentAuthError extends Error {
  * Thrown when the ACP connection to the agent closes while a request is still
  * pending. The SDK leaves such requests (notably `prompt()`) hanging forever
  * when the agent's stdio stream ends — it only aborts its close signal, never
- * rejecting the in-flight promise. The bridge races `connection.closed`
+ * rejecting the in-flight promise. The gateway races `connection.closed`
  * against `prompt()` and throws this so the normal prompt-error path can
  * finalise the card and notify the user instead of hanging indefinitely.
  */

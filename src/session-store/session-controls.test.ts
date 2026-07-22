@@ -99,7 +99,7 @@ describe("mergePendingSessionConfiguration — field-level merge (spec §9.4)", 
 
     expect(merged.targetAgent).toEqual(copilot);
     // The merge itself does not drop or revalidate accumulated controls —
-    // the caller (Bridge) must validate the complete candidate against the
+    // the caller (Gateway) must validate the complete candidate against the
     // new Desired Agent before persisting it (spec §9.4, §9.6).
     expect(merged.controls).toEqual({ modelId: "claude-only-model" });
   });

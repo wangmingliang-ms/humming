@@ -1,9 +1,9 @@
 /**
  * Lark message interpreter — translate a Lark message event into the pure
- * {@link PromptSegment}[] shape the bridge hydrates into an agent prompt.
+ * {@link PromptSegment}[] shape the gateway hydrates into an agent prompt.
  *
  * Images (standalone and post-embedded) become `image-ref` segments; files,
- * audio and video become `resource-ref` segments. The bridge's prompt hydrator
+ * audio and video become `resource-ref` segments. The gateway's prompt hydrator
  * downloads referenced bytes. This module stays pure — no bytes are downloaded
  * here.
  *
@@ -129,7 +129,7 @@ interface LocationPayload {
 
 /**
  * Interpreter → hydrator 的中间产物。纯解释器只识别结构、产出这些段，
- * **不下载字节**（下载是 bridge 层的 effect）。`image-ref` 只携带下载所
+ * **不下载字节**（下载是 gateway 层的 effect）。`image-ref` 只携带下载所
  * 需的最小信息（messageId + imageKey）。
  */
 export type PromptSegment =
@@ -157,19 +157,19 @@ export type PromptSegment =
  * commands (`bind` / `unbind` / `where`) let a single bot serve many repos:
  * they route this chat to a specific working directory + agent. `bind`
  * carries its parsed arguments; `bind-usage` is emitted when `/bind` is sent
- * without a path so the bridge can reply with usage help.
+ * without a path so the gateway can reply with usage help.
  *
  * The interpreter stays pure — it only turns text into this structure.
  * Filesystem validation, `~` expansion and agent-preset resolution are the
- * bridge's job (they are effects).
+ * gateway's job (they are effects).
  */
 /**
  * Outcome of interpreting a Lark inbound message.
  *
  * - `empty`: no actionable content (e.g. a stripped-to-nothing self-mention).
- * - `command`: a recognised slash-style command — bridge should act on it
+ * - `command`: a recognised slash-style command — gateway should act on it
  *   directly without sending anything to the agent.
- * - `prompt`: interpreter segments (text + image-ref) for the bridge to
+ * - `prompt`: interpreter segments (text + image-ref) for the gateway to
  *   hydrate and forward to the agent.
  */
 export type InterpretedMessage =
@@ -193,7 +193,7 @@ export interface InterpretOptions {
  *
  * The interpreter stays pure: it emits {@link PromptSegment}s, never
  * downloading bytes. Images (standalone and post-embedded) become `image-ref`
- * segments carrying `message_id` / `image_key`, which the bridge's hydrator
+ * segments carrying `message_id` / `image_key`, which the gateway's hydrator
  * downloads into ACP image blocks. Files, audio and video become
  * `resource-ref` segments; unsupported attachments (sticker, share, location,
  * …) stay descriptive text.

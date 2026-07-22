@@ -141,14 +141,14 @@ describe("maskCredentialId", () => {
 });
 
 describe("formatSetupSummary", () => {
-  it("mentions the new bridge start command", () => {
+  it("mentions the new gateway start command", () => {
     const text = formatSetupSummary({
       settingsPath: "/home/.humming/settings.json",
       appId: "cli_abcdefghijklmnop",
       appSecret: "s",
       domain: "feishu",
     });
-    expect(text).toContain("humming bridge start");
+    expect(text).toContain("humming gateway start");
   });
 });
 

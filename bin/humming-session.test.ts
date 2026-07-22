@@ -99,10 +99,10 @@ describe("session capabilities/models/modes/permissions", () => {
       );
     });
 
-    it(`\`session ${sub}\` fails when the bridge is unreachable`, async () => {
+    it(`\`session ${sub}\` fails when the gateway is unreachable`, async () => {
       await expect(
         parse(["session", sub, "--home", dir, "--chat-id", "oc_x"]),
-      ).rejects.toThrowError(/could not reach the bridge control socket/);
+      ).rejects.toThrowError(/could not reach the gateway control socket/);
     });
   }
 });
@@ -138,10 +138,10 @@ describe("session configure", () => {
     ).rejects.toMatchObject({ code: "commander.conflictingOption" });
   });
 
-  it("fails when the bridge is unreachable, once a profile field is present", async () => {
+  it("fails when the gateway is unreachable, once a profile field is present", async () => {
     await expect(
       parse(["session", "configure", "--home", dir, "--chat-id", "oc_x", "--mode", "agent"]),
-    ).rejects.toThrowError(/could not reach the bridge control socket/);
+    ).rejects.toThrowError(/could not reach the gateway control socket/);
   });
 
   it("requires --chat-id (or $HUMMING_CHAT_ID)", async () => {
@@ -153,7 +153,7 @@ describe("session configure", () => {
   it("--model auto is accepted as the explicit clear sentinel", async () => {
     await expect(
       parse(["session", "configure", "--home", dir, "--chat-id", "oc_x", "--model", "auto"]),
-    ).rejects.toThrowError(/could not reach the bridge control socket/);
+    ).rejects.toThrowError(/could not reach the gateway control socket/);
   });
 
   it("rejects a malformed --config assignment", async () => {
@@ -202,10 +202,10 @@ describe("session send", () => {
     );
   });
 
-  it("fails when the bridge is unreachable", async () => {
+  it("fails when the gateway is unreachable", async () => {
     await expect(
       parse(["session", "send", "--home", dir, "--chat-id", "oc_x", "--message", "hi"]),
-    ).rejects.toThrowError(/could not reach the bridge control socket/);
+    ).rejects.toThrowError(/could not reach the gateway control socket/);
   });
 
   it("rejects an empty --message-file", async () => {

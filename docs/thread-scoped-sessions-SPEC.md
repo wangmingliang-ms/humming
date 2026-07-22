@@ -28,7 +28,7 @@ chat.
   chat's main (non-topic) conversation, identical to pre-topic behaviour. No
   sentinel string — a genuine `null`.
 - **Process-per-thread (Option A).** Each `(chatId, threadId)` pair gets its own
-  agent subprocess + FIFO queue, same isolation the bridge already gave each
+  agent subprocess + FIFO queue, same isolation the gateway already gave each
   chat. Concurrency/eviction limits now count `(chatId, threadId)` runtimes.
 - **`/new` and `/cancel` are thread-scoped.** They act on the current topic's
   runtime/session only; the chat's other topics keep running. `/new` in a topic
@@ -40,7 +40,7 @@ chat.
 ## 3. Routing key
 
 ```ts
-// src/bridge/bridge.ts
+// src/gateway/gateway.ts
 function runtimeKey(chatId: string, threadId: string | null): string {
   return threadId === null ? chatId : `${chatId}\u0000${threadId}`;
 }
@@ -81,11 +81,11 @@ string | null`; new `listByThread(chatId, threadId)`;
   `setImmediate` is wrapped in try/catch → stderr — aligned with the sibling
   `FileBindingStore` (previously `close()` was a no-op, losing a
   just-before-exit write and racing temp-dir teardown in tests).
-- **`src/bridge/chat-runtime.ts`** — `ChatRuntimeOptions.threadId`; logger child
+- **`src/gateway/chat-runtime.ts`** — `ChatRuntimeOptions.threadId`; logger child
   tagged with `threadId`; `getLatest` / `save` / `setContext` all pass
   `this.opts.threadId`. (`PendingMessage` deliberately unchanged — the runtime
   is thread-scoped, so `opts.threadId` is authoritative, mirroring `chatId`.)
-- **`src/bridge/bridge.ts`** — `runtimeKey` helper; `chats` map re-keyed by it;
+- **`src/gateway/gateway.ts`** — `runtimeKey` helper; `chats` map re-keyed by it;
   `threadId` threaded through the whole message + card path; `CardActionPayload.th`;
   thread-scoped `teardownThread` / `clearThreadSessions` (for `/new`) vs
   chat-scoped `teardownChat` / `clearChatSessions` (for bind/unbind/rebind, now
@@ -126,7 +126,7 @@ chatId`).
   param; call sites pass `null`.
 - **`tests/reception-hot-reload.test.ts`** — `acquireRuntime` gains a `threadId`
   param; call sites pass `null`.
-- **`src/bridge/chat-runtime.test.ts`** — opts include `threadId: null`.
+- **`src/gateway/chat-runtime.test.ts`** — opts include `threadId: null`.
 - Full suite: **61 passed**. (Store `flush failed` stderr lines under the temp
   teardown are the _designed_ caught fallback, not failures.)
 
@@ -135,7 +135,7 @@ chatId`).
 `handleMessage` still contains a `TEMP(thread-probe)` block that appends every
 raw inbound event to `/tmp/humming-thread-probe.jsonl`. Plan:
 
-1. Restart the bridge.
+1. Restart the gateway.
 2. Post a message **inside a Feishu topic** (and one outside) in the bound chat.
 3. Read the probe file to confirm the real `thread_id` shape and that topic vs
    main route to distinct runtimes/sessions.

@@ -136,7 +136,7 @@ const configOptionSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-/** Fully validate the capability snapshot received from the Bridge control socket. */
+/** Fully validate the capability snapshot received from the Gateway control socket. */
 export const sessionCapabilitiesSnapshotSchema: z.ZodType<SessionCapabilitiesSnapshot> = z.object({
   session: z.object({
     chatId: z.string(),
@@ -153,6 +153,6 @@ export const sessionCapabilitiesSnapshotSchema: z.ZodType<SessionCapabilitiesSna
   models: modelStateSchema.optional(),
   modes: modeStateSchema.optional(),
   configOptions: z.array(configOptionSchema).nullable().optional(),
-  bridgePermissionModes: z.array(permissionModeSchema),
-  bridgePermissionMode: permissionModeSchema,
+  gatewayPermissionModes: z.array(permissionModeSchema),
+  gatewayPermissionMode: permissionModeSchema,
 });

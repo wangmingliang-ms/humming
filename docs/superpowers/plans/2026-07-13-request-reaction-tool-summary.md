@@ -27,7 +27,7 @@
 
 - Modify: `src/conversation/topic-conversation-session.ts`
 - Test: `src/conversation/topic-conversation-session.test.ts`
-- Test: `src/bridge/bridge-card-lifecycle.test.ts`
+- Test: `src/gateway/gateway-card-lifecycle.test.ts`
 
 **Interfaces:**
 
@@ -151,12 +151,12 @@ Expected: PASS.
 
 - [ ] **Step 8: Strengthen production wiring coverage**
 
-Extend the bridge lifecycle composition test so it proves the production `AcknowledgementPort` is passed into the real runtime/session path and `removeMessageReaction(messageId, reactionId)` is not called on first Card visibility but is called after terminal completion. Keep the existing low-level best-effort adapter assertion.
+Extend the gateway lifecycle composition test so it proves the production `AcknowledgementPort` is passed into the real runtime/session path and `removeMessageReaction(messageId, reactionId)` is not called on first Card visibility but is called after terminal completion. Keep the existing low-level best-effort adapter assertion.
 
 Run:
 
 ```bash
-npx vitest run src/bridge/bridge-card-lifecycle.test.ts
+npx vitest run src/gateway/gateway-card-lifecycle.test.ts
 ```
 
 Expected: PASS.
@@ -164,7 +164,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit Task 1**
 
 ```bash
-git add src/conversation/topic-conversation-session.ts src/conversation/topic-conversation-session.test.ts src/bridge/bridge-card-lifecycle.test.ts
+git add src/conversation/topic-conversation-session.ts src/conversation/topic-conversation-session.test.ts src/gateway/gateway-card-lifecycle.test.ts
 git diff --cached --name-only
 git diff --cached --check
 git commit -m "fix(conversation): keep request reaction until response ends"
@@ -308,12 +308,12 @@ git commit -m "feat(conversation): show current tool activity in card summary"
 **Interfaces:**
 
 - Consumes: Task 1 and Task 2 behavior.
-- Produces: pushed `main` revision and, if the running bridge uses this checkout, a rebuilt/restarted runtime on that exact revision.
+- Produces: pushed `main` revision and, if the running gateway uses this checkout, a rebuilt/restarted runtime on that exact revision.
 
 - [ ] **Step 1: Run formatting on task-owned files**
 
 ```bash
-npx prettier --write docs/superpowers/specs/conversation-card-lifecycle.md docs/superpowers/plans/2026-07-13-request-reaction-tool-summary.md src/conversation/topic-conversation-session.ts src/conversation/topic-conversation-session.test.ts src/bridge/bridge-card-lifecycle.test.ts src/presenter/conversation-card-view.ts src/conversation/conversation-card-view-mapper.ts src/conversation/conversation-card-view-mapper.test.ts src/presenter/lark-presenter.ts src/presenter/lark-presenter.test.ts type-tests/conversation-card-view.test-d.ts
+npx prettier --write docs/superpowers/specs/conversation-card-lifecycle.md docs/superpowers/plans/2026-07-13-request-reaction-tool-summary.md src/conversation/topic-conversation-session.ts src/conversation/topic-conversation-session.test.ts src/gateway/gateway-card-lifecycle.test.ts src/presenter/conversation-card-view.ts src/conversation/conversation-card-view-mapper.ts src/conversation/conversation-card-view-mapper.test.ts src/presenter/lark-presenter.ts src/presenter/lark-presenter.test.ts type-tests/conversation-card-view.test-d.ts
 ```
 
 - [ ] **Step 2: Run current quality gates after formatting**

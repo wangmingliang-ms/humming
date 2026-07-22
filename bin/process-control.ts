@@ -1,5 +1,5 @@
 /**
- * Cross-platform process management for the bridge: background start, stop,
+ * Cross-platform process management for the gateway: background start, stop,
  * restart, status, and log tailing — driven by a PID file under the humming
  * home dir.
  *
@@ -19,18 +19,18 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { sendControlRequest } from "../src/bridge/control-server.js";
+import { sendControlRequest } from "../src/gateway/control-server.js";
 
 /** Used only in user-facing hint text; kept local to avoid coupling to the CLI. */
 const APP_NAME = "humming";
 
-const PID_FILE = "bridge.pid";
-const LOG_FILE = "bridge.log";
-const RESTART_MARKER_FILE = "bridge.restart";
+const PID_FILE = "gateway.pid";
+const LOG_FILE = "gateway.log";
+const RESTART_MARKER_FILE = "gateway.restart";
 const CONTROL_SOCKET_FILE = "control.sock";
-const LAUNCH_FILE = "bridge.launch.json";
+const LAUNCH_FILE = "gateway.launch.json";
 const MANAGED_CHECKOUT_DIR = "humming-project";
-const SYSTEMD_UNIT_PREFIX = "humming-bridge";
+const SYSTEMD_UNIT_PREFIX = "humming-gateway";
 const SYSTEMD_UNIT_SUFFIX = ".service";
 
 /** Default number of trailing log lines shown by `logs` (without `-n`). */
@@ -38,11 +38,11 @@ export const DEFAULT_LOG_LINES = 40;
 
 /** Grace window after spawn before we trust a "started" (catches fast crashes). */
 const POST_SPAWN_CHECK_MS = 600;
-/** Log lines surfaced when a freshly-started bridge dies immediately. */
+/** Log lines surfaced when a freshly-started gateway dies immediately. */
 const FAILURE_TAIL_LINES = 15;
-/** How long SIGTERM is given to shut the bridge down before SIGKILL. */
+/** How long SIGTERM is given to shut the gateway down before SIGKILL. */
 const GRACEFUL_STOP_TIMEOUT_MS = 5_000;
-/** How long Windows waits for the bridge to accept a local graceful-shutdown request. */
+/** How long Windows waits for the gateway to accept a local graceful-shutdown request. */
 const CONTROL_SHUTDOWN_TIMEOUT_MS = 1_000;
 /** How long we wait for the process to vanish after SIGKILL. */
 const SIGKILL_TIMEOUT_MS = 2_000;
@@ -66,12 +66,12 @@ export class ProcessControlError extends Error {
 
 async function requestWindowsGracefulShutdown(homeDir: string): Promise<void> {
   try {
-    const request = sendControlRequest(bridgeControlSocketPath(homeDir), {
+    const request = sendControlRequest(gatewayControlSocketPath(homeDir), {
       method: "shutdown",
       params: {},
     });
     // The CLI may time out before the named pipe reports its eventual failure.
-    // Keep that late rejection handled while stopBridge proceeds to its fallback.
+    // Keep that late rejection handled while stopGateway proceeds to its fallback.
     void request.catch(() => undefined);
     const response = await withTimeout(request, CONTROL_SHUTDOWN_TIMEOUT_MS);
     if (!response.ok) {
@@ -84,24 +84,24 @@ async function requestWindowsGracefulShutdown(homeDir: string): Promise<void> {
 
 // ---------- path helpers --------------------------------------------------
 
-/** Absolute path of the bridge PID file under a home dir. */
-export function bridgePidPath(homeDir: string): string {
+/** Absolute path of the gateway PID file under a home dir. */
+export function gatewayPidPath(homeDir: string): string {
   return path.join(homeDir, PID_FILE);
 }
 
-/** Absolute path of the bridge log file under a home dir. */
-export function bridgeLogPath(homeDir: string): string {
+/** Absolute path of the gateway log file under a home dir. */
+export function gatewayLogPath(homeDir: string): string {
   return path.join(homeDir, LOG_FILE);
 }
 
-/** Absolute path of the restart marker consumed by the foreground bridge. */
-export function bridgeRestartMarkerPath(homeDir: string): string {
+/** Absolute path of the restart marker consumed by the foreground gateway. */
+export function gatewayRestartMarkerPath(homeDir: string): string {
   return path.join(homeDir, RESTART_MARKER_FILE);
 }
 
-/** Unix-domain socket used by `humming control …` to query the live bridge. */
-export function bridgeControlSocketPath(homeDir: string): string {
-  return bridgeControlSocketPathForPlatform(homeDir, process.platform);
+/** Unix-domain socket used by `humming control …` to query the live gateway. */
+export function gatewayControlSocketPath(homeDir: string): string {
+  return gatewayControlSocketPathForPlatform(homeDir, process.platform);
 }
 
 /**
@@ -110,10 +110,10 @@ export function bridgeControlSocketPath(homeDir: string): string {
  * POSIX platforms use a Unix-domain socket file under the home dir. Windows
  * does not support Unix sockets by pathname in Node's `net.Server.listen`; it
  * requires a named pipe path under `\\.\pipe\...`. Returning a `.sock` path on
- * Windows makes the bridge crash at startup with `listen EACCES`, after `start`
+ * Windows makes the gateway crash at startup with `listen EACCES`, after `start`
  * has already printed a misleading success.
  */
-export function bridgeControlSocketPathForPlatform(
+export function gatewayControlSocketPathForPlatform(
   homeDir: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
@@ -123,7 +123,7 @@ export function bridgeControlSocketPathForPlatform(
       .update(path.resolve(homeDir))
       .digest("hex")
       .slice(0, 10);
-    return `\\\\.\\pipe\\humming-bridge-${digest}-control`;
+    return `\\\\.\\pipe\\humming-gateway-${digest}-control`;
   }
   return path.join(homeDir, CONTROL_SOCKET_FILE);
 }
@@ -142,28 +142,28 @@ export function managedCheckoutDir(homeDir: string): string {
  * `restart` write the resolved spawn argv here so an `update`-triggered restart
  * (or a bare `restart`) can relaunch with the exact original arguments.
  */
-export function bridgeLaunchPath(homeDir: string): string {
+export function gatewayLaunchPath(homeDir: string): string {
   return path.join(homeDir, LAUNCH_FILE);
 }
 
 /** Mark the next managed shutdown/start as a restart, not a plain stop/start. */
-export function markBridgeRestart(homeDir: string): void {
+export function markGatewayRestart(homeDir: string): void {
   fs.mkdirSync(homeDir, { recursive: true });
-  fs.writeFileSync(bridgeRestartMarkerPath(homeDir), `${Date.now()}\n`, "utf-8");
+  fs.writeFileSync(gatewayRestartMarkerPath(homeDir), `${Date.now()}\n`, "utf-8");
 }
 
 /** Remove a stale restart marker if a restart command fails before completion. */
-export function clearBridgeRestartMarker(homeDir: string): void {
-  removeQuietly(bridgeRestartMarkerPath(homeDir));
+export function clearGatewayRestartMarker(homeDir: string): void {
+  removeQuietly(gatewayRestartMarkerPath(homeDir));
 }
 
-/** Stable per-home user-systemd unit name for the managed bridge daemon. */
-export function bridgeUnitName(homeDir: string): string {
+/** Stable per-home user-systemd unit name for the managed gateway daemon. */
+export function gatewayUnitName(homeDir: string): string {
   const digest = crypto.createHash("sha1").update(path.resolve(homeDir)).digest("hex").slice(0, 10);
   return `${SYSTEMD_UNIT_PREFIX}-${digest}${SYSTEMD_UNIT_SUFFIX}`;
 }
 
-/** Properties that make systemd the bridge's restart authority. */
+/** Properties that make systemd the gateway's restart authority. */
 export function buildSystemdServiceProperties(): readonly string[] {
   return [
     "Type=simple",
@@ -188,15 +188,15 @@ export function sameProcessControlGroup(left: string, right: string): boolean {
   return leftGroup !== null && leftGroup === normalize(right);
 }
 
-/** True when this CLI process runs inside the bridge's managed systemd unit. */
-export function isCurrentProcessInBridgeUnit(homeDir: string): boolean {
+/** True when this CLI process runs inside the gateway's managed systemd unit. */
+export function isCurrentProcessInGatewayUnit(homeDir: string): boolean {
   if (process.platform !== "linux" || !isUserSystemdAvailable()) return false;
-  const bridgePid = systemdMainPid(bridgeUnitName(homeDir));
-  if (bridgePid === null) return false;
+  const gatewayPid = systemdMainPid(gatewayUnitName(homeDir));
+  if (gatewayPid === null) return false;
   try {
     return sameProcessControlGroup(
       fs.readFileSync("/proc/self/cgroup", "utf-8"),
-      fs.readFileSync(`/proc/${bridgePid}/cgroup`, "utf-8"),
+      fs.readFileSync(`/proc/${gatewayPid}/cgroup`, "utf-8"),
     );
   } catch {
     return false;
@@ -268,14 +268,14 @@ export function rewriteSubcommand(
 }
 
 /**
- * Persisted description of how the bridge was last launched. Written on every
+ * Persisted description of how the gateway was last launched. Written on every
  * `start`/`restart` so a later `update`-triggered restart (or a bare
  * `restart`) can relaunch with the exact original argv instead of guessing.
  */
 export interface LaunchDescriptor {
-  /** The `proxy …` argv handed to {@link startBridge} (already rewritten). */
+  /** The `proxy …` argv handed to {@link startGateway} (already rewritten). */
   readonly spawnArgv: readonly string[];
-  /** Directory the bridge was started from. */
+  /** Directory the gateway was started from. */
   readonly workingDirectory: string;
   /** ISO-8601 timestamp of when this descriptor was written (informational). */
   readonly savedAt: string;
@@ -289,7 +289,7 @@ export interface CodeRevision {
 }
 
 /**
- * Persist the resolved launch argv to `<home>/bridge.launch.json`. Overwrites
+ * Persist the resolved launch argv to `<home>/gateway.launch.json`. Overwrites
  * any previous descriptor; the file always reflects the most recent launch.
  */
 export function persistLaunchArgv(
@@ -303,7 +303,7 @@ export function persistLaunchArgv(
     workingDirectory,
     savedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(bridgeLaunchPath(homeDir), `${JSON.stringify(descriptor, null, 2)}\n`, "utf-8");
+  fs.writeFileSync(gatewayLaunchPath(homeDir), `${JSON.stringify(descriptor, null, 2)}\n`, "utf-8");
 }
 
 /**
@@ -316,7 +316,7 @@ export function persistLaunchArgv(
  *         payload that does not match {@link LaunchDescriptor}.
  */
 export function readLaunchArgv(homeDir: string): LaunchDescriptor | null {
-  const launchPath = bridgeLaunchPath(homeDir);
+  const launchPath = gatewayLaunchPath(homeDir);
   let raw: string;
   try {
     raw = fs.readFileSync(launchPath, "utf-8");
@@ -377,7 +377,7 @@ export function runNpm(args: readonly string[], cwd: string): void {
 /**
  * Read the current git revision for a code checkout. Returns `undefined` when
  * the path is not inside a git worktree, git is unavailable, or a probe times
- * out. Lifecycle notices are best-effort and must not block bridge startup.
+ * out. Lifecycle notices are best-effort and must not block gateway startup.
  */
 export function readCodeRevision(cwd: string): CodeRevision | undefined {
   const commit = runGitText(cwd, ["rev-parse", "--short=12", "HEAD"]);
@@ -448,55 +448,55 @@ export interface StartOptions {
 }
 
 /**
- * Start the bridge as a detached background process, recording its PID and
+ * Start the gateway as a detached background process, recording its PID and
  * redirecting its output to the log file. Refuses to start a second instance.
  * After spawning, waits briefly and verifies the child is still alive, so a
  * process that dies during startup is reported instead of a false "started".
  *
- * The check is a cheap safety net, not a health check: the bridge is hard to
+ * The check is a cheap safety net, not a health check: the gateway is hard to
  * crash at boot. It only catches failures that kill the process *synchronously*
  * within the grace window (e.g. an unparseable settings.json, a log-file
  * permission error). It does NOT catch bad credentials (the Lark SDK retries),
  * a bad `--agent` (the agent spawns lazily on the first message → surfaces as
  * an in-chat error card), or network issues (retried). Use `logs` / `status`
- * to confirm the bridge actually connected.
+ * to confirm the gateway actually connected.
  *
- * @throws {ProcessControlError} when a bridge is already running, the spawn
+ * @throws {ProcessControlError} when a gateway is already running, the spawn
  *         fails, or the child dies within the post-spawn grace window.
  */
-export async function startBridge(opts: StartOptions): Promise<void> {
-  const pidPath = bridgePidPath(opts.homeDir);
+export async function startGateway(opts: StartOptions): Promise<void> {
+  const pidPath = gatewayPidPath(opts.homeDir);
 
   const existing = readPid(pidPath);
   if (existing !== null && isAlive(existing)) {
     throw new ProcessControlError(
-      `bridge already running (PID ${existing}). Use \`${APP_NAME} restart\` or \`${APP_NAME} stop\` first.`,
+      `gateway already running (PID ${existing}). Use \`${APP_NAME} restart\` or \`${APP_NAME} stop\` first.`,
     );
   }
   if (existing !== null) removeQuietly(pidPath); // stale file — process is gone
 
-  const unitName = bridgeUnitName(opts.homeDir);
+  const unitName = gatewayUnitName(opts.homeDir);
   if (isUserSystemdAvailable()) {
     const unitPid = systemdMainPid(unitName);
     if (unitPid !== null && isAlive(unitPid)) {
       fs.mkdirSync(opts.homeDir, { recursive: true });
       fs.writeFileSync(pidPath, `${unitPid}\n`, "utf-8");
       throw new ProcessControlError(
-        `bridge already running (PID ${unitPid}, systemd unit ${unitName}). Use \`${APP_NAME} restart\` or \`${APP_NAME} stop\` first.`,
+        `gateway already running (PID ${unitPid}, systemd unit ${unitName}). Use \`${APP_NAME} restart\` or \`${APP_NAME} stop\` first.`,
       );
     }
-    await startBridgeWithSystemd({ ...opts, unitName });
+    await startGatewayWithSystemd({ ...opts, unitName });
     return;
   }
 
-  await startBridgeDetached(opts);
+  await startGatewayDetached(opts);
 }
 
-async function startBridgeWithSystemd(
+async function startGatewayWithSystemd(
   opts: StartOptions & { readonly unitName: string },
 ): Promise<void> {
-  const pidPath = bridgePidPath(opts.homeDir);
-  const logPath = bridgeLogPath(opts.homeDir);
+  const pidPath = gatewayPidPath(opts.homeDir);
+  const logPath = gatewayLogPath(opts.homeDir);
   fs.mkdirSync(opts.homeDir, { recursive: true });
 
   // `systemd-run --collect` keeps a completed transient unit loaded briefly.
@@ -526,7 +526,7 @@ async function startBridgeWithSystemd(
   const started = spawnSync("systemd-run", args, { encoding: "utf-8" });
   if (started.error !== undefined || started.status !== 0) {
     throw new ProcessControlError(
-      `failed to start bridge with systemd-run: ${formatProcessFailure(started.error, started.stderr)}`,
+      `failed to start gateway with systemd-run: ${formatProcessFailure(started.error, started.stderr)}`,
       { cause: started.error },
     );
   }
@@ -543,18 +543,18 @@ async function startBridgeWithSystemd(
         : "";
     const detail = tail.length > 0 ? `\n--- log tail ---\n${tail}` : "";
     throw new ProcessControlError(
-      `bridge exited immediately after start; see ${logPath}${detail}${statusText}`,
+      `gateway exited immediately after start; see ${logPath}${detail}${statusText}`,
     );
   }
 
   fs.writeFileSync(pidPath, `${pid}\n`, "utf-8");
-  process.stdout.write(`bridge started (PID ${pid}, systemd unit ${opts.unitName})\n`);
+  process.stdout.write(`gateway started (PID ${pid}, systemd unit ${opts.unitName})\n`);
   process.stdout.write(`  logs: ${logPath}\n`);
 }
 
-async function startBridgeDetached(opts: StartOptions): Promise<void> {
-  const pidPath = bridgePidPath(opts.homeDir);
-  const logPath = bridgeLogPath(opts.homeDir);
+async function startGatewayDetached(opts: StartOptions): Promise<void> {
+  const pidPath = gatewayPidPath(opts.homeDir);
+  const logPath = gatewayLogPath(opts.homeDir);
   fs.mkdirSync(opts.homeDir, { recursive: true });
 
   // Open the log in append mode and hand the fd to the child as stdout+stderr;
@@ -575,7 +575,7 @@ async function startBridgeDetached(opts: StartOptions): Promise<void> {
 
   const pid = child.pid;
   if (pid === undefined) {
-    throw new ProcessControlError("failed to spawn bridge process (no PID assigned)");
+    throw new ProcessControlError("failed to spawn gateway process (no PID assigned)");
   }
 
   fs.writeFileSync(pidPath, `${pid}\n`, "utf-8");
@@ -586,10 +586,10 @@ async function startBridgeDetached(opts: StartOptions): Promise<void> {
     removeQuietly(pidPath);
     const tail = readLastLines(logPath, FAILURE_TAIL_LINES);
     const detail = tail.length > 0 ? `\n--- log tail ---\n${tail}` : "";
-    throw new ProcessControlError(`bridge exited immediately after start; see ${logPath}${detail}`);
+    throw new ProcessControlError(`gateway exited immediately after start; see ${logPath}${detail}`);
   }
 
-  process.stdout.write(`bridge started (PID ${pid})\n`);
+  process.stdout.write(`gateway started (PID ${pid})\n`);
   process.stdout.write(`  logs: ${logPath}\n`);
 }
 
@@ -598,34 +598,34 @@ export interface StopOptions {
 }
 
 /**
- * Stop a running bridge: SIGTERM (POSIX → the bridge's graceful shutdown),
+ * Stop a running gateway: SIGTERM (POSIX → the gateway's graceful shutdown),
  * poll for exit, then SIGKILL as a fallback. Clears the PID file. Returns
  * `true` if a live process was stopped, `false` if nothing was running.
  *
  * @throws {ProcessControlError} when signalling fails for a reason other than
  *         the process already being gone.
  */
-export async function stopBridge(opts: StopOptions): Promise<boolean> {
-  const pidPath = bridgePidPath(opts.homeDir);
-  const unitName = bridgeUnitName(opts.homeDir);
+export async function stopGateway(opts: StopOptions): Promise<boolean> {
+  const pidPath = gatewayPidPath(opts.homeDir);
+  const unitName = gatewayUnitName(opts.homeDir);
   const unitPid = isUserSystemdAvailable() ? systemdMainPid(unitName) : null;
   if (unitPid !== null && isAlive(unitPid)) {
-    process.stdout.write(`stopping bridge (PID ${unitPid}, systemd unit ${unitName})...\n`);
+    process.stdout.write(`stopping gateway (PID ${unitPid}, systemd unit ${unitName})...\n`);
     runSystemctl(["stop", unitName], true);
     await waitForExit(unitPid, GRACEFUL_STOP_TIMEOUT_MS);
     removeQuietly(pidPath);
-    process.stdout.write("bridge stopped\n");
+    process.stdout.write("gateway stopped\n");
     return true;
   }
 
   const pid = readPid(pidPath);
   if (pid === null || !isAlive(pid)) {
     removeQuietly(pidPath);
-    process.stdout.write("bridge not running\n");
+    process.stdout.write("gateway not running\n");
     return false;
   }
 
-  process.stdout.write(`stopping bridge (PID ${pid})...\n`);
+  process.stdout.write(`stopping gateway (PID ${pid})...\n`);
   if (process.platform === "win32") {
     await requestWindowsGracefulShutdown(opts.homeDir);
   } else {
@@ -640,7 +640,7 @@ export async function stopBridge(opts: StopOptions): Promise<boolean> {
   }
 
   removeQuietly(pidPath);
-  process.stdout.write("bridge stopped\n");
+  process.stdout.write("gateway stopped\n");
   return true;
 }
 
@@ -650,33 +650,33 @@ export interface StatusOptions {
 }
 
 /**
- * Whether a managed bridge is currently running, checking the systemd unit's
+ * Whether a managed gateway is currently running, checking the systemd unit's
  * MainPID (when user-systemd drives it) first, then the PID file. A read-only
  * probe with no side effects — used by `update` to decide whether to restart.
  */
-export function isBridgeRunning(homeDir: string): boolean {
-  const unitName = bridgeUnitName(homeDir);
+export function isGatewayRunning(homeDir: string): boolean {
+  const unitName = gatewayUnitName(homeDir);
   const unitPid = isUserSystemdAvailable() ? systemdMainPid(unitName) : null;
   if (unitPid !== null && isAlive(unitPid)) return true;
-  const pid = readPid(bridgePidPath(homeDir));
+  const pid = readPid(gatewayPidPath(homeDir));
   return pid !== null && isAlive(pid);
 }
 
 /**
- * Print whether the bridge is running, with PID and approximate uptime (from
+ * Print whether the gateway is running, with PID and approximate uptime (from
  * the PID file's mtime). Clears a stale PID file as a side effect.
  */
-export async function statusBridge(opts: StatusOptions): Promise<void> {
-  const pidPath = bridgePidPath(opts.homeDir);
-  const unitName = bridgeUnitName(opts.homeDir);
+export async function statusGateway(opts: StatusOptions): Promise<void> {
+  const pidPath = gatewayPidPath(opts.homeDir);
+  const unitName = gatewayUnitName(opts.homeDir);
   const unitPid = isUserSystemdAvailable() ? systemdMainPid(unitName) : null;
   if (unitPid !== null && isAlive(unitPid)) {
     fs.mkdirSync(opts.homeDir, { recursive: true });
     if (readPid(pidPath) !== unitPid) fs.writeFileSync(pidPath, `${unitPid}\n`, "utf-8");
-    const uptime = formatUptime(bridgeUptimeMs(unitPid, pidPath));
+    const uptime = formatUptime(gatewayUptimeMs(unitPid, pidPath));
     const suffix = uptime.length > 0 ? `, up ${uptime}` : "";
-    process.stdout.write(`bridge: running (PID ${unitPid}${suffix}, systemd unit ${unitName})\n`);
-    process.stdout.write(`  logs: ${bridgeLogPath(opts.homeDir)}\n`);
+    process.stdout.write(`gateway: running (PID ${unitPid}${suffix}, systemd unit ${unitName})\n`);
+    process.stdout.write(`  logs: ${gatewayLogPath(opts.homeDir)}\n`);
     await printLarkStatus(opts);
     return;
   }
@@ -684,13 +684,13 @@ export async function statusBridge(opts: StatusOptions): Promise<void> {
   const pid = readPid(pidPath);
   if (pid === null || !isAlive(pid)) {
     if (pid !== null) removeQuietly(pidPath);
-    process.stdout.write("bridge: not running\n");
+    process.stdout.write("gateway: not running\n");
     return;
   }
-  const uptime = formatUptime(bridgeUptimeMs(pid, pidPath));
+  const uptime = formatUptime(gatewayUptimeMs(pid, pidPath));
   const suffix = uptime.length > 0 ? `, up ${uptime}` : "";
-  process.stdout.write(`bridge: running (PID ${pid}${suffix})\n`);
-  process.stdout.write(`  logs: ${bridgeLogPath(opts.homeDir)}\n`);
+  process.stdout.write(`gateway: running (PID ${pid}${suffix})\n`);
+  process.stdout.write(`  logs: ${gatewayLogPath(opts.homeDir)}\n`);
   await printLarkStatus(opts);
 }
 
@@ -698,7 +698,7 @@ async function printLarkStatus(opts: StatusOptions): Promise<void> {
   const requestControl = opts.requestControl ?? sendControlRequest;
   let state = "unavailable";
   try {
-    const response = await requestControl(bridgeControlSocketPath(opts.homeDir), {
+    const response = await requestControl(gatewayControlSocketPath(opts.homeDir), {
       method: "ping",
       params: {},
     });
@@ -726,7 +726,7 @@ export interface LogsOptions {
 }
 
 /**
- * Print the tail of the bridge log, optionally following appended output.
+ * Print the tail of the gateway log, optionally following appended output.
  * Following is a size-poll tailer (no dependency on the Unix `tail` binary),
  * so it works identically on Windows and Linux; it runs until the user
  * interrupts the process.
@@ -734,10 +734,10 @@ export interface LogsOptions {
  * @throws {ProcessControlError} when no log file exists yet.
  */
 export async function tailLog(opts: LogsOptions): Promise<void> {
-  const logPath = bridgeLogPath(opts.homeDir);
+  const logPath = gatewayLogPath(opts.homeDir);
   if (!fs.existsSync(logPath)) {
     throw new ProcessControlError(
-      `no log file at ${logPath} (has the bridge been started with \`${APP_NAME} start\`?)`,
+      `no log file at ${logPath} (has the gateway been started with \`${APP_NAME} start\`?)`,
     );
   }
 
@@ -930,11 +930,11 @@ export function parseProcessElapsedSeconds(raw: string): number | null {
 }
 
 /**
- * Uptime of the running bridge in ms: the kernel's monotonic process age when
+ * Uptime of the running gateway in ms: the kernel's monotonic process age when
  * available ({@link processUptimeMs}), else the PID file's wall-clock age as a
  * cross-platform fallback ({@link pidFileAgeMs}).
  */
-function bridgeUptimeMs(pid: number, pidPath: string): number | null {
+function gatewayUptimeMs(pid: number, pidPath: string): number | null {
   return processUptimeMs(pid) ?? pidFileAgeMs(pidPath);
 }
 

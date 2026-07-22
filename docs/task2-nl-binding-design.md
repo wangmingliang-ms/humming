@@ -8,7 +8,7 @@ concrete design so context survives.
 
 ```
 unbound chat sends a message
-   → bridge has no binding for this chatId
+   → gateway has no binding for this chatId
    → NEW: spawn the default agent in the "reception area" (unboundCwd, default ~/.humming)
      instead of replying "please /bind"
    → agent can converse normally; on spawn we injected:
@@ -17,7 +17,7 @@ unbound chat sends a message
        file <cwd>/AGENTS.md + <cwd>/CLAUDE.md  = how-to-bind instructions
    → user: "把这个 chat 绑到 copilot-intellij，用 claude"
    → agent edits settings.json: bindings[<chatId>] = { cwd: "...", agent: "claude" }
-   → bridge's fs.watch(settings.json) fires (debounced)
+   → gateway's fs.watch(settings.json) fires (debounced)
    → re-read bindings; this chat's binding is new → tear down its reception runtime
    → next message spawns the real agent in ~/workspace/copilot-intellij
 ```
@@ -42,12 +42,12 @@ built in task 1) — agent label → command/args.
      and a way to disable (set empty → restore old "please /bind" behaviour).
 
 2. **chatId + settings injection** — `ChatRuntimeOptions` gains optional
-   `agentEnvExtra` (or bridge builds env). Simpler: bridge passes the extra
+   `agentEnvExtra` (or gateway builds env). Simpler: gateway passes the extra
    env in the `agentEnv` it already threads through. Add
    `HUMMING_CHAT_ID`, `HUMMING_SETTINGS`. Write instruction files into the
    reception cwd once per spawn (idempotent).
 
-3. **Hot-reload** — bridge owns an `fs.watch(settingsPath)` started in
+3. **Hot-reload** — gateway owns an `fs.watch(settingsPath)` started in
    `start()`, stopped in `stop()`. Debounced ~300ms. On fire:
    - re-list bindings from bindingStore (tolerates half-written file → skip).
    - diff against a snapshot map `chatId -> cwd|agent signature`.
@@ -61,7 +61,7 @@ built in task 1) — agent label → command/args.
 - Double-fire of fs.watch → debounce + signature diff (no-op if unchanged).
 - Half-written settings.json → SettingsBindingStore.readRoot() already
   returns {} on parse failure; hot-reload treats "can't read" as "no change".
-- Concurrent writes (bridge /bind vs agent edit) → atomic temp+rename already
+- Concurrent writes (gateway /bind vs agent edit) → atomic temp+rename already
   in SettingsBindingStore; last writer wins, watcher reconciles.
 - Reception runtime must NOT be persisted as a real binding (it's ephemeral).
 

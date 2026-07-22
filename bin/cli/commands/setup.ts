@@ -97,7 +97,7 @@ export function formatSetupSummary(summary: SetupSummary): string {
     `Domain: ${summary.domain}`,
     ...(summary.botName !== undefined ? [`Bot: ${summary.botName}`] : []),
     "",
-    `Next: humming bridge start`,
+    `Next: humming gateway start`,
     "",
   ].join("\n");
 }
@@ -227,7 +227,7 @@ function buildSetupLifecycleEnrollmentCard(setup: SetupLifecycleNotificationRequ
       elements: [
         {
           tag: "markdown" as const,
-          content: `这台机器已完成 Humming 配置。后续 bridge start / stop / restart / crash 生命周期通知会发送到这个单聊。${botLine}`,
+          content: `这台机器已完成 Humming 配置。后续 gateway start / stop / restart / crash 生命周期通知会发送到这个单聊。${botLine}`,
         },
       ],
     },

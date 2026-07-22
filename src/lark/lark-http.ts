@@ -52,7 +52,7 @@ export interface LarkHttpOptions {
  *
  * - Owns one shared `Lark.Client` instance.
  * - Caches user / chat display names and the bot's own `open_id`.
- * - Exposes the few raw operations the presenter and bridge need
+ * - Exposes the few raw operations the presenter and gateway need
  *   (reply, react, PATCH a card, look up display names).
  *
  * Intentionally has **no** card-specific knowledge — presenters build

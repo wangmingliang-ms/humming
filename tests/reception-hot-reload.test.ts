@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  LarkBridge,
+  LarkGateway,
   FileSessionStore,
   SettingsBindingStore,
   type LarkPresenter,
@@ -95,7 +95,7 @@ interface ReceptionBinding {
     reboundAgentLabel: string;
   };
 }
-interface BridgeInternals {
+interface GatewayInternals {
   resolveBinding(chatId: string): Promise<ReceptionBinding | null>;
   reloadBindings(): Promise<void>;
   snapshotBindings(): Promise<void>;
@@ -137,8 +137,8 @@ interface BridgeInternals {
   handleCardAction(event: Lark.CardActionEvent): void;
   readonly activeChatCount: number;
 }
-function asInternals(bridge: LarkBridge): BridgeInternals {
-  return bridge as unknown as BridgeInternals;
+function asInternals(gateway: LarkGateway): GatewayInternals {
+  return gateway as unknown as GatewayInternals;
 }
 
 function textEvent(
@@ -187,10 +187,10 @@ let repoA: string;
 let presenter: RecordingPresenter;
 let bindingStore: SettingsBindingStore;
 let sessionStore: FileSessionStore;
-let bridge: LarkBridge;
+let gateway: LarkGateway;
 
-function makeBridge(opts?: { unboundCwd?: string | null }): LarkBridge {
-  return new LarkBridge({
+function makeGateway(opts?: { unboundCwd?: string | null }): LarkGateway {
+  return new LarkGateway({
     lark: { appId: "cli_test", appSecret: "secret_test" },
     agent: {
       resolver,
@@ -260,7 +260,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await bridge?.stop?.().catch(() => {});
+  await gateway?.stop?.().catch(() => {});
   await bindingStore.close();
   await sessionStore.close();
   fs.rmSync(root, { recursive: true, force: true });
@@ -268,29 +268,29 @@ afterEach(async () => {
 
 describe("reception area", () => {
   it("routes an unbound chat to the reception cwd with the default agent", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     const eff = await b.resolveBinding("oc_new");
     expect(eff).toMatchObject({ cwd: home, label: "claude", explicit: false, reception: true });
   });
 
   it("returns null (no reception) when unboundCwd is disabled", async () => {
-    bridge = makeBridge({ unboundCwd: null });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: null });
+    const b = asInternals(gateway);
     expect(await b.resolveBinding("oc_new")).toBeNull();
   });
 
   it("prefers a real repo binding over the reception area and uses the default agent", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_bound", cwd: repoA, createdAt: 1, updatedAt: 1 });
     const eff = await b.resolveBinding("oc_bound");
     expect(eff).toMatchObject({ cwd: repoA, label: "claude", explicit: true, reception: false });
   });
 
   it("new topic runtime inherits Agent + controls from the latest session in the same repo", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_bound", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
       chatId: "oc_bound",
@@ -300,7 +300,7 @@ describe("reception area", () => {
       agentArgs: [...CODEX.args],
       agentLabel: CODEX.label,
       cwd: repoA,
-      controls: { modeId: "agent", bridgePermissionMode: "alwaysAsk" },
+      controls: { modeId: "agent", gatewayPermissionMode: "alwaysAsk" },
       createdAt: 1,
       updatedAt: 10,
     });
@@ -316,13 +316,13 @@ describe("reception area", () => {
     expect(opts).toMatchObject({ agentLabel: "codex", agentCommand: "npx" });
     expect(opts.inheritedControls).toMatchObject({
       modeId: "agent",
-      bridgePermissionMode: "alwaysAsk",
+      gatewayPermissionMode: "alwaysAsk",
     });
   });
 
   it("warns once and automatically rebinds to the reception area when the bound repo was deleted", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_deleted", cwd: repoA, createdAt: 1, updatedAt: 1 });
     fs.rmSync(repoA, { recursive: true, force: true });
 
@@ -348,8 +348,8 @@ describe("reception area", () => {
   });
 
   it("sends an error notice and continues in the reception area for a deleted repo", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_deleted", cwd: repoA, createdAt: 1, updatedAt: 1 });
     fs.rmSync(repoA, { recursive: true, force: true });
 
@@ -376,8 +376,8 @@ describe("reception area", () => {
   });
 
   it("drops AGENTS.md + CLAUDE.md bind instructions into the reception cwd", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     const eff = await b.resolveBinding("oc_new");
     await b.acquireRuntime("oc_new", null, eff!);
     const agents = fs.readFileSync(path.join(home, "AGENTS.md"), "utf-8");
@@ -388,9 +388,9 @@ describe("reception area", () => {
     expect(claude).toEqual(agents);
   });
 
-  it("installs home guide and example JSON files on bridge start", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    await bridge.start();
+  it("installs home guide and example JSON files on gateway start", async () => {
+    gateway = makeGateway({ unboundCwd: home });
+    await gateway.start();
 
     expect(fs.readFileSync(path.join(home, "AGENTS.md"), "utf-8")).toContain(
       "Humming operating guide",
@@ -410,15 +410,15 @@ describe("reception area", () => {
     expect(
       JSON.parse(fs.readFileSync(path.join(home, "sessions.back.json"), "utf-8")),
     ).toMatchObject({
-      oc_example_chat_id: [{ controls: { bridgePermissionMode: "alwaysAsk" } }],
+      oc_example_chat_id: [{ controls: { gatewayPermissionMode: "alwaysAsk" } }],
     });
   });
 });
 
 describe("hot-reload of bindings", () => {
   it("tears down a chat runtime when its repo binding appears via settings.json and notifies details", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await b.snapshotBindings();
 
     // A reception runtime exists for the unbound chat.
@@ -443,8 +443,8 @@ describe("hot-reload of bindings", () => {
   });
 
   it("no-ops when the settings file is unchanged", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_y", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await b.snapshotBindings();
     const recv = await b.resolveBinding("oc_y");
@@ -456,8 +456,8 @@ describe("hot-reload of bindings", () => {
   });
 
   it("tolerates a half-written settings.json (keeps last-good state)", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_z", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await b.snapshotBindings();
     await b.acquireRuntime("oc_z", null, (await b.resolveBinding("oc_z"))!);
@@ -475,8 +475,8 @@ describe("hot-reload of bindings", () => {
 
 describe("compact slash session profile commands", () => {
   it("lists all Humming commands via /help", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
 
     await b.routeMessage(
       textEvent("/help", "oc_x", "th_topic", "om_help"),
@@ -506,8 +506,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("lists available Agents via bare /agent", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
 
     await b.routeMessage(
       textEvent("/agent", "oc_x", "th_topic", "om_agent_list"),
@@ -525,8 +525,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("lists available Models via bare /model by probing the effective Agent", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
 
     await b.routeMessage(
@@ -548,8 +548,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("lists available Modes via bare /mode by probing the effective Agent", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
 
     await b.routeMessage(
@@ -567,9 +567,9 @@ describe("compact slash session profile commands", () => {
     expect(result?.body).toContain("/mode <mode-id>");
   });
 
-  it("lists bridge permission modes via bare /permission", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+  it("lists gateway permission modes via bare /permission", async () => {
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
 
     await b.routeMessage(
       textEvent("/permission", "oc_x", "th_topic", "om_perm_list"),
@@ -588,8 +588,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("lists full capabilities for the current effective Agent via /capabilities", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
 
     await b.routeMessage(
@@ -618,8 +618,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("probes another Agent capabilities via /capabilities <agent> without switching", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
       chatId: "oc_x",
@@ -655,8 +655,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("handles /model auto through the shared stored setControls path without spawning a runtime", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -691,8 +691,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("stores a caller-supplied /model without probing capabilities", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
       chatId: "oc_x",
@@ -725,8 +725,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("trusts caller-supplied controls through configureSession", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
       chatId: "oc_x",
@@ -758,8 +758,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("handles /permission through the shared stored setControls notice", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -768,7 +768,7 @@ describe("compact slash session profile commands", () => {
       agentArgs: [...CLAUDE.args],
       agentLabel: CLAUDE.label,
       cwd: repoA,
-      controls: { bridgePermissionMode: "alwaysAsk" },
+      controls: { gatewayPermissionMode: "alwaysAsk" },
       createdAt: 1,
       updatedAt: 1,
     });
@@ -782,7 +782,7 @@ describe("compact slash session profile commands", () => {
     );
 
     expect(await sessionStore.getLatest("oc_x", "th_topic")).toMatchObject({
-      controls: { bridgePermissionMode: "alwaysAllow" },
+      controls: { gatewayPermissionMode: "alwaysAllow" },
     });
     const notice = presenter.notices.at(-1);
     expect(notice).toMatchObject({ title: "✅ 会话配置已更新", template: "green" });
@@ -790,8 +790,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("shows /profile from stored topic profile", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -801,7 +801,7 @@ describe("compact slash session profile commands", () => {
       agentArgs: [...CODEX.args],
       agentLabel: CODEX.label,
       cwd: repoA,
-      controls: { modeId: "agent", bridgePermissionMode: "alwaysAllow" },
+      controls: { modeId: "agent", gatewayPermissionMode: "alwaysAllow" },
       pendingConfiguration: { controls: { clearModelId: true }, createdAt: 1, updatedAt: 1 },
       createdAt: 1,
       updatedAt: 1,
@@ -826,8 +826,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("warns before switching Agent via /agent when the topic already has a session", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
       chatId: "oc_x",
@@ -869,8 +869,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("switches Agent after the user confirms the context-loss warning", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
       chatId: "oc_x",
@@ -920,8 +920,8 @@ describe("compact slash session profile commands", () => {
   });
 
   it("keeps the old Agent when confirmed /agent target probe fails", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     probeAgentSessionCapabilitiesMock.mockRejectedValueOnce(new Error("Authentication required"));
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
@@ -965,8 +965,8 @@ describe("compact slash session profile commands", () => {
 
 describe("session bind conflicts", () => {
   it("switches the current topic Agent by replacing the old session with a profile-only boundary", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
     await sessionStore.save({
       chatId: "oc_x",
@@ -996,7 +996,7 @@ describe("session bind conflicts", () => {
       controls: {
         modelId: "gpt-5",
         modeId: "agent",
-        bridgePermissionMode: "alwaysAllow",
+        gatewayPermissionMode: "alwaysAllow",
         config: { autoEdit: { type: "boolean", value: true } },
       },
       createdAt: 2,
@@ -1029,7 +1029,7 @@ describe("session bind conflicts", () => {
       controls: {
         modelId: "gpt-5",
         modeId: "agent",
-        bridgePermissionMode: "alwaysAllow",
+        gatewayPermissionMode: "alwaysAllow",
         config: { autoEdit: { type: "boolean", value: true } },
       },
     });
@@ -1062,8 +1062,8 @@ describe("session bind conflicts", () => {
   });
 
   it("notifies when a target Agent probe fails before switching", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -1104,8 +1104,8 @@ describe("session bind conflicts", () => {
   });
 
   it("uses consistent Title/Agent/Repo order in session bind notices", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
 
     await expect(
       b.controlBindSession(
@@ -1140,8 +1140,8 @@ describe("session bind conflicts", () => {
   });
 
   it("rejects binding a session that is already bound to another thread and notifies", async () => {
-    bridge = makeBridge({ unboundCwd: home });
-    const b = asInternals(bridge);
+    gateway = makeGateway({ unboundCwd: home });
+    const b = asInternals(gateway);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_old",

@@ -1,6 +1,6 @@
 # LARK API
 
-本项目是把飞书作为ACP的客户端的桥接库，虽然有API SDK调用，但是也不免会涉及到参考飞书官方API文档，必要时候需要参看：https://open.larksuite.com/document/server-docs/getting-started/getting-started
+本项目是把飞书作为ACP的客户端的网关库，虽然有API SDK调用，但是也不免会涉及到参考飞书官方API文档，必要时候需要参看：https://open.larksuite.com/document/server-docs/getting-started/getting-started
 
 # ACP
 
@@ -18,13 +18,13 @@ npm test           # vitest run（单元 src/**、bin/**；集成 tests/**）
 
 提交前三件套（CI 同款）：`tsc --noEmit`、`eslint`、`prettier --check`。
 
-## 运行 / 管理 bridge
+## 运行 / 管理 gateway
 
 CLI 入口是 `bin/humming.ts`（构建到 `dist/bin/humming.js`），仅做 bootstrap；真正的命令树在
 `bin/cli/**` 下用 Commander + Zod 实现（见 `docs/cli-command-model-SPEC.md`）。命令树是
-`humming bridge|agent|session|setup|init|update`；Bridge 命令另有顶层快捷方式
+`humming gateway|agent|session|setup|init|update`；Gateway 命令另有顶层快捷方式
 `run|start|stop|restart|status|logs`。状态文件都在
-`~/.humming/`（`bridge.pid`、`bridge.log`、`settings.json`、`sessions.json`）：
+`~/.humming/`（`gateway.pid`、`gateway.log`、`settings.json`、`sessions.json`）：
 
 ```bash
 humming start --agent claude    # 后台启动
@@ -39,8 +39,8 @@ humming run --agent claude      # 前台运行（占终端，Ctrl-C 停）
   改代码只需 `npm run build && humming restart` 即可生效；换 `--agent` 等选项需要
   先 `humming stop` 再 `humming start --agent <new>`（`restart` 目前只复用上次持久化的启动参数，不接受新选项）。
 - **进程管理实现**在 `bin/process-control.ts`（跨平台：`process.kill(pid,0)` 探活、
-  detached spawn、PID 文件），被 `bin/cli/commands/bridge.ts` 调用；`bridge start`/`restart`
-  会把 Commander 解析出的选项重写成一份规范的 `bridge run ...` argv 转发到后台。崩溃自愈 /
+  detached spawn、PID 文件），被 `bin/cli/commands/gateway.ts` 调用；`gateway start`/`restart`
+  会把 Commander 解析出的选项重写成一份规范的 `gateway run ...` argv 转发到后台。崩溃自愈 /
   开机自启不在此层，交给 systemd / 计划任务。
 - **改动 CLI 行为后**务必手动 E2E（`start`→`status`→`restart`→`stop`），
   并确认 `logs` 里出现 `WebSocket connected`；单元测试覆盖纯函数与 Commander

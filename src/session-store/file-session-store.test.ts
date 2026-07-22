@@ -13,7 +13,7 @@ import type { SessionRecord } from "./session-store.js";
  * White-box tests for the thread-scoped {@link FileSessionStore}. A topic
  * (Feishu 话题) maps to a distinct `threadId`; `threadId: null` is the chat's
  * "main" (non-topic) conversation. These tests pin the isolation guarantees
- * the bridge relies on for per-thread session routing.
+ * the gateway relies on for per-thread session routing.
  */
 
 let dir: string;
@@ -323,7 +323,7 @@ describe("FileSessionStore session controls", () => {
           approval_mode: { value: "auto" },
           auto_edit: { type: "boolean", value: true },
         },
-        bridgePermissionMode: "alwaysAsk",
+        gatewayPermissionMode: "alwaysAsk",
       },
     );
 
@@ -332,7 +332,7 @@ describe("FileSessionStore session controls", () => {
       controls: {
         modelId: "model-old",
         modeId: "agent",
-        bridgePermissionMode: "alwaysAsk",
+        gatewayPermissionMode: "alwaysAsk",
         config: {
           approval_mode: { value: "auto" },
           auto_edit: { type: "boolean", value: true },

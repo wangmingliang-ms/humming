@@ -41,15 +41,15 @@
 - Modify `src/presenter/lark-presenter.test.ts`: no illegal action/header combinations.
 - Modify `src/lark/lark-http.ts`: add/remove acknowledgement reaction methods.
 - Create/modify `src/lark/lark-http.test.ts`: reaction request shape and failure behavior.
-- Modify `src/bridge/chat-runtime.ts`: own one PromptCardLifecycle per accepted message, install prompt routes, map terminal reasons.
-- Modify `src/bridge/chat-runtime.test.ts`: queue ownership, old update draining, shutdown/supersede.
-- Modify `src/bridge/bridge.ts`: reaction acknowledgement, gated v2 routing, token-validated Cancel, remove direct conversation-card patches.
-- Modify bridge tests (`src/bridge/bridge-agent-switch.test.ts` and/or a focused new `src/bridge/bridge-card-lifecycle.test.ts`): callback versioning, stale Cancel, no receipt card, no bypass.
+- Modify `src/gateway/chat-runtime.ts`: own one PromptCardLifecycle per accepted message, install prompt routes, map terminal reasons.
+- Modify `src/gateway/chat-runtime.test.ts`: queue ownership, old update draining, shutdown/supersede.
+- Modify `src/gateway/gateway.ts`: reaction acknowledgement, gated v2 routing, token-validated Cancel, remove direct conversation-card patches.
+- Modify gateway tests (`src/gateway/gateway-agent-switch.test.ts` and/or a focused new `src/gateway/gateway-card-lifecycle.test.ts`): callback versioning, stale Cancel, no receipt card, no bypass.
 - Modify `templates/home/settings.back.json`: document the disabled-by-default feature gate.
 - Modify `bin/humming.ts` and `bin/process-control.ts`: feature enable/disable and rollback-safe restart commands.
 - Create `tsconfig.type-tests.json` and `type-tests/conversation-card-view.test-d.ts`: compile-time illegal-state checks.
 - Create `src/presenter/legacy-conversation-card-adapter.ts`: the only gate-off wrapper allowed to call legacy `sendUnifiedCard` / `updateUnifiedCard` after cutover preparation.
-- Create `src/bridge/conversation-card-feature.ts`: injectable gate contract and disabled default used before persisted configuration exists.
+- Create `src/gateway/conversation-card-feature.ts`: injectable gate contract and disabled default used before persisted configuration exists.
 
 ---
 
@@ -57,15 +57,15 @@
 
 **Files:**
 
-- Modified: `src/bridge/bridge.ts`
-- Created: `src/bridge/bridge-card-lifecycle.test.ts`
+- Modified: `src/gateway/gateway.ts`
+- Created: `src/gateway/gateway-card-lifecycle.test.ts`
 
 **Verified TDD evidence:**
 
 - [x] RED proved a versioned Cancel reached runtime lookup before the guard.
 - [x] GREEN rejects every Cancel payload with an own `v` field before runtime lookup.
 - [x] Legacy unversioned Cancel remains functional while v2 is disabled.
-- [x] Focused bridge/runtime suite: 30/30 passed.
+- [x] Focused gateway/runtime suite: 30/30 passed.
 - [x] Build, Prettier, and diff checks passed.
 - [x] Independent specification review: PASS.
 - [x] Commit `4700e9d` pushed to `origin/main`.
@@ -431,8 +431,8 @@ Run controller/reducer/delivery tests, build, Prettier. Commit: `feat(cards): or
 
 **Files:**
 
-- Create: `src/bridge/conversation-card-feature.ts`
-- Create: `src/bridge/conversation-card-feature.test.ts`
+- Create: `src/gateway/conversation-card-feature.ts`
+- Create: `src/gateway/conversation-card-feature.test.ts`
 - Modify: `src/presenter/presenter.ts`
 - Modify: `src/presenter/lark-presenter.ts`
 - Modify: `src/presenter/lark-presenter.test.ts`
@@ -511,7 +511,7 @@ Run HTTP tests, build, Prettier. Commit: `feat(lark): support prompt acknowledge
 
 Add one active routed update test, run RED, implement delegation, rerun. Then add terminal absorption and late-closed-route tests individually.
 
-- [ ] **Step 2: RED/GREEN — permission Promise bridge**
+- [ ] **Step 2: RED/GREEN — permission Promise gateway**
 
 Add a Router requestPermission test that receives Controller's `PendingPermission.response`, run RED, implement exact forwarding, rerun. Then add selected, invalid, timeout, finish, and cancellation settlement cases individually.
 
@@ -532,8 +532,8 @@ Run HummingClient and all new ACP tests, build, Prettier. Commit: `refactor(card
 - Create: `src/presenter/legacy-conversation-card-adapter.ts`
 - Create: `src/presenter/legacy-conversation-card-adapter.test.ts`
 - Modify: `src/acp/humming-client.ts`
-- Modify: `src/bridge/chat-runtime.ts`
-- Modify: `src/bridge/chat-runtime.test.ts`
+- Modify: `src/gateway/chat-runtime.ts`
+- Modify: `src/gateway/chat-runtime.test.ts`
 
 **Interfaces:**
 
@@ -553,7 +553,7 @@ preparePrompt(context: { messageId: string; chatId: string; threadId: string | n
 enqueuePrepared(prepared: PreparedPrompt, prompt: acp.ContentBlock[]): Promise<void>;
 ```
 
-`PromptCardLifecycle` reducer is the sole owner of acknowledgement state. `PreparedPrompt` is only a one-shot orchestration handle around the already-created controller: it may guard its own call sequence (`created | enqueued | failed`) but must not store or migrate acknowledgement phases. Bridge calls `preparePrompt` before adding reaction; `attachAcknowledgement` only dispatches the acknowledgement event to Controller, then Bridge hydrates/enqueues the same handle. Hydrate/bootstrap/enqueue failure calls `failBeforeEnqueue`, which invokes `controller.finish("abandoned")`; the reducer's finish transition owns any required removal effect. `markEnqueued` is idempotent; duplicate attach/fail/enqueue calls are rejected or recorded diagnostically, never handled by a second reaction state machine.
+`PromptCardLifecycle` reducer is the sole owner of acknowledgement state. `PreparedPrompt` is only a one-shot orchestration handle around the already-created controller: it may guard its own call sequence (`created | enqueued | failed`) but must not store or migrate acknowledgement phases. Gateway calls `preparePrompt` before adding reaction; `attachAcknowledgement` only dispatches the acknowledgement event to Controller, then Gateway hydrates/enqueues the same handle. Hydrate/bootstrap/enqueue failure calls `failBeforeEnqueue`, which invokes `controller.finish("abandoned")`; the reducer's finish transition owns any required removal effect. `markEnqueued` is idempotent; duplicate attach/fail/enqueue calls are rejected or recorded diagnostically, never handled by a second reaction state machine.
 
 - [ ] **Step 1: RED/GREEN — prepare/attach/enqueue failure chain**
 
@@ -573,7 +573,7 @@ Cover normal complete, explicit cancel, agent error, shutdown, supersede, bootst
 
 - [ ] **Step 5: RED/GREEN — isolate every legacy writer**
 
-Add a full-`src/` inventory test for direct `sendUnifiedCard`/`updateUnifiedCard` references. Move production legacy calls from bridge/runtime/HummingClient behind `legacy-conversation-card-adapter.ts`, preserving behavior after each move. The temporary allowlist becomes exactly:
+Add a full-`src/` inventory test for direct `sendUnifiedCard`/`updateUnifiedCard` references. Move production legacy calls from gateway/runtime/HummingClient behind `legacy-conversation-card-adapter.ts`, preserving behavior after each move. The temporary allowlist becomes exactly:
 
 ```text
 src/presenter/lark-presenter.ts
@@ -593,18 +593,18 @@ Run runtime + ACP tests, build, Prettier. Commit: `refactor(runtime): own cards 
 
 ---
 
-### Task 11: Bridge Single-Writer Cutover and Stale Receipt Removal
+### Task 11: Gateway Single-Writer Cutover and Stale Receipt Removal
 
 **Files:**
 
-- Modify: `src/bridge/bridge.ts`
-- Modify: `src/bridge/chat-runtime.ts`
-- Modify: `src/bridge/chat-runtime.test.ts`
-- Modify: `src/bridge/bridge-card-lifecycle.test.ts`
+- Modify: `src/gateway/gateway.ts`
+- Modify: `src/gateway/chat-runtime.ts`
+- Modify: `src/gateway/chat-runtime.test.ts`
+- Modify: `src/gateway/gateway-card-lifecycle.test.ts`
 
 **Interfaces:**
 
-- Bridge strict parser accepts only exact v2 Cancel `{ v:2,c,th?,cancel:true,p,s,a }` and permission `{ v:2,c,th?,p,q,r,o }` schemas; version is checked before runtime lookup.
+- Gateway strict parser accepts only exact v2 Cancel `{ v:2,c,th?,cancel:true,p,s,a }` and permission `{ v:2,c,th?,p,q,r,o }` schemas; version is checked before runtime lookup.
 - ChatRuntime exposes:
 
 ```ts
@@ -612,7 +612,7 @@ consumeCancelAction(input: { promptToken: string; segmentToken: string; actionTo
 consumePermissionAction(input: { promptToken: string; permissionToken: string; requestId: string; optionId: string }): "accepted" | "stale" | "duplicate" | "invalid_option";
 ```
 
-- Bridge passes decoded tokens/request/option into these methods. Controller verifies current token, request ID, allowed option membership, and one-shot consumption before ACP resolve/cancel.
+- Gateway passes decoded tokens/request/option into these methods. Controller verifies current token, request ID, allowed option membership, and one-shot consumption before ACP resolve/cancel.
 - Produces complete v2 single-writer route when injected gate is true; production default remains false until Task 12 persistence/enablement.
 
 - [ ] **Step 1: RED/GREEN — acknowledgement happy path and lifetime**
@@ -631,13 +631,13 @@ Add strict payload decode RED, implement parser, rerun. Then add current selecti
 
 Add the full-src scanner RED, isolate each violating production call one file at a time, and rerun after every move until only the Task 10 allowlist remains.
 
-- [ ] **Step 5: RED/GREEN — final bridge composition with gate off**
+- [ ] **Step 5: RED/GREEN — final gateway composition with gate off**
 
-Add a bridge-construction/integration test that injects v2 true and expects the already-tested parser/reaction/runtime pieces to compose, plus a default-construction case that remains legacy. Run RED, add only the composition wiring, rerun. Do not persist/enable true in this commit.
+Add a gateway-construction/integration test that injects v2 true and expects the already-tested parser/reaction/runtime pieces to compose, plus a default-construction case that remains legacy. Run RED, add only the composition wiring, rerun. Do not persist/enable true in this commit.
 
 - [ ] **Step 6: Verify and commit**
 
-Run all bridge/runtime/ACP/presenter tests, full `npm test`, build, fmt check. Commit: `feat(cards): cut over to semantic lifecycle`.
+Run all gateway/runtime/ACP/presenter tests, full `npm test`, build, fmt check. Commit: `feat(cards): cut over to semantic lifecycle`.
 
 ---
 
@@ -650,16 +650,16 @@ Run all bridge/runtime/ACP/presenter tests, full `npm test`, build, fmt check. C
 - Modify: `bin/humming.test.ts`
 - Modify: `bin/process-control.ts`
 - Modify: `bin/process-control.test.ts`
-- Modify: `src/bridge/control-server.ts`
-- Modify: `src/bridge/control-server.test.ts`
+- Modify: `src/gateway/control-server.ts`
+- Modify: `src/gateway/control-server.test.ts`
 
 **Interfaces:**
 
 - CLI commands are exact:
   - `humming cards-v2 enable`: query live control status; require `cardActionSchemaVersion >= 2`; persist gate true; restart/reload.
-  - `humming cards-v2 disable --offline`: build-time/deployment command; persist and reread gate false without contacting or restarting a bridge.
+  - `humming cards-v2 disable --offline`: build-time/deployment command; persist and reread gate false without contacting or restarting a gateway.
   - `humming cards-v2 disable`: persist and reread gate false; restart/reload current binary.
-  - `humming cards-v2 rollback --checkout <absolute-path>`: verify the target checkout contains Task 1's guard marker/test and a built CLI; persist and reread gate false; stop current bridge; start the target checkout using its explicit binary plus the saved launch descriptor. Failure before stop leaves current bridge running; failure after stop reports loudly and does not re-enable gate.
+  - `humming cards-v2 rollback --checkout <absolute-path>`: verify the target checkout contains Task 1's guard marker/test and a built CLI; persist and reread gate false; stop current gateway; start the target checkout using its explicit binary plus the saved launch descriptor. Failure before stop leaves current gateway running; failure after stop reports loudly and does not re-enable gate.
 - Persists `features.conversationCardLifecycleV2`, default false.
 - Live status reports `cardActionSchemaVersion: 2` and effective gate state.
 
@@ -713,11 +713,11 @@ Build the new CLI/binary artifacts without starting them. Invoke that new CLI ar
 
 - [ ] **Step 4: Simulate rollback ordering while gate is off**
 
-Run the actual `humming cards-v2 rollback --checkout <rollback-fixture-checkout>` against an isolated temporary home and disposable bridge fixture. Verify the fixture contains Task 1's guard, gate is reread false before stop, the target fixture binary starts, and the original development runtime is untouched. This is a real old-checkout process switch in isolation, not only a mock or dry-run.
+Run the actual `humming cards-v2 rollback --checkout <rollback-fixture-checkout>` against an isolated temporary home and disposable gateway fixture. Verify the fixture contains Task 1's guard, gate is reread false before stop, the target fixture binary starts, and the original development runtime is untouched. This is a real old-checkout process switch in isolation, not only a mock or dry-run.
 
 - [ ] **Step 5: Explicitly enable v2 and restart/reload**
 
-Use the new CLI operation, which refuses unless the running bridge reports schema 2. Verify status reports effective gate true after restart/reload.
+Use the new CLI operation, which refuses unless the running gateway reports schema 2. Verify status reports effective gate true after restart/reload.
 
 - [ ] **Step 6: Real short-prompt verification with screenshot evidence**
 

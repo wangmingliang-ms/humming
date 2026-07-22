@@ -14,7 +14,7 @@ interface StoredBinding {
  * {@link BindingStore} backed by the `bindings` block of a single
  * `settings.json`. This keeps every piece of humming state in one file
  * (Miller's decision) and is the file the agent edits for natural-language
- * binding — the bridge watches it and hot-reloads.
+ * binding — the gateway watches it and hot-reloads.
  *
  * Reads/writes are whole-file: the store loads settings.json, mutates only the
  * `bindings` key, and writes the whole object back atomically (temp + rename)

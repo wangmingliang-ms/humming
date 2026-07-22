@@ -3,27 +3,27 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  bridgeControlSocketPath,
-  bridgeControlSocketPathForPlatform,
-  bridgeLaunchPath,
-  bridgeLogPath,
-  bridgePidPath,
-  bridgeRestartMarkerPath,
-  bridgeUnitName,
+  gatewayControlSocketPath,
+  gatewayControlSocketPathForPlatform,
+  gatewayLaunchPath,
+  gatewayLogPath,
+  gatewayPidPath,
+  gatewayRestartMarkerPath,
+  gatewayUnitName,
   buildSystemdServiceProperties,
-  clearBridgeRestartMarker,
+  clearGatewayRestartMarker,
   isAlive,
   isUserSystemdAvailable,
   managedCheckoutDir,
   readCodeRevision,
-  markBridgeRestart,
+  markGatewayRestart,
   parseProcessElapsedSeconds,
   persistLaunchArgv,
   readLaunchArgv,
   readPid,
   rewriteSubcommand,
   sameProcessControlGroup,
-  statusBridge,
+  statusGateway,
   ProcessControlError,
 } from "./process-control.js";
 
@@ -39,28 +39,28 @@ afterEach(() => {
 
 describe("path helpers", () => {
   it("compose PID, log, and restart-marker paths under the home dir", () => {
-    expect(bridgePidPath(dir)).toBe(path.join(dir, "bridge.pid"));
-    expect(bridgeLogPath(dir)).toBe(path.join(dir, "bridge.log"));
-    expect(bridgeRestartMarkerPath(dir)).toBe(path.join(dir, "bridge.restart"));
+    expect(gatewayPidPath(dir)).toBe(path.join(dir, "gateway.pid"));
+    expect(gatewayLogPath(dir)).toBe(path.join(dir, "gateway.log"));
+    expect(gatewayRestartMarkerPath(dir)).toBe(path.join(dir, "gateway.restart"));
   });
 
   it("composes the managed checkout and launch-file paths under the home dir", () => {
     expect(managedCheckoutDir(dir)).toBe(path.join(dir, "humming-project"));
-    expect(bridgeLaunchPath(dir)).toBe(path.join(dir, "bridge.launch.json"));
-    expect(bridgeControlSocketPath(dir)).toBe(path.join(dir, "control.sock"));
+    expect(gatewayLaunchPath(dir)).toBe(path.join(dir, "gateway.launch.json"));
+    expect(gatewayControlSocketPath(dir)).toBe(path.join(dir, "control.sock"));
   });
 
   it("uses a Windows named pipe for the control socket on Windows", () => {
-    const pipe = bridgeControlSocketPathForPlatform("C:\\Users\\miller\\.humming", "win32");
+    const pipe = gatewayControlSocketPathForPlatform("C:\\Users\\miller\\.humming", "win32");
 
-    expect(pipe).toMatch(/^\\\\\.\\pipe\\humming-bridge-[a-f0-9]{10}-control$/);
-    expect(pipe).toBe(bridgeControlSocketPathForPlatform("C:\\Users\\miller\\.humming", "win32"));
+    expect(pipe).toMatch(/^\\\\\.\\pipe\\humming-gateway-[a-f0-9]{10}-control$/);
+    expect(pipe).toBe(gatewayControlSocketPathForPlatform("C:\\Users\\miller\\.humming", "win32"));
   });
 
   it("derives a stable per-home systemd unit name", () => {
-    expect(bridgeUnitName(dir)).toMatch(/^humming-bridge-[a-f0-9]{10}\.service$/);
-    expect(bridgeUnitName(dir)).toBe(bridgeUnitName(dir));
-    expect(bridgeUnitName(path.join(dir, "other"))).not.toBe(bridgeUnitName(dir));
+    expect(gatewayUnitName(dir)).toMatch(/^humming-gateway-[a-f0-9]{10}\.service$/);
+    expect(gatewayUnitName(dir)).toBe(gatewayUnitName(dir));
+    expect(gatewayUnitName(path.join(dir, "other"))).not.toBe(gatewayUnitName(dir));
   });
 });
 
@@ -69,7 +69,7 @@ describe("systemd supervision policy", () => {
     expect(typeof isUserSystemdAvailable()).toBe("boolean");
   });
 
-  it("restarts the bridge after a process-requested failure exit", () => {
+  it("restarts the gateway after a process-requested failure exit", () => {
     expect(buildSystemdServiceProperties()).toContain("Restart=on-failure");
   });
 
@@ -77,7 +77,7 @@ describe("systemd supervision policy", () => {
     expect(buildSystemdServiceProperties()).toContain("RestartPreventExitStatus=0");
   });
 
-  it("identifies a CLI running inside the managed bridge service", () => {
+  it("identifies a CLI running inside the managed gateway service", () => {
     expect(
       sameProcessControlGroup(
         "0::/user.slice/user-1000.slice/user@1000.service/app.slice/humming.service\n",
@@ -124,18 +124,18 @@ describe("launch descriptor round-trip", () => {
   });
 
   it("throws a typed error for malformed JSON rather than throwing through", () => {
-    fs.writeFileSync(bridgeLaunchPath(dir), "{ not json");
+    fs.writeFileSync(gatewayLaunchPath(dir), "{ not json");
     expect(() => readLaunchArgv(dir)).toThrow(ProcessControlError);
   });
 
   it("throws a typed error for a well-formed JSON of the wrong shape", () => {
-    fs.writeFileSync(bridgeLaunchPath(dir), JSON.stringify({ spawnArgv: "not-an-array" }));
+    fs.writeFileSync(gatewayLaunchPath(dir), JSON.stringify({ spawnArgv: "not-an-array" }));
     expect(() => readLaunchArgv(dir)).toThrow(ProcessControlError);
   });
 
   it("rejects a spawnArgv array containing non-string entries", () => {
     fs.writeFileSync(
-      bridgeLaunchPath(dir),
+      gatewayLaunchPath(dir),
       JSON.stringify({ spawnArgv: ["proxy", 42], workingDirectory: "/x", savedAt: "now" }),
     );
     expect(() => readLaunchArgv(dir)).toThrow(ProcessControlError);
@@ -144,14 +144,14 @@ describe("launch descriptor round-trip", () => {
 
 describe("restart marker helpers", () => {
   it("creates and clears the restart marker", () => {
-    const marker = bridgeRestartMarkerPath(dir);
+    const marker = gatewayRestartMarkerPath(dir);
     expect(fs.existsSync(marker)).toBe(false);
 
-    markBridgeRestart(dir);
+    markGatewayRestart(dir);
     expect(fs.existsSync(marker)).toBe(true);
     expect(fs.readFileSync(marker, "utf-8").trim()).toMatch(/^\d+$/);
 
-    clearBridgeRestartMarker(dir);
+    clearGatewayRestartMarker(dir);
     expect(fs.existsSync(marker)).toBe(false);
   });
 });
@@ -231,14 +231,14 @@ describe("parseProcessElapsedSeconds", () => {
   });
 });
 
-describe("statusBridge", () => {
+describe("statusGateway", () => {
   it("prints the Lark event-stream state separately from process liveness", async () => {
-    fs.writeFileSync(bridgePidPath(dir), `${process.pid}\n`, "utf-8");
+    fs.writeFileSync(gatewayPidPath(dir), `${process.pid}\n`, "utf-8");
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     let output = "";
 
     try {
-      await statusBridge({
+      await statusGateway({
         homeDir: dir,
         requestControl: async () => ({
           ok: true,
@@ -250,7 +250,7 @@ describe("statusBridge", () => {
       write.mockRestore();
     }
 
-    expect(output).toContain("bridge: running");
+    expect(output).toContain("gateway: running");
     expect(output).toContain("lark: reconnecting");
   });
 });

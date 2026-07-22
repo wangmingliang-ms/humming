@@ -6,13 +6,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LaunchDescriptor } from "./process-control.js";
 import {
-  bridgeControlSocketPath,
-  bridgePidPath,
-  clearBridgeRestartMarker,
+  gatewayControlSocketPath,
+  gatewayPidPath,
+  clearGatewayRestartMarker,
   isAlive,
-  startBridge,
+  startGateway,
 } from "./process-control.js";
-import { sendControlRequest } from "../src/bridge/control-server.js";
+import { sendControlRequest } from "../src/gateway/control-server.js";
 import {
   sendLifecycleNotice,
   type LifecycleNoticeDelivery,
@@ -270,7 +270,7 @@ export interface LifecycleCoordinatorRuntime {
   }>;
   isAlive(pid: number): boolean;
   delay(ms: number): Promise<void>;
-  startBridge(transaction: LifecycleTransaction): Promise<void>;
+  startGateway(transaction: LifecycleTransaction): Promise<void>;
   isReady(transaction: LifecycleTransaction): Promise<boolean>;
   forceTerminate(pid: number): Promise<void>;
   complete(result: LifecycleCoordinatorResult): Promise<void>;
@@ -288,7 +288,7 @@ export async function runLifecycleCoordinator(
     await runtime.arm();
     const ready = await runtime.beginLifecycle(transaction);
     if (ready.transactionId !== transaction.id || !ready.readyToExit) {
-      throw new LifecycleTransactionError("Bridge returned an invalid lifecycle acknowledgement");
+      throw new LifecycleTransactionError("Gateway returned an invalid lifecycle acknowledgement");
     }
 
     if (
@@ -306,7 +306,7 @@ export async function runLifecycleCoordinator(
           runtime,
         ))
       ) {
-        throw new LifecycleTransactionError(`old Bridge PID ${transaction.oldPid} did not exit`);
+        throw new LifecycleTransactionError(`old Gateway PID ${transaction.oldPid} did not exit`);
       }
     }
 
@@ -316,7 +316,7 @@ export async function runLifecycleCoordinator(
       return result;
     }
 
-    await runtime.startBridge(transaction);
+    await runtime.startGateway(transaction);
     if (
       !(await waitForCondition(
         () => runtime.isReady(transaction),
@@ -324,7 +324,7 @@ export async function runLifecycleCoordinator(
         runtime,
       ))
     ) {
-      throw new LifecycleTransactionError("new Bridge did not become ready before its deadline");
+      throw new LifecycleTransactionError("new Gateway did not become ready before its deadline");
     }
     const result = { outcome: "restarted", transaction } as const;
     await runtime.complete(result);
@@ -406,7 +406,7 @@ function coordinatorLogger(): LarkLogger {
 
 function readRestartDeliveries(home: string): readonly LifecycleNoticeDelivery[] {
   try {
-    const marker = JSON.parse(fs.readFileSync(path.join(home, "bridge.restart"), "utf-8")) as {
+    const marker = JSON.parse(fs.readFileSync(path.join(home, "gateway.restart"), "utf-8")) as {
       deliveries?: unknown;
     };
     if (!Array.isArray(marker.deliveries)) return [];
@@ -466,12 +466,12 @@ async function runCoordinatorCli(argv: readonly string[]): Promise<void> {
       if (current.intent === "restart") {
         fs.mkdirSync(current.home, { recursive: true });
         fs.writeFileSync(
-          path.join(current.home, "bridge.restart"),
+          path.join(current.home, "gateway.restart"),
           JSON.stringify({ requestedAt: Date.now(), deliveries: [] }),
           "utf-8",
         );
       }
-      const response = await sendControlRequest(bridgeControlSocketPath(current.home), {
+      const response = await sendControlRequest(gatewayControlSocketPath(current.home), {
         method: "beginLifecycle",
         params: { transaction: current },
       });
@@ -481,7 +481,7 @@ async function runCoordinatorCli(argv: readonly string[]): Promise<void> {
         readonly transactionId: string;
         readonly readyToExit: true;
       };
-      const exit = await sendControlRequest(bridgeControlSocketPath(current.home), {
+      const exit = await sendControlRequest(gatewayControlSocketPath(current.home), {
         method: "shutdown",
         params: {},
       });
@@ -490,13 +490,13 @@ async function runCoordinatorCli(argv: readonly string[]): Promise<void> {
     },
     isAlive,
     delay,
-    startBridge: async (current) => {
+    startGateway: async (current) => {
       try {
-        fs.rmSync(bridgePidPath(current.home), { force: true });
+        fs.rmSync(gatewayPidPath(current.home), { force: true });
       } catch {
         // stale PID cleanup is best effort
       }
-      await startBridge({
+      await startGateway({
         homeDir: current.home,
         selfPath: path.join(path.dirname(fileURLToPath(import.meta.url)), "humming.js"),
         spawnArgv: current.launch.spawnArgv,
@@ -504,13 +504,13 @@ async function runCoordinatorCli(argv: readonly string[]): Promise<void> {
       });
     },
     isReady: async (current) => {
-      const pidText = fs.existsSync(bridgePidPath(current.home))
-        ? fs.readFileSync(bridgePidPath(current.home), "utf-8").trim()
+      const pidText = fs.existsSync(gatewayPidPath(current.home))
+        ? fs.readFileSync(gatewayPidPath(current.home), "utf-8").trim()
         : "";
       const pid = Number(pidText);
       if (!Number.isInteger(pid) || pid <= 0 || !isAlive(pid)) return false;
       try {
-        const response = await sendControlRequest(bridgeControlSocketPath(current.home), {
+        const response = await sendControlRequest(gatewayControlSocketPath(current.home), {
           method: "ping",
           params: {},
         });
@@ -529,11 +529,11 @@ async function runCoordinatorCli(argv: readonly string[]): Promise<void> {
     complete: async (result) => {
       if (result.outcome === "restartFailed") {
         await notifyRestartFailed(result.transaction.home);
-        clearBridgeRestartMarker(result.transaction.home);
+        clearGatewayRestartMarker(result.transaction.home);
       }
       if (result.outcome === "stopped") {
         try {
-          fs.rmSync(bridgePidPath(result.transaction.home), { force: true });
+          fs.rmSync(gatewayPidPath(result.transaction.home), { force: true });
         } catch {
           // best effort
         }

@@ -15,12 +15,12 @@ clarity, correctness, and maintainability rather than migration compatibility.
 
 ## 2. Domain story
 
-A user operates a Humming Bridge, inspects available ACP Agents, and manages the Agent Session
+A user operates a Humming Gateway, inspects available ACP Agents, and manages the Agent Session
 associated with a Lark chat Topic.
 
 The user may:
 
-- run or manage the Bridge process;
+- run or manage the Gateway process;
 - inspect an arbitrary Agent and the capabilities it would provide in a repository;
 - inspect the live capabilities of the current Topic Session;
 - bind the Topic to an existing Agent Session;
@@ -37,7 +37,7 @@ accumulated Agent-specific controls remain caller-supplied desired values.
 
 | Term                      | Meaning                                                                                                                                    |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Bridge**                | The long-running process connecting Lark to ACP Agents.                                                                                    |
+| **Gateway**                | The long-running process connecting Lark to ACP Agents.                                                                                    |
 | **Agent**                 | An ACP-compatible agent preset or invocation that can create Sessions.                                                                     |
 | **Topic Session**         | The Agent Session selected for one Lark chat/thread scope.                                                                                 |
 | **Session Profile**       | The desired Agent plus Model, Mode, Permission, and Config controls.                                                                       |
@@ -52,8 +52,8 @@ accumulated Agent-specific controls remain caller-supplied desired values.
 ```text
 humming
 ├── run | start | stop | restart | status | logs
-│   (top-level shortcuts for the corresponding bridge commands)
-├── bridge
+│   (top-level shortcuts for the corresponding gateway commands)
+├── gateway
 │   ├── run
 │   ├── start
 │   ├── stop
@@ -86,13 +86,13 @@ business arguments are not accepted.
 The only positional pass-through is an explicit external Agent command after `--`:
 
 ```bash
-humming bridge run -- node ./my-agent.js --acp
+humming gateway run -- node ./my-agent.js --acp
 ```
 
 Unknown options, extra positional arguments, missing required options, and conflicting input
 sources are errors.
 
-The top-level Bridge shortcuts and their `humming bridge ...` forms register the same Commander
+The top-level Gateway shortcuts and their `humming gateway ...` forms register the same Commander
 actions and therefore have identical options, validation, persistence, and lifecycle behavior.
 
 ## 5. Common option conventions
@@ -121,22 +121,22 @@ Message input uses exactly one of:
 Commands running inside a Humming-spawned Agent may derive chat and thread scope from
 `HUMMING_CHAT_ID` and `HUMMING_THREAD_ID`. Explicit options override derived scope.
 
-## 6. Bridge commands
+## 6. Gateway commands
 
 ```bash
-humming bridge run
-humming bridge start
-humming bridge stop
-humming bridge restart
-humming bridge status
-humming bridge logs
+humming gateway run
+humming gateway start
+humming gateway stop
+humming gateway restart
+humming gateway status
+humming gateway logs
 ```
 
-- `bridge run` runs in the foreground, writes logs to the terminal, and stops on `Ctrl+C`.
-- `bridge start` starts the managed background process and returns control to the terminal.
-- `bridge stop`, `restart`, `status`, and `logs` operate on that managed process.
-- Agent selection and other Bridge values are named options.
-- `bridge run` may receive an external Agent command after `--`.
+- `gateway run` runs in the foreground, writes logs to the terminal, and stops on `Ctrl+C`.
+- `gateway start` starts the managed background process and returns control to the terminal.
+- `gateway stop`, `restart`, `status`, and `logs` operate on that managed process.
+- Agent selection and other Gateway values are named options.
+- `gateway run` may receive an external Agent command after `--`.
 
 ## 7. Agent inspection commands
 
@@ -229,7 +229,7 @@ Permission is a Humming policy constrained by the CLI input schema.
 
 ### 9.3 Pending Configuration ownership
 
-Each Topic may have at most one Pending Configuration. The Bridge is its single semantic owner.
+Each Topic may have at most one Pending Configuration. The Gateway is its single semantic owner.
 Pending Configuration is the canonical representation of all not-yet-applied profile changes.
 
 The implementation must not maintain competing semantic truth in separate pending Agent,
@@ -255,7 +255,7 @@ Conceptually:
 pending := merge(pending, incoming)
 ```
 
-The CLI and control protocol validate input shape, but the Bridge does not query Agent capabilities
+The CLI and control protocol validate input shape, but the Gateway does not query Agent capabilities
 before replacing the Pending Configuration. If the Desired Agent changes, the caller is responsible
 for selecting controls from that Agent's capabilities.
 
@@ -326,7 +326,7 @@ The implementation must preserve these invariants:
 
 1. A CLI invocation resolves to exactly one command.
 2. A Topic has at most one current profile and one Pending Configuration.
-3. Only the Bridge owns and mutates Pending Configuration.
+3. Only the Gateway owns and mutates Pending Configuration.
 4. Pending changes are merged field-by-field with last-write-wins semantics.
 5. CLI and control-protocol input shape is validated before entering Pending Configuration.
 6. The calling Agent owns capability discovery and selection of Agent-specific control values.
@@ -346,7 +346,7 @@ CLI text
   -> Zod validation of external values
   -> command-specific typed input
   -> command handler
-  -> existing Bridge / Session / Agent / Process services
+  -> existing Gateway / Session / Agent / Process services
 ```
 
 Use:
@@ -370,7 +370,7 @@ bin/
     │   ├── schema.ts
     │   └── load.ts
     └── commands/
-        ├── bridge.ts
+        ├── gateway.ts
         ├── agent.ts
         ├── session.ts
         ├── setup.ts
@@ -379,7 +379,7 @@ bin/
 ```
 
 `bin/humming.ts` should contain only bootstrap, program construction, and top-level error handling.
-Existing Bridge, Agent registry, and process-control implementations should be reused rather than
+Existing Gateway, Agent registry, and process-control implementations should be reused rather than
 reimplemented.
 
 ## 14. Documentation contract

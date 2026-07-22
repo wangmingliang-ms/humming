@@ -4,7 +4,7 @@
 
 **Goal:** Make Stop and Restart use one cross-platform two-phase lifecycle protocol that drains active sessions before process exit and lets an independent coordinator complete Stop or relaunch Humming.
 
-**Architecture:** A platform adapter arms a coordinator before contacting the Bridge. The Bridge enters a persisted in-memory lifecycle intent (`stop` or `restart`), stops ingress, drains every runtime through ACP cancellation and semantic `interrupted` completion, sends lifecycle notices, acknowledges `readyToExit`, and exits normally. The coordinator waits for the old PID, escalates only on timeout, and for restart launches the saved descriptor and waits for the new Bridge to become ready; Windows uses a detached child, WSL/systemd uses a separate transient unit/cgroup, and non-systemd POSIX uses a detached child.
+**Architecture:** A platform adapter arms a coordinator before contacting the Gateway. The Gateway enters a persisted in-memory lifecycle intent (`stop` or `restart`), stops ingress, drains every runtime through ACP cancellation and semantic `interrupted` completion, sends lifecycle notices, acknowledges `readyToExit`, and exits normally. The coordinator waits for the old PID, escalates only on timeout, and for restart launches the saved descriptor and waits for the new Gateway to become ready; Windows uses a detached child, WSL/systemd uses a separate transient unit/cgroup, and non-systemd POSIX uses a detached child.
 
 **Tech Stack:** TypeScript, Node.js child_process/net/fs, systemd-run on WSL/Linux when available, Windows detached Node helper, Vitest.
 
@@ -13,8 +13,8 @@
 - `Update` performs build/update work and then uses the exact Restart protocol.
 - Stop and Restart share drain semantics but remain distinct lifecycle intents.
 - Normal Stop/Restart must not begin with SIGTERM and must not infer intent from signal/error text.
-- The coordinator must be armed before Bridge drain begins and must outlive the Bridge/Agent process tree.
-- Bridge owns Session/Card semantics; Agent only receives ACP cancellation; coordinator owns only process lifecycle.
+- The coordinator must be armed before Gateway drain begins and must outlive the Gateway/Agent process tree.
+- Gateway owns Session/Card semantics; Agent only receives ACP cancellation; coordinator owns only process lifecycle.
 - Active Responses finish as `interrupted`, never `failed`, and expected ACP close/SIGTERM/internal error emits no crash card.
 - New ingress after quiescing is rejected with an explicit not-queued notice.
 - Coordinator uses SIGTERM/force kill only after bounded graceful-drain/exit timeouts.
@@ -29,8 +29,8 @@
 
 - Create: `bin/lifecycle-coordinator.ts`
 - Create: `bin/lifecycle-coordinator.test.ts`
-- Modify: `src/bridge/control-server.ts`
-- Modify: `src/bridge/control-server.test.ts`
+- Modify: `src/gateway/control-server.ts`
+- Modify: `src/gateway/control-server.test.ts`
 
 **Interfaces:**
 
@@ -39,7 +39,7 @@
 - Adds Control request `beginLifecycle` and result `{ accepted: true, transactionId, readyToExit: true }`.
 
 - [ ] Write failing tests proving transaction serialization, state validation, and Control request routing.
-- [ ] Run `npx vitest run bin/lifecycle-coordinator.test.ts src/bridge/control-server.test.ts`; expect missing exports/request failure.
+- [ ] Run `npx vitest run bin/lifecycle-coordinator.test.ts src/gateway/control-server.test.ts`; expect missing exports/request failure.
 - [ ] Implement the minimal transaction types, atomic state-file persistence, and Control schema.
 - [ ] Rerun the targeted tests; expect PASS.
 - [ ] Commit `feat(runtime): define lifecycle transaction protocol`.
@@ -63,32 +63,32 @@
 - [ ] Write failing tests asserting command/argv/cgroup strategy for Windows, systemd, and detached POSIX.
 - [ ] Run the targeted tests; expect strategy/launcher failures.
 - [ ] Implement platform selection and coordinator CLI entry point without initiating shutdown yet.
-- [ ] Test that helper launch is acknowledged before any Bridge control request.
+- [ ] Test that helper launch is acknowledged before any Gateway control request.
 - [ ] Rerun targeted tests and build; expect PASS.
 - [ ] Commit `feat(runtime): arm cross-platform lifecycle coordinator`.
 
-### Task 3: Bridge quiescing and Runtime graceful drain
+### Task 3: Gateway quiescing and Runtime graceful drain
 
 **Files:**
 
-- Modify: `src/bridge/bridge.ts`
-- Modify: `src/bridge/bridge-card-lifecycle.test.ts`
-- Modify: `src/bridge/chat-runtime.ts`
-- Modify: `src/bridge/chat-runtime.test.ts`
+- Modify: `src/gateway/gateway.ts`
+- Modify: `src/gateway/gateway-card-lifecycle.test.ts`
+- Modify: `src/gateway/chat-runtime.ts`
+- Modify: `src/gateway/chat-runtime.test.ts`
 
 **Interfaces:**
 
-- Adds Bridge lifecycle state `running | quiescing(intent, transactionId) | readyToExit`.
+- Adds Gateway lifecycle state `running | quiescing(intent, transactionId) | readyToExit`.
 - Adds `ChatRuntime.drain(intent): Promise<DrainResult>`.
 - Drain order: commit intent/suppress crash → revoke actions and interrupt Response → ACP cancel → bounded wait/persist → close Agent.
 
 - [ ] Write a failing Runtime test where prompt rejection follows intentional drain and assert no crash notice, Response `interrupted`, and ACP cancel precedes process kill.
 - [ ] Run the single test; verify RED for existing shutdown behavior.
 - [ ] Implement the minimum `drain()` path and make the test GREEN.
-- [ ] Write a failing Bridge test proving ingress after quiescing is not queued and all runtimes drain before lifecycle notice.
-- [ ] Implement Bridge lifecycle state and ordering.
+- [ ] Write a failing Gateway test proving ingress after quiescing is not queued and all runtimes drain before lifecycle notice.
+- [ ] Implement Gateway lifecycle state and ordering.
 - [ ] Add timeout tests proving escalation is reported as expected interruption, not crash.
-- [ ] Rerun Runtime/Bridge test suites; expect PASS.
+- [ ] Rerun Runtime/Gateway test suites; expect PASS.
 - [ ] Commit `feat(runtime): gracefully drain sessions before shutdown`.
 
 ### Task 4: Coordinator stop/restart execution and terminal outcomes
@@ -102,12 +102,12 @@
 
 **Interfaces:**
 
-- Coordinator waits for Bridge `readyToExit`, then old PID exit.
+- Coordinator waits for Gateway `readyToExit`, then old PID exit.
 - Stop terminates transaction.
 - Restart starts saved launch descriptor, waits for control socket/readiness, and records `restarted` or `restartFailed`.
 - Adds lifecycle notice `restartFailed` with patch-or-fallback delivery.
 
-- [ ] Write failing coordinator tests for graceful success, Bridge timeout→SIGTERM, restart success, startup timeout, and restart failure.
+- [ ] Write failing coordinator tests for graceful success, Gateway timeout→SIGTERM, restart success, startup timeout, and restart failure.
 - [ ] Implement bounded state machine and readiness probe.
 - [ ] Write failing lifecycle card tests for `restartFailed` patch and fallback.
 - [ ] Implement terminal lifecycle notices.
@@ -132,7 +132,7 @@
 - [ ] Write failing CLI tests proving arm-before-control ordering and `Update → Restart` reuse.
 - [ ] Implement Stop/Restart transaction creation and helper handoff.
 - [ ] Remove duplicate old execution paths only after tests are green.
-- [ ] Add regression for Windows self-update where caller dies but coordinator starts the new Bridge.
+- [ ] Add regression for Windows self-update where caller dies but coordinator starts the new Gateway.
 - [ ] Add regression for WSL/systemd helper in a different cgroup.
 - [ ] Rerun CLI/process tests and build; expect PASS.
 - [ ] Commit `refactor(runtime): route lifecycle commands through coordinator`.

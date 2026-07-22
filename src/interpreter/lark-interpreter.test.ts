@@ -20,7 +20,7 @@ function textEvent(
     content: JSON.stringify({ text }),
     ...(mentions ? { mentions } : {}),
   };
-  // The bridge passes the full event; only `message` matters for text parsing.
+  // The gateway passes the full event; only `message` matters for text parsing.
   return { message } as unknown as Lark.RawMessageEvent;
 }
 

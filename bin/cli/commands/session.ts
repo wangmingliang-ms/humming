@@ -15,7 +15,7 @@ import type {
   SessionRecord,
 } from "../../../src/index.js";
 import {
-  callBridgeControl,
+  callGatewayControl,
   loadCliBase,
   resolveAgentProbeTarget,
   resolveOptionalChatScope,
@@ -180,7 +180,7 @@ async function fetchLiveCapabilities(
 ): Promise<SessionCapabilitiesSnapshot> {
   const { homeDir } = loadCliBase(globals);
   const { chatId, threadId } = resolveRequiredChatScope(globals, "session capabilities");
-  const result = await callBridgeControl(homeDir, {
+  const result = await callGatewayControl(homeDir, {
     method: "capabilities",
     params: { chatId, threadId },
   });
@@ -193,7 +193,7 @@ async function fetchLiveCapabilities(
 function parseCapabilitiesSnapshot(value: unknown): SessionCapabilitiesSnapshot {
   const result = sessionCapabilitiesSnapshotSchema.safeParse(value);
   if (!result.success) {
-    throw new CliError(`invalid capabilities response from bridge: ${result.error.message}`);
+    throw new CliError(`invalid capabilities response from gateway: ${result.error.message}`);
   }
   return result.data;
 }
@@ -281,7 +281,7 @@ async function runSessionBind(globals: GlobalOptions & SessionBindCliOptions): P
 
   let result2: unknown;
   try {
-    result2 = await callBridgeControl(base.homeDir, { method: "bindSession", params: { record } });
+    result2 = await callGatewayControl(base.homeDir, { method: "bindSession", params: { record } });
   } catch {
     const store = new FileSessionStore(base.dataDir);
     await store.init();
@@ -344,7 +344,7 @@ async function runSessionConfigure(
   const message: PendingSessionMessage | undefined =
     messageCount > 0 ? { prompt: readMessageInput(globals), createdAt: Date.now() } : undefined;
 
-  const result = await callBridgeControl(base.homeDir, {
+  const result = await callGatewayControl(base.homeDir, {
     method: "configureSession",
     params: {
       chatId,
@@ -370,7 +370,7 @@ async function runSessionSend(globals: GlobalOptions & SessionSendCliOptions): P
     prompt: readMessageInput(globals),
     createdAt: Date.now(),
   };
-  const result = await callBridgeControl(homeDir, {
+  const result = await callGatewayControl(homeDir, {
     method: "sendMessage",
     params: { chatId, threadId, message },
   });
@@ -389,7 +389,7 @@ function buildControlPatch(input: ControlPatchInput): SessionControlPatch | unde
   if (input.model === "auto") patch.clearModelId = true;
   else if (input.model !== undefined) patch.modelId = input.model;
   if (input.mode !== undefined) patch.modeId = input.mode;
-  if (input.permission !== undefined) patch.bridgePermissionMode = input.permission;
+  if (input.permission !== undefined) patch.gatewayPermissionMode = input.permission;
   if (Object.keys(input.config).length > 0) patch.config = input.config;
   return hasSessionControls(patch) ? patch : undefined;
 }

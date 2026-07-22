@@ -4,7 +4,7 @@
  * (docs/cli-command-model-SPEC.md §4, §13).
  */
 import { Command } from "commander";
-import { registerBridgeCommand, registerBridgeShortcuts } from "./commands/bridge.js";
+import { registerGatewayCommand, registerGatewayShortcuts } from "./commands/gateway.js";
 import { registerAgentCommand } from "./commands/agent.js";
 import { registerSessionCommand } from "./commands/session.js";
 import { registerSetupCommand } from "./commands/setup.js";
@@ -13,7 +13,7 @@ import { registerUpdateCommand } from "./commands/update.js";
 
 export interface BuildProgramOptions {
   readonly version: string;
-  /** Absolute path of the built CLI entry (`dist/bin/humming.js`), used to spawn `bridge start` in the background. */
+  /** Absolute path of the built CLI entry (`dist/bin/humming.js`), used to spawn `gateway start` in the background. */
   readonly selfPath: string;
 }
 
@@ -26,7 +26,7 @@ export interface BuildProgramOptions {
  */
 export function buildProgram(opts: BuildProgramOptions): Command {
   const program = new Command("humming")
-    .description("Bridge a Lark bot to any ACP-compatible AI agent")
+    .description("Connect a Lark bot to any ACP-compatible AI agent")
     .version(opts.version, "-v, --version")
     .option("--home <dir>", "Humming home directory (default: ~/.humming)")
     .option("--settings-path <path>", "settings.json path override (default: <home>/settings.json)")
@@ -34,8 +34,8 @@ export function buildProgram(opts: BuildProgramOptions): Command {
     .exitOverride()
     .configureHelp({ showGlobalOptions: true });
 
-  registerBridgeCommand(program, { selfPath: opts.selfPath });
-  registerBridgeShortcuts(program, { selfPath: opts.selfPath });
+  registerGatewayCommand(program, { selfPath: opts.selfPath });
+  registerGatewayShortcuts(program, { selfPath: opts.selfPath });
   registerAgentCommand(program);
   registerSessionCommand(program);
   registerSetupCommand(program);

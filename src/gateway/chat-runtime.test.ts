@@ -45,7 +45,7 @@ vi.mock("../acp/agent-process.js", async (importOriginal) => {
 /**
  * Minimal options to construct a ChatRuntime without spawning anything.
  * These tests only exercise the pre-bootstrap getters (`processing` /
- * `lastActivity`) that the bridge's idle-eviction reads, so the presenter /
+ * `lastActivity`) that the gateway's idle-eviction reads, so the presenter /
  * session store are never touched.
  */
 function opts(logger: LarkLogger = createPinoLogger()): ChatRuntimeOptions {
@@ -84,7 +84,7 @@ describe("ChatRuntime idle-eviction getters (regression: evicted mid-spawn)", ()
 
   it("a fresh runtime is NOT idle under a normal timeout", () => {
     const runtime = new ChatRuntime(opts());
-    const idleTimeoutMs = 24 * 60 * 60_000; // bridge default (24h)
+    const idleTimeoutMs = 24 * 60 * 60_000; // gateway default (24h)
     const isIdle = Date.now() - runtime.lastActivity > idleTimeoutMs;
     expect(isIdle).toBe(false);
   });
@@ -1302,7 +1302,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     });
 
     await runtime.enqueue({
-      prompt: [{ type: "text", text: "restart the bridge" }],
+      prompt: [{ type: "text", text: "restart the gateway" }],
       messageId: "om_restart",
       chatId: "oc_test",
     });
@@ -1423,7 +1423,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     }
   });
 
-  it("forces an in-flight card to a terminal state when the bridge shuts down", async () => {
+  it("forces an in-flight card to a terminal state when the gateway shuts down", async () => {
     const states: RecordedConversationState[] = [];
     const fake = makeFakeAgent();
     spawnAgentMock.mockResolvedValue(fake.agent);
@@ -1434,7 +1434,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     });
 
     await runtime.enqueue({
-      prompt: [{ type: "text", text: "restart the bridge" }],
+      prompt: [{ type: "text", text: "restart the gateway" }],
       messageId: "om_restart",
       chatId: "oc_test",
     });
@@ -1818,11 +1818,11 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
   });
 
   it("applyControlsAtTurnBoundary applies and persists a control patch bypassing the busy guard", async () => {
-    // The Bridge is the sole owner of Pending Configuration (spec §9.3) and
+    // The Gateway is the sole owner of Pending Configuration (spec §9.3) and
     // calls this method exactly at the Turn boundary, when `processing` may
     // still read `true`. Unlike the public applyControls(), it must not
     // reject on that guard, and it must not send any notice itself — the
-    // Bridge builds and sends the outcome notice.
+    // Gateway builds and sends the outcome notice.
     const fake = makeFakeAgent();
     const setModel = vi.fn(async () => ({}));
     fake.agent.connection = {
@@ -2119,7 +2119,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
         auto_edit: { type: "boolean", value: true },
         approval_mode: { value: "auto" },
       },
-      bridgePermissionMode: "alwaysAsk",
+      gatewayPermissionMode: "alwaysAsk",
     });
 
     expect(setModel).toHaveBeenCalledWith({ sessionId: "sess_fake", modelId: "model-new" });
@@ -2138,7 +2138,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     expect(runtime.capabilities()).toMatchObject({
       models: { currentModelId: "model-new" },
       modes: { currentModeId: "agent" },
-      bridgePermissionMode: "alwaysAsk",
+      gatewayPermissionMode: "alwaysAsk",
     });
 
     expect(saved.at(-1)).toMatchObject({
@@ -2149,7 +2149,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
           auto_edit: { type: "boolean", value: true },
           approval_mode: { value: "auto" },
         },
-        bridgePermissionMode: "alwaysAsk",
+        gatewayPermissionMode: "alwaysAsk",
       },
     });
     const notice = notices.at(-1);

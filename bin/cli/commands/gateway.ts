@@ -1,5 +1,5 @@
 /**
- * `humming bridge run|start|stop|restart|status|logs`
+ * `humming gateway run|start|stop|restart|status|logs`
  * (docs/cli-command-model-SPEC.md §6).
  */
 import fs from "node:fs";
@@ -8,7 +8,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import {
-  LarkBridge,
+  LarkGateway,
   FileSessionStore,
   SettingsBindingStore,
   LarkHttpClient,
@@ -18,12 +18,12 @@ import {
 import type { LarkLogger, ResolvedAgentInvocation } from "../../../src/index.js";
 import { resolveAgent, type Registry } from "../../agents.js";
 import {
-  startBridge,
-  statusBridge,
+  startGateway,
+  statusGateway,
   tailLog,
-  bridgeControlSocketPath,
-  bridgeRestartMarkerPath,
-  markBridgeRestart,
+  gatewayControlSocketPath,
+  gatewayRestartMarkerPath,
+  markGatewayRestart,
   persistLaunchArgv,
   readLaunchArgv,
   readCodeRevision,
@@ -36,7 +36,7 @@ import {
   installHomeBootstrap,
   resolveConfig,
   resolveHomeDir,
-  type BridgeRunFlags,
+  type GatewayRunFlags,
 } from "../config/load.js";
 import { parsePermissionOption } from "../options.js";
 import { handoffLifecycle } from "../lifecycle.js";
@@ -45,7 +45,7 @@ import { CliError, formatError } from "../errors.js";
 /** Non-zero exit tells the systemd supervisor to restart after graceful shutdown. */
 const SUPERVISOR_RESTART_EXIT_CODE = 75;
 
-interface BridgeRunCliOptions {
+interface GatewayRunCliOptions {
   readonly agent?: string;
   readonly cwd?: string;
   readonly unboundCwd?: string;
@@ -58,39 +58,39 @@ interface BridgeRunCliOptions {
   readonly requireMention?: boolean;
 }
 
-export interface RegisterBridgeCommandOptions {
-  /** Absolute path of the built CLI entry (`dist/bin/humming.js`), used to spawn `bridge start` in the background. */
+export interface RegisterGatewayCommandOptions {
+  /** Absolute path of the built CLI entry (`dist/bin/humming.js`), used to spawn `gateway start` in the background. */
   readonly selfPath: string;
 }
 
-export function registerBridgeCommand(program: Command, opts: RegisterBridgeCommandOptions): void {
-  const bridge = program.command("bridge").description("run and manage the Humming bridge process");
-  registerBridgeActions(bridge, opts);
+export function registerGatewayCommand(program: Command, opts: RegisterGatewayCommandOptions): void {
+  const gateway = program.command("gateway").description("run and manage the Humming gateway process");
+  registerGatewayActions(gateway, opts);
 }
 
-/** Register top-level shortcuts that share the canonical Bridge action handlers. */
-export function registerBridgeShortcuts(
+/** Register top-level shortcuts that share the canonical Gateway action handlers. */
+export function registerGatewayShortcuts(
   program: Command,
-  opts: RegisterBridgeCommandOptions,
+  opts: RegisterGatewayCommandOptions,
 ): void {
-  registerBridgeActions(program, opts);
+  registerGatewayActions(program, opts);
 }
 
-function registerBridgeActions(parent: Command, opts: RegisterBridgeCommandOptions): void {
-  addRunOptions(parent.command("run").description("run the bridge in the foreground"), true).action(
+function registerGatewayActions(parent: Command, opts: RegisterGatewayCommandOptions): void {
+  addRunOptions(parent.command("run").description("run the gateway in the foreground"), true).action(
     async function (this: Command, rawAgentCommand: readonly string[]) {
       requireDoubleDashForRawCommand(this, rawAgentCommand);
-      await runBridgeRun(
-        this.optsWithGlobals<GlobalOptions & BridgeRunCliOptions>(),
+      await runGatewayRun(
+        this.optsWithGlobals<GlobalOptions & GatewayRunCliOptions>(),
         rawAgentCommand,
       );
     },
   );
 
-  addRunOptions(parent.command("start").description("start the bridge in the background")).action(
+  addRunOptions(parent.command("start").description("start the gateway in the background")).action(
     async function (this: Command) {
-      await runBridgeStart(
-        this.optsWithGlobals<GlobalOptions & BridgeRunCliOptions>(),
+      await runGatewayStart(
+        this.optsWithGlobals<GlobalOptions & GatewayRunCliOptions>(),
         opts.selfPath,
       );
     },
@@ -98,28 +98,28 @@ function registerBridgeActions(parent: Command, opts: RegisterBridgeCommandOptio
 
   parent
     .command("stop")
-    .description("stop the running bridge")
+    .description("stop the running gateway")
     .action(async function (this: Command) {
-      await runBridgeStop(this.optsWithGlobals<GlobalOptions>());
+      await runGatewayStop(this.optsWithGlobals<GlobalOptions>());
     });
 
-  addRunOptions(parent.command("restart").description("restart the running bridge")).action(
+  addRunOptions(parent.command("restart").description("restart the running gateway")).action(
     async function (this: Command) {
-      await runBridgeRestart(this.optsWithGlobals<GlobalOptions & BridgeRunCliOptions>());
+      await runGatewayRestart(this.optsWithGlobals<GlobalOptions & GatewayRunCliOptions>());
     },
   );
 
   parent
     .command("status")
-    .description("show whether the bridge is running")
+    .description("show whether the gateway is running")
     .action(async function (this: Command) {
       const globals = this.optsWithGlobals<GlobalOptions>();
-      await statusBridge({ homeDir: loadCliBase(globals).homeDir });
+      await statusGateway({ homeDir: loadCliBase(globals).homeDir });
     });
 
   parent
     .command("logs")
-    .description("tail the bridge log file")
+    .description("tail the gateway log file")
     .option("-f, --follow", "keep streaming appended log lines")
     .option("-n, --lines <n>", "number of trailing lines to print first", parsePositiveInt)
     .action(async function (this: Command) {
@@ -152,7 +152,7 @@ function addRunOptions(cmd: Command, allowRawAgentCommand = false): Command {
   return allowRawAgentCommand
     ? configured.argument(
         "[agentCommand...]",
-        "explicit external Agent command, after `--` (bridge run only)",
+        "explicit external Agent command, after `--` (gateway run only)",
       )
     : configured;
 }
@@ -192,12 +192,12 @@ function requireDoubleDashForRawCommand(cmd: Command, rawAgentCommand: readonly 
   const rawArgs = (root as unknown as { readonly rawArgs: readonly string[] }).rawArgs;
   if (!rawArgs.includes("--")) {
     throw new CliError(
-      "a raw Agent command may only be passed after `--` (e.g. `humming bridge run -- node ./agent.js`)",
+      "a raw Agent command may only be passed after `--` (e.g. `humming gateway run -- node ./agent.js`)",
     );
   }
 }
 
-function toBridgeRunFlags(opts: BridgeRunCliOptions & GlobalOptions): BridgeRunFlags {
+function toGatewayRunFlags(opts: GatewayRunCliOptions & GlobalOptions): GatewayRunFlags {
   return {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(opts.dataDir !== undefined ? { dataDir: opts.dataDir } : {}),
@@ -215,7 +215,7 @@ function toBridgeRunFlags(opts: BridgeRunCliOptions & GlobalOptions): BridgeRunF
 }
 
 /**
- * Resolve the Agent invocation for `bridge run`/`start`/`restart`. Precedence:
+ * Resolve the Agent invocation for `gateway run`/`start`/`restart`. Precedence:
  *   1. `--agent <preset>` (with any trailing `-- <extra args>`)
  *   2. an explicit raw command (`-- <cmd> [args...]`)
  *   3. settings.json `runtime.agent`
@@ -224,7 +224,7 @@ function toBridgeRunFlags(opts: BridgeRunCliOptions & GlobalOptions): BridgeRunF
  * @throws {CliError} when `--agent` names an unknown preset, or
  *         `runtime.agent` cannot be resolved.
  */
-function resolveBridgeAgent(
+function resolveGatewayAgent(
   selection: { readonly agent?: string },
   rawAgentCommand: readonly string[],
   registry: Registry,
@@ -262,13 +262,13 @@ function resolveBridgeAgent(
   }
 }
 
-/** Build the canonical `bridge run [flags...] [-- <agentCommand...>]` argv used to spawn/persist a background launch. */
-export function buildBridgeRunArgv(
+/** Build the canonical `gateway run [flags...] [-- <agentCommand...>]` argv used to spawn/persist a background launch. */
+export function buildGatewayRunArgv(
   globals: GlobalOptions,
-  opts: BridgeRunCliOptions,
+  opts: GatewayRunCliOptions,
   rawAgentCommand: readonly string[],
 ): string[] {
-  const argv: string[] = ["bridge", "run"];
+  const argv: string[] = ["gateway", "run"];
   if (globals.home !== undefined) argv.push("--home", globals.home);
   if (globals.settingsPath !== undefined) argv.push("--settings-path", globals.settingsPath);
   if (globals.dataDir !== undefined) argv.push("--data-dir", globals.dataDir);
@@ -287,9 +287,9 @@ export function buildBridgeRunArgv(
   return argv;
 }
 
-/** Whether any `bridge run`-affecting option or a raw agent command was explicitly supplied. */
-export function hasExplicitBridgeRunOptions(
-  opts: BridgeRunCliOptions,
+/** Whether any `gateway run`-affecting option or a raw agent command was explicitly supplied. */
+export function hasExplicitGatewayRunOptions(
+  opts: GatewayRunCliOptions,
   rawAgentCommand: readonly string[],
 ): boolean {
   return (
@@ -318,7 +318,7 @@ function installCrashHandlers(opts: {
   const notify = async (kind: "uncaughtException" | "unhandledRejection", err: unknown) => {
     if (handling) return;
     handling = true;
-    crashLogger.error({ err, kind }, "fatal unhandled bridge error");
+    crashLogger.error({ err, kind }, "fatal unhandled gateway error");
     if (opts.chatIds.length > 0) {
       try {
         const http = new LarkHttpClient({
@@ -350,8 +350,8 @@ function installCrashHandlers(opts: {
   };
 }
 
-async function runBridgeRun(
-  globals: GlobalOptions & BridgeRunCliOptions,
+async function runGatewayRun(
+  globals: GlobalOptions & GatewayRunCliOptions,
   rawAgentCommand: readonly string[],
 ): Promise<void> {
   const rootLogger = createPinoLogger();
@@ -360,14 +360,14 @@ async function runBridgeRun(
   const { homeDir, configPath } = installHomeBootstrap(globals);
 
   const base = loadCliBase(globals);
-  const defaultAgent = resolveBridgeAgent(
+  const defaultAgent = resolveGatewayAgent(
     globals,
     rawAgentCommand,
     base.registry,
     base.file.runtime.agent,
   );
 
-  const cfg = resolveConfig(toBridgeRunFlags(globals), configPath, homeDir, base.file);
+  const cfg = resolveConfig(toGatewayRunFlags(globals), configPath, homeDir, base.file);
   fs.mkdirSync(cfg.dataDir, { recursive: true });
 
   cliLogger.info(
@@ -403,11 +403,11 @@ async function runBridgeRun(
 
   let requestShutdown = (): void => {};
   let requestRestart = (): void => {};
-  const bridge = new LarkBridge({
+  const gateway = new LarkGateway({
     lark: { appId: cfg.appId, appSecret: cfg.appSecret },
     agent: {
       resolver: (selection) =>
-        resolveBridgeAgent({ agent: selection }, [], base.registry, undefined),
+        resolveGatewayAgent({ agent: selection }, [], base.registry, undefined),
       availableAgents: [...base.registry.entries()]
         .map(([id, entry]) => ({
           id,
@@ -430,13 +430,13 @@ async function runBridgeRun(
     groupRequireMention: cfg.groupRequireMention,
     unboundCwd: cfg.unboundCwd,
     settingsPath: configPath,
-    controlSocketPath: bridgeControlSocketPath(homeDir),
+    controlSocketPath: gatewayControlSocketPath(homeDir),
     onShutdownRequested: () => requestShutdown(),
     onRestartRequested: () => requestRestart(),
     globalDefaultControlChatIds: cfg.globalControlChatIds,
     lifecycle: {
       notificationChatIds: cfg.lifecycleNotifyChatIds,
-      restartMarkerPath: bridgeRestartMarkerPath(homeDir),
+      restartMarkerPath: gatewayRestartMarkerPath(homeDir),
       defaultProfile: {
         agent: defaultAgent.label,
         ...(cfg.defaultControls?.modelId !== undefined
@@ -461,7 +461,7 @@ async function runBridgeRun(
     stopping = true;
     cliLogger.info(`received ${reason}, stopping`);
     try {
-      await bridge.stop();
+      await gateway.stop();
     } catch (err) {
       cliLogger.error({ err: formatError(err) }, "error during shutdown");
     } finally {
@@ -471,67 +471,67 @@ async function runBridgeRun(
   };
   requestShutdown = () => setImmediate(() => void shutdown("CONTROL"));
   requestRestart = () => {
-    markBridgeRestart(homeDir);
+    markGatewayRestart(homeDir);
     setImmediate(() => void shutdown("RESTART", SUPERVISOR_RESTART_EXIT_CODE));
   };
   process.on("SIGINT", (sig) => void shutdown(sig));
   process.on("SIGTERM", (sig) => void shutdown(sig));
 
-  await bridge.start();
-  cliLogger.info("bridge running. Press Ctrl+C to stop.");
+  await gateway.start();
+  cliLogger.info("gateway running. Press Ctrl+C to stop.");
 }
 
 /**
- * The `start` handler: launch this CLI's own `bridge run` invocation in the
+ * The `start` handler: launch this CLI's own `gateway run` invocation in the
  * background, rebuilt from typed Commander options so every flag the user
  * passed to `start` is forwarded verbatim.
  *
  * @throws {ProcessControlError} on an already-running or failed start.
  */
-async function runBridgeStart(
-  globals: GlobalOptions & BridgeRunCliOptions,
+async function runGatewayStart(
+  globals: GlobalOptions & GatewayRunCliOptions,
   selfPath: string,
 ): Promise<void> {
   const homeDir = resolveHomeDir(globals.home);
-  const spawnArgv = buildBridgeRunArgv(globals, globals, []);
+  const spawnArgv = buildGatewayRunArgv(globals, globals, []);
   const workingDirectory = process.cwd();
   persistLaunchArgv(homeDir, spawnArgv, workingDirectory);
-  await startBridge({ homeDir, selfPath, spawnArgv, workingDirectory });
+  await startGateway({ homeDir, selfPath, spawnArgv, workingDirectory });
 }
 
-async function runBridgeStop(globals: GlobalOptions): Promise<void> {
+async function runGatewayStop(globals: GlobalOptions): Promise<void> {
   const homeDir = resolveHomeDir(globals.home);
   const launch = readLaunchArgv(homeDir) ?? {
-    spawnArgv: ["bridge", "run"],
+    spawnArgv: ["gateway", "run"],
     workingDirectory: process.cwd(),
     savedAt: new Date().toISOString(),
   };
   const transaction = handoffLifecycle(homeDir, "stop", launch);
-  process.stdout.write(`bridge stop coordinator armed (${transaction.id})\n`);
+  process.stdout.write(`gateway stop coordinator armed (${transaction.id})\n`);
 }
 
 /** The `restart` handler hands ownership to an independent coordinator. */
-async function runBridgeRestart(globals: GlobalOptions & BridgeRunCliOptions): Promise<void> {
+async function runGatewayRestart(globals: GlobalOptions & GatewayRunCliOptions): Promise<void> {
   const homeDir = resolveHomeDir(globals.home);
-  if (hasExplicitBridgeRunOptions(globals, [])) {
+  if (hasExplicitGatewayRunOptions(globals, [])) {
     throw new ProcessControlError(
       "restart launch options are not supported by coordinated restart yet; " +
-        "use `humming bridge stop` then `humming bridge start` with the new options",
+        "use `humming gateway stop` then `humming gateway start` with the new options",
     );
   }
   const launch = resolveRestartLaunch(globals);
   persistLaunchArgv(homeDir, launch.spawnArgv, launch.workingDirectory);
   const transaction = handoffLifecycle(homeDir, "restart", launch);
-  process.stdout.write(`bridge restart coordinator armed (${transaction.id})\n`);
+  process.stdout.write(`gateway restart coordinator armed (${transaction.id})\n`);
 }
 
 /**
  * Resolve the argv + working dir for a `restart`. A bare `restart` falls back
  * to the persisted launch descriptor so it doesn't forget flags from the
  * original `start`; when neither is available, argv is rebuilt fresh
- * (yielding a default `bridge run`).
+ * (yielding a default `gateway run`).
  */
-function resolveRestartLaunch(globals: GlobalOptions & BridgeRunCliOptions): {
+function resolveRestartLaunch(globals: GlobalOptions & GatewayRunCliOptions): {
   readonly spawnArgv: readonly string[];
   readonly workingDirectory: string;
 } {
@@ -541,7 +541,7 @@ function resolveRestartLaunch(globals: GlobalOptions & BridgeRunCliOptions): {
     return { spawnArgv: persisted.spawnArgv, workingDirectory: persisted.workingDirectory };
   }
   return {
-    spawnArgv: buildBridgeRunArgv(globals, globals, []),
+    spawnArgv: buildGatewayRunArgv(globals, globals, []),
     workingDirectory: process.cwd(),
   };
 }

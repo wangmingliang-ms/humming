@@ -595,7 +595,7 @@ git push origin main
 
 If Step 5 has no remaining diff, push the existing task commits without creating an empty commit.
 
-- [ ] **Step 6: Update and verify the running bridge**
+- [ ] **Step 6: Update and verify the running gateway**
 
 ```bash
 humming update
@@ -603,12 +603,12 @@ humming status
 git -C ~/.humming/humming-project log -1 --oneline
 ```
 
-Expected: bridge is running and the managed checkout reports the final implementation commit.
+Expected: gateway is running and the managed checkout reports the final implementation commit.
 
 - [ ] **Step 7: Inspect startup logs**
 
 ```bash
-tail -n 60 ~/.humming/bridge.log
+tail -n 60 ~/.humming/gateway.log
 ```
 
-Expected: bridge started, WebSocket connected, and no startup error is present.
+Expected: gateway started, WebSocket connected, and no startup error is present.

@@ -77,8 +77,8 @@ export function printModes(snapshot: CapabilitiesView, json: boolean): void {
 export function printPermissions(snapshot: CapabilitiesView, json: boolean): void {
   if (json) {
     printJson({
-      bridgePermissionModes: snapshot.bridgePermissionModes,
-      bridgePermissionMode: snapshot.bridgePermissionMode,
+      gatewayPermissionModes: snapshot.gatewayPermissionModes,
+      gatewayPermissionMode: snapshot.gatewayPermissionMode,
     });
     return;
   }
@@ -122,6 +122,6 @@ function formatConfigLines(snapshot: CapabilitiesView): string[] {
 
 function formatPermissionsLines(snapshot: CapabilitiesView): string[] {
   return [
-    `Permission: ${snapshot.bridgePermissionMode} (available: ${snapshot.bridgePermissionModes.join(", ")})`,
+    `Permission: ${snapshot.gatewayPermissionMode} (available: ${snapshot.gatewayPermissionModes.join(", ")})`,
   ];
 }

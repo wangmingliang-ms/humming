@@ -1,26 +1,26 @@
 /**
- * `humming` — bridge a Lark bot to any ACP-compatible AI agent.
+ * `humming` — gateway a Lark bot to any ACP-compatible AI agent.
  *
  * Top-level exports:
  *
- * - {@link LarkBridge} — the orchestrator, instantiated once per process.
+ * - {@link LarkGateway} — the orchestrator, instantiated once per process.
  * - {@link LarkLogger}, {@link createPinoLogger} — structured logging.
  * - {@link LarkPresenter}, {@link LarkCardPresenter} — pluggable UI surface.
  * - {@link SessionStore}, {@link FileSessionStore} — persistent chat → session mapping.
  */
 
-export { LarkBridge } from "./bridge/bridge.js";
+export { LarkGateway } from "./gateway/gateway.js";
 export { HUMMING_COMMAND_HELP_GROUPS, renderCommandHelpBody } from "./interpreter/commands.js";
 export type {
-  LarkBridgeOptions,
-  LarkBridgeLarkOptions,
-  LarkBridgeAgentOptions,
-  LarkBridgeSessionOptions,
-  LarkBridgeLifecycleOptions,
+  LarkGatewayOptions,
+  LarkGatewayLarkOptions,
+  LarkGatewayAgentOptions,
+  LarkGatewaySessionOptions,
+  LarkGatewayLifecycleOptions,
   AgentResolver,
   AgentListItem,
   ResolvedAgentInvocation,
-} from "./bridge/bridge.js";
+} from "./gateway/gateway.js";
 
 export type { PermissionMode } from "./acp/humming-client.js";
 export { PERMISSION_MODES, listAgentSessions, probeAgentSessionCapabilities } from "./acp/index.js";

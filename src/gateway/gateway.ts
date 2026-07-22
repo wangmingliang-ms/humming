@@ -32,7 +32,7 @@ import {
   type SlashCommandInvocation,
 } from "../interpreter/commands.js";
 import {
-  BridgeControlServer,
+  GatewayControlServer,
   type AgentProbeFailureTarget,
   type ConfigureSessionInput,
 } from "./control-server.js";
@@ -170,7 +170,7 @@ const MAX_USER_FACING_ERROR_CHARS = 1_000;
 
 function truncateUserFacingError(message: string): string {
   if (message.length <= MAX_USER_FACING_ERROR_CHARS) return message;
-  return `${message.slice(0, MAX_USER_FACING_ERROR_CHARS).trimEnd()}…（已截断，完整错误见 bridge.log）`;
+  return `${message.slice(0, MAX_USER_FACING_ERROR_CHARS).trimEnd()}…（已截断，完整错误见 gateway.log）`;
 }
 
 function formatBootstrapError(err: unknown): string {
@@ -209,7 +209,7 @@ interface CardActionPayload {
   k?: string;
   /** Tool title (set on permission cards). */
   t?: string;
-  /** Chat id — present on every card the bridge produces. */
+  /** Chat id — present on every card the gateway produces. */
   c?: string;
   /**
    * Feishu topic (话题) id the card belongs to; absent/null for the chat's
@@ -283,7 +283,7 @@ function isStrictPermissionV2(value: CardActionPayload): value is StrictPermissi
   );
 }
 
-export interface LarkBridgeLarkOptions {
+export interface LarkGatewayLarkOptions {
   appId: string;
   appSecret: string;
 }
@@ -316,7 +316,7 @@ export interface AgentListItem {
   readonly description?: string;
 }
 
-export interface LarkBridgeAgentOptions {
+export interface LarkGatewayAgentOptions {
   /** Maps a selection string → concrete invocation. See {@link AgentResolver}. */
   resolver: AgentResolver;
   /** Agent presets shown by `/agent` with no argument. */
@@ -361,19 +361,19 @@ export interface LarkBridgeAgentOptions {
   defaultControls?: SessionControls;
 }
 
-export interface LarkBridgeSessionOptions {
+export interface LarkGatewaySessionOptions {
   /** Evict an idle chat after this many ms (0 = never). Default 24h. */
   idleTimeoutMs?: number;
   /** Maximum chats kept in memory; oldest idle gets evicted. Default 10. */
   maxConcurrentChats?: number;
 }
 
-export interface LarkBridgeLifecycleOptions {
-  /** Chats that receive bridge lifecycle notices. Empty/absent disables them. */
+export interface LarkGatewayLifecycleOptions {
+  /** Chats that receive gateway lifecycle notices. Empty/absent disables them. */
   notificationChatIds?: readonly string[];
   /** File created by `humming restart`; when present, stop/start render restart wording. */
   restartMarkerPath?: string | null;
-  /** Git revision of the bridge code currently running; shown on restarted notices. */
+  /** Git revision of the gateway code currently running; shown on restarted notices. */
   codeRevision?: LifecycleCodeRevision;
   /** Effective global defaults shown on successful start/restart notices. */
   defaultProfile?: LifecycleDefaultProfile;
@@ -381,15 +381,15 @@ export interface LarkBridgeLifecycleOptions {
   noticeTimeoutMs?: number;
 }
 
-export interface LarkBridgeOptions {
-  lark: LarkBridgeLarkOptions;
-  agent: LarkBridgeAgentOptions;
-  session?: LarkBridgeSessionOptions;
-  lifecycle?: LarkBridgeLifecycleOptions;
+export interface LarkGatewayOptions {
+  lark: LarkGatewayLarkOptions;
+  agent: LarkGatewayAgentOptions;
+  session?: LarkGatewaySessionOptions;
+  lifecycle?: LarkGatewayLifecycleOptions;
 
   /**
    * In group chats, only handle messages that @-mention the bot. Default
-   * `false` — the bridge responds to every group message.
+   * `false` — the gateway responds to every group message.
    *
    * When `true`, non-@ group messages are ignored (the classic bot etiquette).
    * Note: responding to *all* group messages additionally requires the
@@ -419,7 +419,7 @@ export interface LarkBridgeOptions {
   /** Unix-domain socket for local `humming control …` requests. */
   controlSocketPath?: string | null;
 
-  /** Ask the foreground CLI to stop this bridge after replying to a local control request. */
+  /** Ask the foreground CLI to stop this gateway after replying to a local control request. */
   onShutdownRequested?: () => void;
 
   /** Ask the foreground CLI to exit for supervisor-driven restart. */
@@ -435,7 +435,7 @@ export interface LarkBridgeOptions {
   /** Override the default pino-backed logger. */
   logger?: LarkLogger;
   /**
-   * Override the default {@link LarkCardPresenter}. When omitted the bridge
+   * Override the default {@link LarkCardPresenter}. When omitted the gateway
    * builds one from `lark.appId` / `lark.appSecret`.
    */
   presenter?: LarkPresenter;
@@ -464,7 +464,7 @@ interface EffectiveBinding {
   readonly explicit: boolean;
   /**
    * `true` when this is the ephemeral reception-area binding (default agent in
-   * `unboundCwd`) for a chat with no real binding. The bridge injects
+   * `unboundCwd`) for a chat with no real binding. The gateway injects
    * bind-instructions into such a runtime so the user can bind by talking.
    */
   readonly reception: boolean;
@@ -504,14 +504,14 @@ interface PendingAgentSwitch {
 type PendingConfigurationApplyTrigger = "idle" | "turn-boundary" | "recovery";
 
 /**
- * Whether {@link LarkBridge.acquireRuntime} runs restart recovery of a
+ * Whether {@link LarkGateway.acquireRuntime} runs restart recovery of a
  * persisted Pending Configuration before building a runtime.
  *
  * - `recover-on-acquire`: ordinary path (message ingress, the applier's own
  *   nested acquisition). Recovery runs unless the applier is already mid-flight
- *   for this key ({@link LarkBridge.pendingConfigurationApplyInFlight}).
+ *   for this key ({@link LarkGateway.pendingConfigurationApplyInFlight}).
  * - `pending-observed-under-lock`: the caller already holds
- *   {@link LarkBridge.withPendingConfigurationLock} and read the (absent)
+ *   {@link LarkGateway.withPendingConfigurationLock} and read the (absent)
  *   Pending Configuration under it, so recovery would only deadlock on that
  *   lock. Distinct from `pendingConfigurationApplyInFlight`, which means "the
  *   applier is running", not "the lock is held".
@@ -531,7 +531,7 @@ interface CommandContext {
   readonly isDirectMessage: boolean;
 }
 
-export type BridgeLifecycleState =
+export type GatewayLifecycleState =
   | { readonly kind: "running" }
   | {
       readonly kind: "quiescing";
@@ -549,9 +549,9 @@ const POST_TURN_AGENT_SWITCH_TASK_HINT =
   "[humming: this prompt is the task portion of an already-applied Agent handoff. Do not call Humming session-control commands again unless the user explicitly requests another Agent/Model/Mode/Permission/Config change.]";
 
 /**
- * Top-level bridge that connects a Lark bot to ACP agents.
+ * Top-level gateway that connects a Lark bot to ACP agents.
  *
- * A single bridge serves many chats; each chat is bound (via `/bind`, or a
+ * A single gateway serves many chats; each chat is bound (via `/bind`, or a
  * configured default) to its own working directory and agent, so one Lark
  * bot can drive many repos at once. Owns: Lark HTTP client, Lark WebSocket
  * subscription, logger, presenter, session + binding stores, and one
@@ -559,11 +559,11 @@ const POST_TURN_AGENT_SWITCH_TASK_HINT =
  *
  * Lifecycle:
  *
- * 1. `new LarkBridge(opts)` — wires dependencies, no IO yet.
- * 2. `await bridge.start()` — initialises stores and opens the WebSocket.
- * 3. `await bridge.stop()` — shuts down all chat runtimes and the stores.
+ * 1. `new LarkGateway(opts)` — wires dependencies, no IO yet.
+ * 2. `await gateway.start()` — initialises stores and opens the WebSocket.
+ * 3. `await gateway.stop()` — shuts down all chat runtimes and the stores.
  */
-export class LarkBridge {
+export class LarkGateway {
   private readonly logger: LarkLogger;
   private readonly http: LarkHttpClient;
   private readonly presenter: LarkPresenter;
@@ -584,7 +584,7 @@ export class LarkBridge {
   private readonly onShutdownRequested: (() => void) | undefined;
   private readonly onRestartRequested: (() => void) | undefined;
   private readonly globalDefaultControlChatIds: readonly string[];
-  private readonly lark: LarkBridgeLarkOptions;
+  private readonly lark: LarkGatewayLarkOptions;
   private readonly lifecycleNotificationChatIds: readonly string[];
   private readonly restartMarkerPath: string | null;
   private readonly lifecycleCodeRevision: LifecycleCodeRevision | undefined;
@@ -615,7 +615,7 @@ export class LarkBridge {
   private readonly pendingConfigurationApplyInFlight = new Set<string>();
   private readonly promptIngress = new Map<string, Promise<void>>();
   private readonly runtimeTurnCompletions = new Set<Promise<void>>();
-  private lifecycleState: BridgeLifecycleState = { kind: "running" };
+  private lifecycleState: GatewayLifecycleState = { kind: "running" };
   private lifecyclePromise: Promise<{
     readonly accepted: true;
     readonly transactionId: string;
@@ -624,7 +624,7 @@ export class LarkBridge {
   private lifecycleTransaction: LifecycleTransaction | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private ws: LarkWsConnection | null = null;
-  private controlServer: BridgeControlServer | null = null;
+  private controlServer: GatewayControlServer | null = null;
   private started = false;
   /** fs.watch handle for hot-reloading settings.json (null when disabled). */
   private settingsWatcher: fs.FSWatcher | null = null;
@@ -632,7 +632,7 @@ export class LarkBridge {
   /** Snapshot of the last-applied bindings, for diffing on hot-reload. */
   private bindingSnapshots = new Map<string, BindingSnapshot>();
 
-  constructor(opts: LarkBridgeOptions) {
+  constructor(opts: LarkGatewayOptions) {
     this.lark = opts.lark;
     this.logger = opts.logger ?? createPinoLogger();
     this.sessionStore = opts.sessionStore;
@@ -735,14 +735,14 @@ export class LarkBridge {
     });
     this.ws.start();
 
-    this.logger.info("bridge started");
+    this.logger.info("gateway started");
     await this.sendLifecycleStartedNotice();
   }
 
   async stop(): Promise<void> {
     if (!this.started) return;
     this.started = false;
-    this.logger.info("stopping bridge");
+    this.logger.info("stopping gateway");
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     if (this.reloadTimer) clearTimeout(this.reloadTimer);
     if (this.settingsWatcher) {
@@ -768,7 +768,7 @@ export class LarkBridge {
     this.controlServer = null;
     await this.sessionStore.close();
     await this.bindingStore.close();
-    this.logger.info("bridge stopped");
+    this.logger.info("gateway stopped");
   }
 
   private async sendLifecycleStartedNotice(): Promise<void> {
@@ -909,19 +909,19 @@ export class LarkBridge {
 
   private async startControlServer(): Promise<void> {
     if (!this.controlSocketPath) return;
-    this.controlServer = new BridgeControlServer({
+    this.controlServer = new GatewayControlServer({
       socketPath: this.controlSocketPath,
       logger: this.logger,
       status: () => ({ lark: this.ws?.getConnectionStatus() ?? null }),
       handlers: {
         beginLifecycle: (transaction) => this.beginLifecycle(transaction),
         shutdown: async () => {
-          if (!this.onShutdownRequested) throw new Error("bridge shutdown is unavailable");
+          if (!this.onShutdownRequested) throw new Error("gateway shutdown is unavailable");
           this.onShutdownRequested();
           return { accepted: true };
         },
         restart: async () => {
-          if (!this.onRestartRequested) throw new Error("bridge restart is unavailable");
+          if (!this.onRestartRequested) throw new Error("gateway restart is unavailable");
           this.onRestartRequested();
           return { accepted: true };
         },
@@ -1337,7 +1337,7 @@ export class LarkBridge {
    * Apply a controls/message-only Pending Configuration (no Agent switch):
    * controls first, then the attached Message (spec §9.5). Idle application
    * reports through the live runtime's own notice; Turn-boundary/recovery
-   * bypasses the busy guard and the Bridge owns the notice. A controls failure
+   * bypasses the busy guard and the Gateway owns the notice. A controls failure
    * must not send the Message, and Message-delivery failure fails the whole
    * application — the caller only clears the Pending Configuration on success.
    *
@@ -1414,7 +1414,7 @@ export class LarkBridge {
    * Pending Configuration, shared by idle configure, the Turn-boundary
    * consumer, and restart recovery. The persisted store — not a caller object
    * — is the single source of truth (spec §9.3), so this also recovers after a
-   * Bridge restart. Callers must already hold
+   * Gateway restart. Callers must already hold
    * {@link withPendingConfigurationLock}.
    *
    * Order is target profile -> controls -> Message (spec §9.5); the Pending
@@ -1546,7 +1546,7 @@ export class LarkBridge {
 
   /**
    * Restart recovery (spec §9.3): apply a leftover persisted Pending
-   * Configuration before building a runtime — exactly when a Bridge restart
+   * Configuration before building a runtime — exactly when a Gateway restart
    * would otherwise strand it, since the Turn-boundary consumer
    * ({@link handleRuntimeTurnComplete}) only fires for a Turn that now never
    * runs. A failed recovery rejects the triggering acquire so a new Message
@@ -1837,7 +1837,7 @@ export class LarkBridge {
       listModes: () => this.handleListModesCommand(chatId, threadId, messageId),
       setPermission: (permissionMode) =>
         this.handleSetControlsCommand(
-          { bridgePermissionMode: permissionMode },
+          { gatewayPermissionMode: permissionMode },
           chatId,
           threadId,
           messageId,
@@ -2762,7 +2762,7 @@ export class LarkBridge {
     restartOwner = false,
   ): Promise<ChatRuntime> {
     if (this.lifecycleState.kind !== "running") {
-      throw new Error("bridge lifecycle is quiescing; runtime acquisition rejected");
+      throw new Error("gateway lifecycle is quiescing; runtime acquisition rejected");
     }
     const key = runtimeKey(chatId, threadId);
     if (!restartOwner) {
@@ -2795,7 +2795,7 @@ export class LarkBridge {
       binding,
     );
     if (this.lifecycleState.kind !== "running") {
-      throw new Error("bridge lifecycle is quiescing; runtime acquisition rejected");
+      throw new Error("gateway lifecycle is quiescing; runtime acquisition rejected");
     }
 
     if (inherited) {
@@ -3022,8 +3022,8 @@ export class LarkBridge {
         const existingControls = readSettingsControls(runtime["defaultControls"]);
         const nextControls = mergeSessionControls(existingControls, controls);
         runtime["defaultControls"] = nextControls;
-        if (controls.bridgePermissionMode !== undefined) {
-          runtime["permissionMode"] = controls.bridgePermissionMode;
+        if (controls.gatewayPermissionMode !== undefined) {
+          runtime["permissionMode"] = controls.gatewayPermissionMode;
         }
       },
       messageId,
@@ -3196,7 +3196,7 @@ export class LarkBridge {
 
   private handleCardAction(event: Lark.CardActionEvent): void {
     if (this.lifecycleState.kind !== "running") {
-      this.logger.info("card action ignored while bridge is quiescing");
+      this.logger.info("card action ignored while gateway is quiescing");
       return;
     }
     const value = event.action.value as CardActionPayload | undefined;
@@ -3423,13 +3423,13 @@ function escapeXmlAttribute(value: string): string {
 }
 
 function renderInlineControlHint(): string {
-  return `<humming-hint>涉及 Humming 自身操作时（绑定/改绑仓库、把 topic 绑定到已有 Agent session、修改当前会话 Agent/Model/Mode/Permission/Config，以及 update/restart/status/logs 等 Bridge 管理），先阅读 ~/.humming/AGENTS.md（或 CLAUDE.md）中的 Humming 指引再执行；本会话标识见上方 feishu-context。群聊/topic 中的会话配置变更只作用于当前会话，不写全局默认。其它请求忽略本提示。</humming-hint>`;
+  return `<humming-hint>涉及 Humming 自身操作时（绑定/改绑仓库、把 topic 绑定到已有 Agent session、修改当前会话 Agent/Model/Mode/Permission/Config，以及 update/restart/status/logs 等 Gateway 管理），先阅读 ~/.humming/AGENTS.md（或 CLAUDE.md）中的 Humming 指引再执行；本会话标识见上方 feishu-context。群聊/topic 中的会话配置变更只作用于当前会话，不写全局默认。其它请求忽略本提示。</humming-hint>`;
 }
 
 function buildRouteFailureNotice(err: unknown): NoticeCardSpec {
   return {
     title: "⚠️ Humming 处理消息失败",
-    body: `这条消息没有处理成功，错误已写入 bridge.log。\n\n原因：${formatUserFacingError(err)}`,
+    body: `这条消息没有处理成功，错误已写入 gateway.log。\n\n原因：${formatUserFacingError(err)}`,
     template: "red",
   };
 }
@@ -3517,7 +3517,7 @@ function displayControlModel(controls: SessionControls | undefined): string {
 }
 
 function displayControlPermission(controls: SessionControls | undefined): string {
-  const mode = controls?.bridgePermissionMode;
+  const mode = controls?.gatewayPermissionMode;
   switch (mode) {
     case "alwaysAsk":
       return "Ask approvals";
@@ -3621,7 +3621,7 @@ function storedControlChangeLines(
   if (changed.clearModelId === true || changed.modelId !== undefined) {
     lines.push(`• Model：${displayControlModel(before)} → ${displayControlModel(after)}`);
   }
-  if (changed.bridgePermissionMode !== undefined) {
+  if (changed.gatewayPermissionMode !== undefined) {
     lines.push(
       `• Permission：${displayControlPermission(before)} → ${displayControlPermission(after)}`,
     );
@@ -3712,7 +3712,7 @@ function buildPendingControlsAppliedNotice(
   if (changed.clearModelId === true || changed.modelId !== undefined) {
     lines.push(`• Model：${displaySnapshotModel(before)} → ${displaySnapshotModel(after)}`);
   }
-  if (changed.bridgePermissionMode !== undefined) {
+  if (changed.gatewayPermissionMode !== undefined) {
     lines.push(
       `• Permission：${displaySnapshotPermission(before)} → ${displaySnapshotPermission(after)}`,
     );
@@ -3816,7 +3816,7 @@ function buildAgentListNotice(agents: readonly AgentListItem[]): NoticeCardSpec 
             `• ${agent.id} — ${agent.label}${agent.description ? `：${agent.description}` : ""}`,
         )
       : [
-          "• 当前 bridge 没有可展示的 agent registry。仍可使用 /agent <raw-command> 切换到 raw ACP command。",
+          "• 当前 gateway 没有可展示的 agent registry。仍可使用 /agent <raw-command> 切换到 raw ACP command。",
         ];
   return {
     title: "🤖 可用 Agents",
@@ -3876,13 +3876,13 @@ function buildPermissionListNotice(current: PermissionMode): NoticeCardSpec {
   return {
     title: "🛂 可用 Permission modes",
     body: [
-      `当前默认策略：${displayControlPermission({ bridgePermissionMode: current })}`,
+      `当前默认策略：${displayControlPermission({ gatewayPermissionMode: current })}`,
       "",
       "• alwaysAsk — 每次需要 approval 时询问",
       "• alwaysAllow — 自动批准 Humming permission requests",
       "• alwaysDeny — 自动拒绝 Humming permission requests",
       "",
-      "使用 `/permission <mode>` 设置当前 topic 的 bridge-side approval 策略。",
+      "使用 `/permission <mode>` 设置当前 topic 的 gateway-side approval 策略。",
     ].join("\n"),
     template: "blue",
   };
@@ -3895,9 +3895,9 @@ function buildCapabilitiesNotice(
   const modelLines = formatModelCapabilityLines(snapshot);
   const modeLines = formatModeCapabilityLines(snapshot);
   const configLines = formatConfigCapabilityLines(snapshot);
-  const permissionLines = snapshot.bridgePermissionModes.map(
+  const permissionLines = snapshot.gatewayPermissionModes.map(
     (mode) =>
-      `• ${mode}${mode === snapshot.bridgePermissionMode ? "（当前）" : ""} — ${displayControlPermission({ bridgePermissionMode: mode })}`,
+      `• ${mode}${mode === snapshot.gatewayPermissionMode ? "（当前）" : ""} — ${displayControlPermission({ gatewayPermissionMode: mode })}`,
   );
   const source = requestedAgent ? `probe: /capabilities ${requestedAgent}` : "当前有效 Agent";
   return {
@@ -4031,8 +4031,8 @@ function buildProbeCapabilitiesSnapshot(
       cwd: binding.cwd,
     },
     ...result.capabilities,
-    bridgePermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
-    bridgePermissionMode: "alwaysAsk",
+    gatewayPermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
+    gatewayPermissionMode: "alwaysAsk",
   };
 }
 
@@ -4049,8 +4049,8 @@ function readSettingsControls(value: unknown): SessionControls | undefined {
   const out: SessionControls = {};
   if (typeof raw["modelId"] === "string") out.modelId = raw["modelId"];
   if (typeof raw["modeId"] === "string") out.modeId = raw["modeId"];
-  if (isPermissionMode(raw["bridgePermissionMode"])) {
-    out.bridgePermissionMode = raw["bridgePermissionMode"];
+  if (isPermissionMode(raw["gatewayPermissionMode"])) {
+    out.gatewayPermissionMode = raw["gatewayPermissionMode"];
   }
   if (raw["config"] && typeof raw["config"] === "object" && !Array.isArray(raw["config"])) {
     out.config = raw["config"] as SessionControls["config"];
@@ -4071,7 +4071,7 @@ function buildProfileCommandUsageNotice(command: string): NoticeCardSpec {
 }
 
 /**
- * Parse lifecycle card ids persisted by the old bridge process. A numeric
+ * Parse lifecycle card ids persisted by the old gateway process. A numeric
  * marker is the legacy format and still identifies a restart without cards.
  *
  * @throws {SyntaxError} when a JSON marker has an invalid shape.
@@ -4203,7 +4203,7 @@ function displaySnapshotModel(snapshot: SessionCapabilitiesSnapshot): string {
 }
 
 function displaySnapshotPermission(snapshot: SessionCapabilitiesSnapshot): string {
-  return displayControlPermission({ bridgePermissionMode: snapshot.bridgePermissionMode });
+  return displayControlPermission({ gatewayPermissionMode: snapshot.gatewayPermissionMode });
 }
 
 function displaySnapshotControls(snapshot: SessionCapabilitiesSnapshot): string {
@@ -4227,7 +4227,7 @@ function displayControlPatch(controls: SessionControlPatch | undefined): string 
   if (controls.clearModelId === true) parts.push("Model: auto/default");
   if (controls.modelId !== undefined) parts.push(`Model: ${controls.modelId}`);
   if (controls.modeId !== undefined) parts.push(`Mode: ${controls.modeId}`);
-  if (controls.bridgePermissionMode !== undefined) {
+  if (controls.gatewayPermissionMode !== undefined) {
     parts.push(`Permission: ${displayControlPermission(controls)}`);
   }
   const config = displayControlConfig(controls);

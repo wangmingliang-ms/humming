@@ -6,7 +6,7 @@
 
 ## Context
 
-Humming conversation cards currently combine independent mutable fields such as `status`, `entries`, `meta`, and `cancellable`. Transport ownership is isolated in `ConversationCardDelivery`, but conversation semantics remain distributed across the bridge, `ChatRuntime`, `HummingClient`, the presenter, timers, and card-action routing.
+Humming conversation cards currently combine independent mutable fields such as `status`, `entries`, `meta`, and `cancellable`. Transport ownership is isolated in `ConversationCardDelivery`, but conversation semantics remain distributed across the gateway, `ChatRuntime`, `HummingClient`, the presenter, timers, and card-action routing.
 
 This permits contradictory states that are visible to users:
 
@@ -26,14 +26,14 @@ The design must make these states unrepresentable, preserve chronological card r
 4. Serialize semantic events so timers, ACP updates, rotation, permission boundaries, cancellation, and finalization cannot race each other.
 5. Bind every actionable card to the exact prompt and segment that owns the action.
 6. Keep transport ownership and semantic state as separate, focused responsibilities.
-7. Route bridge-created starting cards and queued-message cards through explicit lifecycle ownership rather than ad hoc presenter patches.
+7. Route gateway-created starting cards and queued-message cards through explicit lifecycle ownership rather than ad hoc presenter patches.
 8. Preserve the current 8192-byte rotation policy and complete-state replay after patch rejection.
 9. Add deterministic deferred-transport tests for all previously untested races.
 
 ## Non-goals
 
 - Replacing the Feishu card renderer or ACP protocol.
-- Persisting in-flight card state across bridge restarts.
+- Persisting in-flight card state across gateway restarts.
 - Reliably deleting a card that Feishu no longer accepts patches for.
 - Combining permission-card presentation with conversation-card presentation.
 - Refactoring unrelated session-control or agent-selection behavior.
@@ -46,7 +46,7 @@ The presenter must not accept independently combinable `status` and `cancellable
 
 ### One semantic writer
 
-All semantic transitions for one topic runtime are reduced through one ordered event queue. No timer, ACP callback, runtime shutdown path, or bridge helper may mutate conversation-card semantics directly.
+All semantic transitions for one topic runtime are reduced through one ordered event queue. No timer, ACP callback, runtime shutdown path, or gateway helper may mutate conversation-card semantics directly.
 
 ### Monotonic lifecycle
 
@@ -174,7 +174,7 @@ Terminal absorption applies to the conversation phase and all render/action/tool
 - This is the first authoritative conversation card for a prompt.
 - Empty timeline, `preparing` header, and profile snapshot.
 - No Cancel action until the prompt is actually forwarded to the Agent.
-- It is created by the lifecycle controller, not by a bridge-side standalone receipt path.
+- It is created by the lifecycle controller, not by a gateway-side standalone receipt path.
 - If its first send returns no card ID or fails, the lifecycle retries only on a later semantic transition; there is no stale “processing” card because no prior durable receipt card exists.
 
 #### Active
@@ -531,7 +531,7 @@ interface CancelActionPayloadV2 {
 
 `CardRoute` owns `c` and optional `th`; `CancelAction` owns `p`, `s`, and `a`. The Lark renderer is the only place that combines them into the exact wire payload above. No verbose alias is accepted on input.
 
-The bridge routes the action to the topic runtime, then the runtime verifies all three tokens against the current active segment before calling the agent's cancel operation.
+The gateway routes the action to the topic runtime, then the runtime verifies all three tokens against the current active segment before calling the agent's cancel operation.
 
 Outcomes:
 
@@ -572,7 +572,7 @@ The accepted flow is:
 4. let `ConversationCardLifecycle` create the first authoritative `starting/preparing` card;
 5. remove the acknowledgement reaction best-effort after the first authoritative card becomes visible or after the prompt reaches terminal without a card.
 
-A failed reaction add/remove is logged but does not affect prompt execution. A leaked reaction is inert and does not state that processing is still active. The bridge never creates a standalone receipt/progress card and never patches a conversation card directly.
+A failed reaction add/remove is logged but does not affect prompt execution. A leaked reaction is inert and does not state that processing is still active. The gateway never creates a standalone receipt/progress card and never patches a conversation card directly.
 
 Removal has an explicit single-owner feedback path. Delivery emits `acknowledgement_visible` only after `send` or replacement takeover returns a non-null authoritative card ID. If acknowledgement is `attached`, that event atomically changes it to `removal_pending` and emits exactly one `remove_acknowledgement` effect. If `finish` wins first, the finish transition itself performs the same atomic bookkeeping/effect emission; there is no separate terminal-without-card callback/event. A visible result arriving after terminal is diagnostic-only and cannot emit a second removal. The reaction port reports `acknowledgement_removed` or `acknowledgement_remove_failed`; these are the only post-terminal events allowed, update only bookkeeping to `removal_attempted`, and never retry. Merely submitting a render effect never removes the reaction.
 
@@ -585,13 +585,13 @@ queued -> interrupting -> active
 
 It uses the same transport ownership primitive and replacement takeover. When the queued prompt starts, its existing ownership token and card ID remain attached to the same `PromptCardLifecycle`; no second component may patch the ID.
 
-Bootstrap failure, queued cancellation, runtime replacement, and shutdown also go through these lifecycle controllers. Direct `presenter.updateUnifiedCard()` calls from bridge/runtime business logic are removed.
+Bootstrap failure, queued cancellation, runtime replacement, and shutdown also go through these lifecycle controllers. Direct `presenter.updateUnifiedCard()` calls from gateway/runtime business logic are removed.
 
 ## Permission ownership handoff
 
 Permission cards remain separate interactive artifacts because their action model differs from conversation cancellation. Each request receives a `PermissionToken` stored in the prompt lifecycle; a resolution must match the current prompt and permission token.
 
-Permission action wire payloads use `{ v: 2, c, th?, p, q, r, o }`, where `p` is prompt token, `q` is permission token, `r` is the internal request ID, and `o` is the selected option ID. The renderer combines route and permission action data. Before runtime lookup/ACP resolution, the bridge validates `v`, then the runtime validates both `p` and `q`. Previous-prompt, previous-permission, duplicate, legacy tokenless, and unknown-version permission clicks are inert and best-effort expired.
+Permission action wire payloads use `{ v: 2, c, th?, p, q, r, o }`, where `p` is prompt token, `q` is permission token, `r` is the internal request ID, and `o` is the selected option ID. The renderer combines route and permission action data. Before runtime lookup/ACP resolution, the gateway validates `v`, then the runtime validates both `p` and `q`. Previous-prompt, previous-permission, duplicate, legacy tokenless, and unknown-version permission clicks are inert and best-effort expired.
 
 The reducer never reads or emits a card ID. It emits a semantic `begin_permission_handoff` effect containing the prompt/segment/permission tokens and permission view data. The effect runner performs the transport-owned atomic operation:
 
@@ -675,7 +675,7 @@ Outcome mapping is explicit and does not claim success for administrative replac
 | normal end turn              | complete               | n/a           | permission artifact resolved/expired; complete only if the agent returned complete |
 | explicit user cancel         | cancelled              | cancelled     | expire permission, then cancelled                                                  |
 | agent/protocol error         | failed                 | abandoned     | expire permission, then failed                                                     |
-| bridge shutdown/restart      | cancelled              | abandoned     | expire permission, then cancelled                                                  |
+| gateway shutdown/restart      | cancelled              | abandoned     | expire permission, then cancelled                                                  |
 | session/repo/agent supersede | superseded             | abandoned     | expire permission, then superseded                                                 |
 | bootstrap failure            | abandoned              | abandoned     | n/a                                                                                |
 
@@ -694,11 +694,11 @@ The state-machine migration is not deployed as partially active slices. Implemen
 
 Rules:
 
-1. Gate off: all current legacy behavior remains byte-compatible; no v2 action payload is emitted. Gate state is stored in the existing local settings file as `features.conversationCardLifecycleV2`, defaults to `false`, and is read at bridge startup.
-2. Gate on: initial acknowledgement, queued/active/terminal rendering, permission handoff, direct bridge/runtime updates, and Cancel routing all switch together to v2 ownership.
-3. The v2 action payloads include `v: 2` plus prompt and action-specific tokens. The bridge checks payload version before runtime lookup. A missing/unknown version is stale on the v2 route and never falls through to topic-level cancellation.
+1. Gate off: all current legacy behavior remains byte-compatible; no v2 action payload is emitted. Gate state is stored in the existing local settings file as `features.conversationCardLifecycleV2`, defaults to `false`, and is read at gateway startup.
+2. Gate on: initial acknowledgement, queued/active/terminal rendering, permission handoff, direct gateway/runtime updates, and Cancel routing all switch together to v2 ownership.
+3. The v2 action payloads include `v: 2` plus prompt and action-specific tokens. The gateway checks payload version before runtime lookup. A missing/unknown version is stale on the v2 route and never falls through to topic-level cancellation.
 4. `/cancel` remains the explicit topic-level operation and is unaffected by card payload versioning.
-5. Compatibility is represented by `cardActionSchemaVersion: 2` in the running bridge's local status/control response. Enabling the feature requires both the persisted gate and a running bridge reporting schema >= 2; otherwise startup keeps v2 disabled and logs a fixed diagnostic.
+5. Compatibility is represented by `cardActionSchemaVersion: 2` in the running gateway's local status/control response. Enabling the feature requires both the persisted gate and a running gateway reporting schema >= 2; otherwise startup keeps v2 disabled and logs a fixed diagnostic.
 6. Deployment order is mandatory: deploy/restart the new binary with gate false; verify health and schema 2; persist gate true; restart/reload; verify v2. Rollback tooling/steps first persist gate false, then start the old binary. Task 1's guard is backported to every rollback candidate before any v2 enablement.
 7. No intermediate commit may have two semantic writers for the same card. Adapter code can construct v2 types for tests, but live presenter calls stay entirely legacy until the final gated cutover.
 8. The cutover includes a full-`src/` allowlist assertion that only lifecycle infrastructure and the isolated legacy adapter call conversation-card send/update methods.
@@ -879,7 +879,7 @@ After automated checks:
 - Replace the standalone initial receipt/progress card with a transient message reaction.
 - Let the conversation lifecycle create the first authoritative starting card.
 - Introduce pending-prompt lifecycle for queued/interrupting follow-ups.
-- Remove direct bridge/runtime conversation-card patches.
+- Remove direct gateway/runtime conversation-card patches.
 - Hand queued-card ownership explicitly into the active conversation lifecycle.
 
 ### Slice 7: Superseded/orphan reconciliation and diagnostics

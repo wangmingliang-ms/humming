@@ -30,7 +30,7 @@ describe("humming.ts bootstrap", () => {
     const originalExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
-      await main(["node", "humming", "bridge", "run", "--home", dir]);
+      await main(["node", "humming", "gateway", "run", "--home", dir]);
       expect(process.exitCode).toBe(2);
     } finally {
       process.exitCode = originalExitCode;
@@ -41,7 +41,7 @@ describe("humming.ts bootstrap", () => {
     const originalExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
-      await main(["node", "humming", "bridge", "stop", "--home", dir]);
+      await main(["node", "humming", "gateway", "stop", "--home", dir]);
       expect(process.exitCode).toBe(1);
     } finally {
       process.exitCode = originalExitCode;
@@ -70,7 +70,7 @@ describe("program construction", () => {
     expect(names).toEqual(
       [
         "agent",
-        "bridge",
+        "gateway",
         "session",
         "setup",
         "init",
@@ -84,8 +84,8 @@ describe("program construction", () => {
       ].sort(),
     );
 
-    const bridge = program.commands.find((cmd) => cmd.name() === "bridge");
-    expect(bridge?.commands.map((c) => c.name()).sort()).toEqual(
+    const gateway = program.commands.find((cmd) => cmd.name() === "gateway");
+    expect(gateway?.commands.map((c) => c.name()).sort()).toEqual(
       ["run", "start", "stop", "restart", "status", "logs"].sort(),
     );
 

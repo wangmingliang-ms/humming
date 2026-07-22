@@ -1,7 +1,7 @@
 /**
  * Home directory resolution, `settings.json` loading (Zod-validated), and
  * the merge of file + env + CLI flags into one {@link EffectiveConfig} used
- * by `humming bridge run`/`start`.
+ * by `humming gateway run`/`start`.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -14,7 +14,7 @@ import {
   readSettingsFileObject,
   SettingsFileFormatError,
 } from "../../../src/settings-file/settings-file.js";
-import { bridgeControlSocketPath } from "../../process-control.js";
+import { gatewayControlSocketPath } from "../../process-control.js";
 import { CliError } from "../errors.js";
 import { fileConfigSchema, type FileConfig } from "./schema.js";
 
@@ -36,7 +36,7 @@ export const DEFAULT_PERMISSION_MODE: PermissionMode = "alwaysAsk";
 export const DEFAULT_IDLE_STATUS_CARD_MS = 15_000;
 /**
  * Agent used when neither `--agent` nor settings.json `runtime.agent` names one.
- * Makes a bare `humming bridge run` / `start` work out-of-the-box on a fresh
+ * Makes a bare `humming gateway run` / `start` work out-of-the-box on a fresh
  * machine (claude authenticates via the local `claude` CLI, no API key).
  */
 export const DEFAULT_AGENT = "claude";
@@ -81,7 +81,7 @@ export interface HomeBootstrap {
  * Resolve home dir + settings path and seed `~/.humming` with guide/example
  * files (AGENTS.md, CLAUDE.md, settings.back.json, sessions.back.json).
  * Shared by the three CLI entry points that bootstrap a home directory from
- * scratch: `bridge run`/`start`, `setup`, and `init`.
+ * scratch: `gateway run`/`start`, `setup`, and `init`.
  */
 export function installHomeBootstrap(
   globals: { readonly home?: string; readonly settingsPath?: string },
@@ -93,7 +93,7 @@ export function installHomeBootstrap(
     homeDir,
     settingsPath: configPath,
     sessionsPath: path.join(homeDir, "sessions.json"),
-    controlSocketPath: bridgeControlSocketPath(homeDir),
+    controlSocketPath: gatewayControlSocketPath(homeDir),
     overwriteDocs,
   });
   return { homeDir, configPath };
@@ -158,8 +158,8 @@ export interface EffectiveConfig {
   readonly unboundCwd: string | null;
 }
 
-/** Flags accepted by `humming bridge run` / `bridge start`, already Commander-typed. */
-export interface BridgeRunFlags {
+/** Flags accepted by `humming gateway run` / `gateway start`, already Commander-typed. */
+export interface GatewayRunFlags {
   readonly cwd?: string;
   readonly dataDir?: string;
   readonly unboundCwd?: string;
@@ -181,7 +181,7 @@ export interface BridgeRunFlags {
  *         missing or invalid.
  */
 export function resolveConfig(
-  flags: BridgeRunFlags,
+  flags: GatewayRunFlags,
   configPath: string,
   homeDir: string,
   file: FileConfig,
@@ -281,7 +281,7 @@ export function resolveConfig(
 /**
  * Resolve the state/data directory without requiring full credential
  * resolution — used by `agent`/`session` commands that only need
- * `sessions.json` + bindings, not a live bridge.
+ * `sessions.json` + bindings, not a live gateway.
  */
 export function resolveStateDir(
   dataDirFlag: string | undefined,

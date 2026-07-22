@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type * as acp from "@agentclientprotocol/sdk";
-import { LarkBridge, type ResolvedAgentInvocation } from "./bridge.js";
+import { LarkGateway, type ResolvedAgentInvocation } from "./gateway.js";
 import { slashCommandController, type SlashCommandInvocation } from "../interpreter/commands.js";
 import type {
   AgentProcess,
@@ -238,7 +238,7 @@ function resolver(selection: string): ResolvedAgentInvocation {
   return { command: "npx", args: ["-y", "@zed-industries/claude-code-acp"], label: "claude" };
 }
 
-function makeBridge(
+function makeGateway(
   sessionStore: SessionStore,
   presenter: LarkPresenter,
   opts: {
@@ -246,8 +246,8 @@ function makeBridge(
     readonly globalDefaultControlChatIds?: readonly string[];
     readonly defaultControls?: SessionControls;
   } = {},
-): LarkBridge {
-  return new LarkBridge({
+): LarkGateway {
+  return new LarkGateway({
     lark: { appId: "cli_a", appSecret: "secret" },
     agent: {
       resolver,
@@ -271,10 +271,10 @@ function makeBridge(
   });
 }
 
-describe("LarkBridge shutdown", () => {
+describe("LarkGateway shutdown", () => {
   it("shuts down runtimes before awaiting the lifecycle notice", async () => {
     const events: string[] = [];
-    const bridge = makeBridge(
+    const gateway = makeGateway(
       new MemorySessionStore(),
       recordingPresenter({
         warnings: [],
@@ -291,7 +291,7 @@ describe("LarkBridge shutdown", () => {
         events.push("runtime");
       }),
     };
-    const testable = bridge as unknown as {
+    const testable = gateway as unknown as {
       started: boolean;
       chats: Map<string, typeof runtime>;
       sendLifecycleTerminalNotice: () => Promise<void>;
@@ -302,14 +302,14 @@ describe("LarkBridge shutdown", () => {
       events.push("lifecycle");
     };
 
-    await bridge.stop();
+    await gateway.stop();
 
     expect(events).toEqual(["runtime", "lifecycle"]);
   });
 });
 
 async function dispatchCommand(
-  bridge: LarkBridge,
+  gateway: LarkGateway,
   input: string,
   messageId = "om_switch",
   opts: {
@@ -320,7 +320,7 @@ async function dispatchCommand(
 ): Promise<void> {
   const command = slashCommandController.resolve(input);
   if (command === null) throw new Error(`expected slash command: ${input}`);
-  const testable = bridge as unknown as {
+  const testable = gateway as unknown as {
     handleCommand(
       command: SlashCommandInvocation,
       chatId: string,
@@ -341,11 +341,11 @@ async function dispatchCommand(
 }
 
 async function handleCardAction(
-  bridge: LarkBridge,
+  gateway: LarkGateway,
   value: object,
   messageId = "om_warning_card",
 ): Promise<void> {
-  const testable = bridge as unknown as {
+  const testable = gateway as unknown as {
     handleCardAction(event: {
       readonly action: { readonly value: object };
       readonly messageId: string;
@@ -389,8 +389,8 @@ function fakeCapabilitiesSnapshot(): SessionCapabilitiesSnapshot {
   return {
     session: { chatId: "oc_A", threadId: "omt_1", sessionId: "sess_claude" },
     agent: { command: "npx", args: ["-y", "@zed-industries/claude-code-acp"], cwd: "/tmp" },
-    bridgePermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
-    bridgePermissionMode: "alwaysAsk",
+    gatewayPermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
+    gatewayPermissionMode: "alwaysAsk",
   };
 }
 
@@ -425,7 +425,7 @@ function fakeAgentProcess(
   };
 }
 
-describe("LarkBridge topic Agent restart", () => {
+describe("LarkGateway topic Agent restart", () => {
   beforeEach(() => {
     spawnAgentMock.mockReset();
     spawnAndStrictlyResumeAgentMock.mockReset();
@@ -440,18 +440,18 @@ describe("LarkBridge topic Agent restart", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
+    const gateway = makeGateway(store, recordingPresenter(events));
     const oldRuntime = {
       cancel: vi.fn(async () => {}),
       supersede: vi.fn(async () => {}),
     };
-    const testable = bridge as unknown as {
+    const testable = gateway as unknown as {
       chats: Map<string, typeof oldRuntime>;
     };
     testable.chats.set("oc_A\u0000omt_1", oldRuntime);
     spawnAndStrictlyResumeAgentMock.mockResolvedValue(fakeAgentProcess("sess_claude"));
 
-    await dispatchCommand(bridge, "/restart");
+    await dispatchCommand(gateway, "/restart");
 
     expect(oldRuntime.cancel).toHaveBeenCalledOnce();
     expect(oldRuntime.supersede).toHaveBeenCalledOnce();
@@ -475,10 +475,10 @@ describe("LarkBridge topic Agent restart", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
+    const gateway = makeGateway(store, recordingPresenter(events));
     spawnAndStrictlyResumeAgentMock.mockRejectedValue(new Error("resume rejected"));
 
-    await dispatchCommand(bridge, "/restart");
+    await dispatchCommand(gateway, "/restart");
 
     expect((await store.getLatest("oc_A", "omt_1"))?.sessionId).toBe("sess_claude");
     expect(spawnAgentMock).not.toHaveBeenCalled();
@@ -497,9 +497,9 @@ describe("LarkBridge topic Agent restart", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(new MemorySessionStore(), recordingPresenter(events));
+    const gateway = makeGateway(new MemorySessionStore(), recordingPresenter(events));
 
-    await dispatchCommand(bridge, "/restart");
+    await dispatchCommand(gateway, "/restart");
 
     expect(spawnAndStrictlyResumeAgentMock).not.toHaveBeenCalled();
     expect(events.notices.at(-1)).toMatchObject({
@@ -520,8 +520,8 @@ it("migrates a persisted Claude preset to the maintained adapter on resume", asy
     commandResults: [],
     noticeUpdates: [],
   };
-  const bridge = makeBridge(store, recordingPresenter(events));
-  const testable = bridge as unknown as {
+  const gateway = makeGateway(store, recordingPresenter(events));
+  const testable = gateway as unknown as {
     acquireRuntime(
       chatId: string,
       threadId: string | null,
@@ -552,7 +552,7 @@ it("migrates a persisted Claude preset to the maintained adapter on resume", asy
   });
 });
 
-describe("LarkBridge destructive Agent switch confirmation", () => {
+describe("LarkGateway destructive Agent switch confirmation", () => {
   beforeEach(() => {
     probeAgentSessionCapabilitiesMock.mockReset();
     probeAgentSessionCapabilitiesMock.mockResolvedValue({ sessionId: "probe", capabilities: {} });
@@ -579,9 +579,9 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
+    const gateway = makeGateway(store, recordingPresenter(events));
 
-    await dispatchCommand(bridge, "/agent codex");
+    await dispatchCommand(gateway, "/agent codex");
 
     expect(events.warnings).toHaveLength(1);
     expect(events.warnings[0]).toMatchObject({
@@ -609,13 +609,13 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
+    const gateway = makeGateway(store, recordingPresenter(events));
 
-    await dispatchCommand(bridge, "/agent codex");
+    await dispatchCommand(gateway, "/agent codex");
     const switchId = events.warnings[0]?.switchId;
     expect(switchId).toBeDefined();
 
-    await handleCardAction(bridge, { c: "oc_A", th: "omt_1", sw: switchId, swa: "cancel" });
+    await handleCardAction(gateway, { c: "oc_A", th: "omt_1", sw: switchId, swa: "cancel" });
 
     expect(events.warningResolutions).toEqual([
       { status: "cancelled", text: "已取消 Agent 切换；当前 session 保持不变。" },
@@ -633,13 +633,13 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
+    const gateway = makeGateway(store, recordingPresenter(events));
 
-    await dispatchCommand(bridge, "/agent codex");
+    await dispatchCommand(gateway, "/agent codex");
     const switchId = events.warnings[0]?.switchId;
     expect(switchId).toBeDefined();
 
-    await handleCardAction(bridge, { c: "oc_A", th: "omt_1", sw: switchId, swa: "confirm" });
+    await handleCardAction(gateway, { c: "oc_A", th: "omt_1", sw: switchId, swa: "confirm" });
 
     await vi.waitFor(async () => {
       expect(probeAgentSessionCapabilitiesMock).toHaveBeenCalledTimes(1);
@@ -665,8 +665,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlSetAgent(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
       controlConfigureSession(
         chatId: string,
@@ -687,7 +687,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       lastMessageId: "om_handoff",
       supersede: vi.fn(async () => {}),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -731,8 +731,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -756,7 +756,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       lastMessageId: "om_handoff",
       supersede: vi.fn(async () => {}),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -827,8 +827,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlSetAgent(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
       handleRuntimeTurnComplete(
         chatId: string,
@@ -843,7 +843,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
         throw new Error("supersede failed");
       }),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -869,8 +869,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlSetAgent(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
       controlConfigureSession(
         chatId: string,
@@ -889,7 +889,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       lastMessageId: "om_handoff",
       supersede: vi.fn(async () => {}),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -923,7 +923,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
     const after = await store.getLatest("oc_A", "omt_1");
     expect(after).toMatchObject({ sessionId: "sess_claude", agentLabel: "claude" });
     expect(after?.pendingConfiguration).toEqual(queuedConfiguration);
-    expect(bridge.activeChatCount).toBe(0);
+    expect(gateway.activeChatCount).toBe(0);
   });
 
   it("preserves the pending configuration and does not send its message when applying queued controls fails at the turn boundary", async () => {
@@ -935,8 +935,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -963,7 +963,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       }),
       enqueue,
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -972,13 +972,13 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       "oc_A",
       "omt_1",
       {
-        controls: { bridgePermissionMode: "alwaysAllow" },
+        controls: { gatewayPermissionMode: "alwaysAllow" },
         message: { prompt: "continue after controls", createdAt: 10 },
       },
       "om_handoff",
     );
     const queuedConfiguration = (await store.getLatest("oc_A", "omt_1"))?.pendingConfiguration;
-    expect(queuedConfiguration?.controls).toMatchObject({ bridgePermissionMode: "alwaysAllow" });
+    expect(queuedConfiguration?.controls).toMatchObject({ gatewayPermissionMode: "alwaysAllow" });
 
     fakeRuntime.processing = false;
     await expect(testable.handleRuntimeTurnComplete("oc_A", "omt_1", "om_handoff")).rejects.toThrow(
@@ -1003,8 +1003,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1030,7 +1030,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
         throw new Error("message enqueue failed");
       }),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -1039,7 +1039,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       "oc_A",
       "omt_1",
       {
-        controls: { bridgePermissionMode: "alwaysAllow" },
+        controls: { gatewayPermissionMode: "alwaysAllow" },
         message: { prompt: "continue after controls", createdAt: 10 },
       },
       "om_handoff",
@@ -1071,8 +1071,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1097,11 +1097,11 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
         // this directly exercises the conditional-clear safety net).
         await store.setPendingConfiguration(
           { chatId: "oc_A", threadId: "omt_1" },
-          { controls: { bridgePermissionMode: "alwaysDeny" }, createdAt: 1, updatedAt: 999 },
+          { controls: { gatewayPermissionMode: "alwaysDeny" }, createdAt: 1, updatedAt: 999 },
         );
       }),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -1109,7 +1109,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
     await testable.controlConfigureSession(
       "oc_A",
       "omt_1",
-      { controls: { bridgePermissionMode: "alwaysAllow" } },
+      { controls: { gatewayPermissionMode: "alwaysAllow" } },
       "om_handoff",
     );
 
@@ -1118,7 +1118,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
 
     const after = await store.getLatest("oc_A", "omt_1");
     expect(after?.pendingConfiguration).toMatchObject({
-      controls: { bridgePermissionMode: "alwaysDeny" },
+      controls: { gatewayPermissionMode: "alwaysDeny" },
     });
   });
 
@@ -1131,8 +1131,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1192,8 +1192,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       acquireRuntime(
         chatId: string,
         threadId: string | null,
@@ -1203,7 +1203,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       }>;
     };
 
-    // A leftover Pending Configuration as if the Bridge restarted right
+    // A leftover Pending Configuration as if the Gateway restarted right
     // after the request was queued but before its Turn boundary ran.
     await store.setPendingConfiguration(
       { chatId: "oc_A", threadId: "omt_1" },
@@ -1252,8 +1252,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       acquireRuntime(
         chatId: string,
         threadId: string | null,
@@ -1266,7 +1266,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
     await store.setPendingConfiguration(
       { chatId: "oc_A", threadId: "omt_1" },
       {
-        controls: { bridgePermissionMode: "alwaysAllow" },
+        controls: { gatewayPermissionMode: "alwaysAllow" },
         message: { prompt: "resume after restart", createdAt: 10 },
         createdAt: 1,
         updatedAt: 1,
@@ -1294,7 +1294,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
 
     await vi.waitFor(async () => {
       expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
-        controls: { bridgePermissionMode: "alwaysAllow" },
+        controls: { gatewayPermissionMode: "alwaysAllow" },
       });
     });
     expect((await store.getLatest("oc_A", "omt_1"))?.pendingConfiguration).toBeUndefined();
@@ -1311,8 +1311,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1329,7 +1329,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       lastMessageId: "om_handoff",
       supersede: vi.fn(async () => {}),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -1369,8 +1369,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1393,7 +1393,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       lastMessageId: "om_handoff",
       supersede: vi.fn(async () => {}),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -1418,7 +1418,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
     // Reproduces the real race: when the old runtime finishes, its own
     // ChatRuntime.persistSession() re-saves the old session record — as it
     // does in production, carrying `pendingConfiguration` forward untouched
-    // (spec §9.3: only the Bridge mutates it). The persisted Pending
+    // (spec §9.3: only the Gateway mutates it). The persisted Pending
     // Configuration must still be there for the post-turn Agent switch.
     const beforeReSave = await store.getLatest("oc_A", "omt_1");
     await store.save({
@@ -1449,8 +1449,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlSetAgent(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
       controlConfigureSession(
         chatId: string,
@@ -1481,11 +1481,11 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
           currentModelId: "claude-sonnet-4.5",
           availableModels: [{ modelId: "claude-sonnet-4.5", name: "Claude Sonnet 4.5" }],
         },
-        bridgePermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
-        bridgePermissionMode: "alwaysAsk",
+        gatewayPermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
+        gatewayPermissionMode: "alwaysAsk",
       }),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -1517,8 +1517,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1536,7 +1536,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       lastMessageId: "om_handoff",
       supersede: vi.fn(async () => {}),
     };
-    (bridge as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
+    (gateway as unknown as { chats: Map<string, typeof fakeRuntime> }).chats.set(
       "oc_A\u0000omt_1",
       fakeRuntime,
     );
@@ -1584,9 +1584,9 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
+    const gateway = makeGateway(store, recordingPresenter(events));
 
-    await dispatchCommand(bridge, "/agent codex");
+    await dispatchCommand(gateway, "/agent codex");
 
     expect(events.warnings).toEqual([]);
     expect(probeAgentSessionCapabilitiesMock).toHaveBeenCalledTimes(1);
@@ -1605,8 +1605,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1691,8 +1691,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1752,8 +1752,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       controlConfigureSession(
         chatId: string,
         threadId: string | null,
@@ -1789,7 +1789,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
     );
 
     expect(result).toMatchObject({ rejected: true });
-    expect(bridge.activeChatCount).toBe(0);
+    expect(gateway.activeChatCount).toBe(0);
     const after = await store.getLatest("oc_A", "omt_1");
     expect(after).toMatchObject({
       profileOnly: true,
@@ -1815,8 +1815,8 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as {
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as {
       acquireRuntime(
         chatId: string,
         threadId: string | null,
@@ -1891,7 +1891,7 @@ describe("LarkBridge destructive Agent switch confirmation", () => {
   });
 });
 
-describe("LarkBridge global defaults from direct-message control chat", () => {
+describe("LarkGateway global defaults from direct-message control chat", () => {
   beforeEach(() => {
     probeAgentSessionCapabilitiesMock.mockReset();
     probeAgentSessionCapabilitiesMock.mockResolvedValue({ sessionId: "probe", capabilities: {} });
@@ -1915,12 +1915,12 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         commandResults: [],
         noticeUpdates: [],
       };
-      const bridge = makeBridge(store, recordingPresenter(events), {
+      const gateway = makeGateway(store, recordingPresenter(events), {
         settingsPath,
         globalDefaultControlChatIds: ["oc_DM"],
       });
 
-      await dispatchCommand(bridge, "/agent codex", "om_dm_agent", {
+      await dispatchCommand(gateway, "/agent codex", "om_dm_agent", {
         chatId: "oc_DM",
         threadId: null,
         isDirectMessage: true,
@@ -1952,12 +1952,12 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         commandResults: [],
         noticeUpdates: [],
       };
-      const bridge = makeBridge(store, recordingPresenter(events), {
+      const gateway = makeGateway(store, recordingPresenter(events), {
         settingsPath,
         globalDefaultControlChatIds: ["oc_DM"],
       });
 
-      await dispatchCommand(bridge, "/agent codex", "om_group_agent", {
+      await dispatchCommand(gateway, "/agent codex", "om_group_agent", {
         chatId: "oc_DM",
         threadId: null,
         isDirectMessage: false,
@@ -2001,12 +2001,12 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         commandResults: [],
         noticeUpdates: [],
       };
-      const bridge = makeBridge(store, recordingPresenter(events), {
+      const gateway = makeGateway(store, recordingPresenter(events), {
         settingsPath,
         globalDefaultControlChatIds: ["oc_DM"],
       });
 
-      await dispatchCommand(bridge, "/permission alwaysAllow", "om_dm_permission", {
+      await dispatchCommand(gateway, "/permission alwaysAllow", "om_dm_permission", {
         chatId: "oc_DM",
         threadId: null,
         isDirectMessage: true,
@@ -2017,7 +2017,7 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
       };
       expect(settings.runtime?.permissionMode).toBe("alwaysAllow");
       expect(settings.runtime?.defaultControls).toMatchObject({
-        bridgePermissionMode: "alwaysAllow",
+        gatewayPermissionMode: "alwaysAllow",
       });
       expect(events.notices.at(-1)?.body).toContain("全局默认");
     } finally {
@@ -2041,11 +2041,11 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         commandResults: [],
         noticeUpdates: [],
       };
-      const bridge = makeBridge(store, recordingPresenter(events), {
+      const gateway = makeGateway(store, recordingPresenter(events), {
         settingsPath,
         globalDefaultControlChatIds: ["oc_DM"],
       });
-      const testable = bridge as unknown as {
+      const testable = gateway as unknown as {
         controlConfigureSession(
           chatId: string,
           threadId: string | null,
@@ -2100,10 +2100,10 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events), {
-      defaultControls: { bridgePermissionMode: "alwaysAllow" },
+    const gateway = makeGateway(store, recordingPresenter(events), {
+      defaultControls: { gatewayPermissionMode: "alwaysAllow" },
     });
-    const testable = bridge as unknown as {
+    const testable = gateway as unknown as {
       acquireRuntime(
         chatId: string,
         threadId: string | null,
@@ -2124,7 +2124,7 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
     await runtime.enqueue({ prompt: [], messageId: "om_new", chatId: "oc_A" });
 
     expect(await store.getLatest("oc_A", "omt_new")).toMatchObject({
-      controls: { bridgePermissionMode: "alwaysAllow" },
+      controls: { gatewayPermissionMode: "alwaysAllow" },
     });
   });
 
@@ -2141,8 +2141,8 @@ describe("LarkBridge global defaults from direct-message control chat", () => {
         commandResults: [],
         noticeUpdates: [],
       };
-      const bridge = makeBridge(store, recordingPresenter(events), { settingsPath });
-      const testable = bridge as unknown as {
+      const gateway = makeGateway(store, recordingPresenter(events), { settingsPath });
+      const testable = gateway as unknown as {
         resolveBinding(chatId: string): Promise<unknown>;
         acquireRuntime(
           chatId: string,
@@ -2208,7 +2208,7 @@ async function settlesWithin<T>(work: Promise<T>, ms: number, label: string): Pr
   }
 }
 
-describe("LarkBridge Pending Configuration lock — runtime acquisition under lock", () => {
+describe("LarkGateway Pending Configuration lock — runtime acquisition under lock", () => {
   interface AcquisitionTestable {
     controlSendMessage(
       chatId: string,
@@ -2245,8 +2245,8 @@ describe("LarkBridge Pending Configuration lock — runtime acquisition under lo
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as AcquisitionTestable;
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as AcquisitionTestable;
 
     // Hold the delivered Message's turn open so the test observes only the
     // send path; exactly-once delivery is asserted via the prompt spy.
@@ -2285,14 +2285,14 @@ describe("LarkBridge Pending Configuration lock — runtime acquisition under lo
       commandResults: [],
       noticeUpdates: [],
     };
-    const bridge = makeBridge(store, recordingPresenter(events));
-    const testable = bridge as unknown as AcquisitionTestable;
+    const gateway = makeGateway(store, recordingPresenter(events));
+    const testable = gateway as unknown as AcquisitionTestable;
 
-    // A leftover controls-only Pending Configuration, as if the Bridge
+    // A leftover controls-only Pending Configuration, as if the Gateway
     // restarted before its Turn boundary ran.
     await store.setPendingConfiguration(
       { chatId: "oc_A", threadId: "omt_1" },
-      { controls: { bridgePermissionMode: "alwaysAllow" }, createdAt: 1, updatedAt: 1 },
+      { controls: { gatewayPermissionMode: "alwaysAllow" }, createdAt: 1, updatedAt: 1 },
     );
 
     // Ordinary ingress acquisition (default "recover-on-acquire" policy) must
@@ -2309,7 +2309,7 @@ describe("LarkBridge Pending Configuration lock — runtime acquisition under lo
 
     await vi.waitFor(async () => {
       expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
-        controls: { bridgePermissionMode: "alwaysAllow" },
+        controls: { gatewayPermissionMode: "alwaysAllow" },
       });
     });
     expect((await store.getLatest("oc_A", "omt_1"))?.pendingConfiguration).toBeUndefined();

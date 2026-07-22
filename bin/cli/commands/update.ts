@@ -1,6 +1,6 @@
 /**
  * `humming update` — hard-sync the machine-managed checkout, rebuild, and
- * restart a running bridge with its original launch arguments
+ * restart a running gateway with its original launch arguments
  * (docs/cli-command-model-SPEC.md §6).
  */
 import fs from "node:fs";
@@ -8,8 +8,8 @@ import process from "node:process";
 import { Command } from "commander";
 import {
   managedCheckoutDir,
-  bridgeLaunchPath,
-  isBridgeRunning,
+  gatewayLaunchPath,
+  isGatewayRunning,
   readLaunchArgv,
   runGit,
   runNpm,
@@ -26,7 +26,7 @@ const DEFAULT_UPDATE_REPO = "wangmingliang-ms/humming";
 export function registerUpdateCommand(program: Command): void {
   program
     .command("update")
-    .description("hard-sync the managed checkout, rebuild, and restart a running bridge")
+    .description("hard-sync the managed checkout, rebuild, and restart a running gateway")
     .action(async function (this: Command) {
       await runUpdate(this.optsWithGlobals<GlobalOptions>());
     });
@@ -40,7 +40,7 @@ export function resolveUpdateRef(): string {
 
 /**
  * @throws {ProcessControlError} when the checkout is missing, a git/npm step
- *         fails, or a running bridge has no readable launch descriptor.
+ *         fails, or a running gateway has no readable launch descriptor.
  */
 export async function runUpdate(globals: GlobalOptions): Promise<void> {
   const homeDir = resolveHomeDir(globals.home);
@@ -66,20 +66,20 @@ export async function runUpdate(globals: GlobalOptions): Promise<void> {
   process.stdout.write("humming update: refreshing global command ...\n");
   runNpm(["link"], checkoutDir);
 
-  await restartBridgeAfterUpdate(homeDir);
+  await restartGatewayAfterUpdate(homeDir);
 }
 
 /**
- * After a successful build, restart the bridge iff one is running, reusing
+ * After a successful build, restart the gateway iff one is running, reusing
  * the persisted launch argv. When nothing is running, print a start hint.
  *
- * @throws {ProcessControlError} when a bridge is running but its launch
+ * @throws {ProcessControlError} when a gateway is running but its launch
  *         descriptor is missing/unreadable.
  */
-async function restartBridgeAfterUpdate(homeDir: string): Promise<void> {
-  if (!isBridgeRunning(homeDir)) {
+async function restartGatewayAfterUpdate(homeDir: string): Promise<void> {
+  if (!isGatewayRunning(homeDir)) {
     process.stdout.write(
-      "humming update: done. Bridge is not running — start it with `humming bridge start`.\n",
+      "humming update: done. Gateway is not running — start it with `humming gateway start`.\n",
     );
     return;
   }
@@ -87,9 +87,9 @@ async function restartBridgeAfterUpdate(homeDir: string): Promise<void> {
   const launch = readLaunchArgv(homeDir);
   if (launch === null) {
     throw new ProcessControlError(
-      `update rebuilt the checkout, but the running bridge has no launch record at ` +
-        `${bridgeLaunchPath(homeDir)}. Restart it manually with \`humming bridge restart\` ` +
-        `(or \`humming bridge start --agent <preset>\` if needed).`,
+      `update rebuilt the checkout, but the running gateway has no launch record at ` +
+        `${gatewayLaunchPath(homeDir)}. Restart it manually with \`humming gateway restart\` ` +
+        `(or \`humming gateway start --agent <preset>\` if needed).`,
     );
   }
 

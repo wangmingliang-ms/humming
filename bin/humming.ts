@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `humming` — bridge a Lark bot to any ACP-compatible AI agent.
+ * `humming` — gateway a Lark bot to any ACP-compatible AI agent.
  *
  * This file is bootstrap only: resolve the package version, build the
  * Commander program (`bin/cli/program.ts`), parse `argv`, and translate any
@@ -8,7 +8,7 @@
  * under `bin/cli/**` — see docs/cli-command-model-SPEC.md §13 for the target
  * module layout.
  *
- * Command tree: `humming bridge|agent|session|setup|init|update` — run
+ * Command tree: `humming gateway|agent|session|setup|init|update` — run
  * `humming --help` (or any subcommand `--help`) for the full reference.
  */
 import fs from "node:fs";

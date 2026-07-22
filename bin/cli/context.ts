@@ -11,11 +11,11 @@ import type {
   AgentProbeFailureTarget,
   ControlRequest,
   ControlResponse,
-} from "../../src/bridge/control-server.js";
-import { sendControlRequest } from "../../src/bridge/control-server.js";
+} from "../../src/gateway/control-server.js";
+import { sendControlRequest } from "../../src/gateway/control-server.js";
 import type { LarkLogger, ResolvedAgentInvocation } from "../../src/index.js";
 import { buildRegistry, resolveAgent, type Registry } from "../agents.js";
-import { bridgeControlSocketPath } from "../process-control.js";
+import { gatewayControlSocketPath } from "../process-control.js";
 import {
   DEFAULT_AGENT,
   ENV_CHAT_ID,
@@ -111,7 +111,7 @@ function resolveThreadId(explicit: string | undefined): string | null {
 // ---------- agent invocation resolution ------------------------------------
 
 /**
- * Build the {@link AgentResolver} the bridge uses to turn a `/bind` agent
+ * Build the {@link AgentResolver} the gateway uses to turn a `/bind` agent
  * selection (preset id or raw command) into a concrete invocation.
  */
 export function makeAgentResolver(registry: Registry) {
@@ -289,22 +289,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // ---------- control socket ---------------------------------------------------
 
 /**
- * Send a request to the running bridge's control socket and unwrap the
- * response, or throw a {@link CliError} carrying the bridge's own error text.
+ * Send a request to the running gateway's control socket and unwrap the
+ * response, or throw a {@link CliError} carrying the gateway's own error text.
  *
- * @throws {CliError} when the bridge rejects the request or the socket is
- *         unreachable (bridge not running).
+ * @throws {CliError} when the gateway rejects the request or the socket is
+ *         unreachable (gateway not running).
  */
-export async function callBridgeControl(
+export async function callGatewayControl(
   homeDir: string,
   request: ControlRequest,
 ): Promise<unknown> {
   let response: ControlResponse;
   try {
-    response = await sendControlRequest(bridgeControlSocketPath(homeDir), request);
+    response = await sendControlRequest(gatewayControlSocketPath(homeDir), request);
   } catch (err) {
     throw new CliError(
-      `could not reach the bridge control socket: ${formatError(err)} (is \`humming bridge start\` running?)`,
+      `could not reach the gateway control socket: ${formatError(err)} (is \`humming gateway start\` running?)`,
     );
   }
   if (!response.ok) throw new CliError(response.error);
@@ -328,7 +328,7 @@ export async function notifyAgentProbeFailure(
     cwd: target.cwd,
   };
   try {
-    await sendControlRequest(bridgeControlSocketPath(target.homeDir), {
+    await sendControlRequest(gatewayControlSocketPath(target.homeDir), {
       method: "agentProbeFailed",
       params: { chatId, threadId: target.threadId, agent, error: formatError(err) },
     });

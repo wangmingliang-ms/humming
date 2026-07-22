@@ -10,6 +10,7 @@ import { registerSessionCommand } from "./commands/session.js";
 import { registerSetupCommand } from "./commands/setup.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerUpdateCommand } from "./commands/update.js";
+import { registerAutostartCommand } from "./commands/autostart.js";
 
 export interface BuildProgramOptions {
   readonly version: string;
@@ -41,6 +42,7 @@ export function buildProgram(opts: BuildProgramOptions): Command {
   registerSetupCommand(program);
   registerInitCommand(program);
   registerUpdateCommand(program);
+  registerAutostartCommand(program, { selfPath: opts.selfPath });
 
   return program;
 }

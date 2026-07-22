@@ -52,6 +52,16 @@ const fsDeps = {
 
 const WINDOWS_TASK_NAME = "Humming Gateway Autostart";
 
+/**
+ * Name of the persistent boot unit. Must differ from `gatewayUnitName` — that
+ * one names the *transient* `systemd-run` unit for a live `gateway start`, and
+ * systemd refuses to `enable` a persistent unit whose name collides with a
+ * loaded transient one. We derive a distinct "-boot" name from the same digest.
+ */
+function bootUnitName(homeDir: string): string {
+  return gatewayUnitName(homeDir).replace(/\.service$/, "-boot.service");
+}
+
 /** Read `runtime.agent` from settings.json, tolerating a missing/unreadable file. */
 function readAgentFlag(homeDir: string): string | null {
   try {
@@ -70,7 +80,7 @@ export function buildAutostartRuntime(homeDir: string, selfPath: string): Autost
   return {
     env: { platform: process.platform, systemdAvailable: isUserSystemdAvailable() },
     installSystemd: () => {
-      const unitName = gatewayUnitName(homeDir);
+      const unitName = bootUnitName(homeDir);
       const unitPath = path.join(os.homedir(), ".config", "systemd", "user", unitName);
       const systemdDeps: SystemdDeps = fsDeps;
       return installSystemdAutostart({

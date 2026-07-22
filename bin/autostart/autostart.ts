@@ -38,3 +38,22 @@ export function detectAutostartTarget(env: AutostartEnv): AutostartTarget {
   }
   return { unsupported: `unsupported platform: ${env.platform}` };
 }
+
+/**
+ * Injected seams for `ensureAutostart`: platform inputs plus the two
+ * platform installers (already bound to their real fs/runner deps by the
+ * caller). Lets the dispatcher be tested without real side effects.
+ */
+export interface AutostartRuntime {
+  readonly env: AutostartEnv;
+  readonly installSystemd: () => AutostartReport;
+  readonly installWindows: () => AutostartReport;
+}
+
+/** Detect the platform and run the matching installer, else skip. */
+export function ensureAutostart(runtime: AutostartRuntime): AutostartReport {
+  const target = detectAutostartTarget(runtime.env);
+  if (target === "systemd") return runtime.installSystemd();
+  if (target === "windows-task") return runtime.installWindows();
+  return { kind: "skipped", reason: target.unsupported };
+}

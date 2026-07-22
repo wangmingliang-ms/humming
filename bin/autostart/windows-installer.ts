@@ -1,3 +1,6 @@
+import type { AutostartReport } from "./autostart.js";
+import type { RunResult } from "./systemd-installer.js";
+
 /** Inputs for the PowerShell autostart script. */
 export interface AutostartPs1Spec {
   readonly hummingCommand: string;
@@ -49,4 +52,55 @@ export function renderTaskXml(spec: TaskXmlSpec): string {
   </Actions>
 </Task>
 `;
+}
+
+/** Injected side effects for the Windows installer. */
+export interface WindowsDeps {
+  readonly readFile: (path: string) => string | null;
+  readonly writeFile: (path: string, content: string) => void;
+  readonly mkdirp: (dir: string) => void;
+  readonly taskExists: (taskName: string) => boolean;
+  readonly run: (cmd: string, args: readonly string[]) => RunResult;
+}
+
+/** Everything needed to install the Windows autostart task. */
+export interface WindowsInstallArgs {
+  readonly ps1Path: string;
+  readonly ps1Spec: AutostartPs1Spec;
+  readonly taskName: string;
+  readonly taskXml: string;
+  readonly deps: WindowsDeps;
+}
+
+/**
+ * Write the ps1 (when changed) and (re)register the boot task via schtasks.
+ * @throws {Error} when schtasks exits non-zero.
+ */
+export function installWindowsAutostart(args: WindowsInstallArgs): AutostartReport {
+  const desiredPs1 = renderAutostartPs1(args.ps1Spec);
+  const currentPs1 = args.deps.readFile(args.ps1Path);
+  const ps1Current = currentPs1 === desiredPs1;
+  const taskPresent = args.deps.taskExists(args.taskName);
+  if (ps1Current && taskPresent) {
+    return { kind: "already-current", mechanism: "windows-task", path: args.taskName };
+  }
+  if (!ps1Current) {
+    const dir = args.ps1Path.slice(0, args.ps1Path.lastIndexOf("\\"));
+    args.deps.mkdirp(dir);
+    args.deps.writeFile(args.ps1Path, desiredPs1);
+  }
+  if (taskPresent) {
+    runOrThrow(args.deps, "schtasks.exe", ["/delete", "/tn", args.taskName, "/f"]);
+  }
+  const xmlPath = `${args.ps1Path}.task.xml`;
+  args.deps.writeFile(xmlPath, args.taskXml);
+  runOrThrow(args.deps, "schtasks.exe", ["/create", "/tn", args.taskName, "/xml", xmlPath, "/f"]);
+  return { kind: "installed", mechanism: "windows-task", path: args.taskName };
+}
+
+function runOrThrow(deps: WindowsDeps, cmd: string, cmdArgs: readonly string[]): void {
+  const result = deps.run(cmd, cmdArgs);
+  if (result.status !== 0) {
+    throw new Error(`${cmd} ${cmdArgs.join(" ")} failed: ${result.stderr || result.stdout}`);
+  }
 }

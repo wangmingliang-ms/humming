@@ -7,8 +7,33 @@ import {
   enableWindowsAutostart,
   uninstallWindowsAutostart,
   queryWindowsAutostart,
+  resolveWindowsUserId,
   type WindowsDeps,
 } from "./windows-installer.js";
+
+describe("resolveWindowsUserId", () => {
+  it("prefers USERDOMAIN\\USERNAME over the DNS hostname", () => {
+    const id = resolveWindowsUserId(
+      { USERDOMAIN: "DESKTOP-ABC", USERNAME: "wangmi" },
+      "desktop-abc.mshome.net",
+    );
+    expect(id).toBe("DESKTOP-ABC\\wangmi");
+  });
+
+  it("falls back to COMPUTERNAME when USERDOMAIN is absent", () => {
+    const id = resolveWindowsUserId({ USERNAME: "wangmi", COMPUTERNAME: "WINBOX" }, "ignored");
+    expect(id).toBe("WINBOX\\wangmi");
+  });
+
+  it("falls back to the injected hostname when no env domain is set", () => {
+    const id = resolveWindowsUserId({ USERNAME: "wangmi" }, "HOSTFALLBACK");
+    expect(id).toBe("HOSTFALLBACK\\wangmi");
+  });
+
+  it("throws when USERNAME is missing", () => {
+    expect(() => resolveWindowsUserId({ COMPUTERNAME: "WINBOX" }, "host")).toThrow(/USERNAME/);
+  });
+});
 
 describe("renderAutostartPs1", () => {
   it("starts the gateway and never adds an agent flag", () => {

@@ -6,6 +6,37 @@ export interface AutostartPs1Spec {
   readonly hummingCommand: string;
 }
 
+/** Subset of process.env needed to resolve the scheduled-task principal. */
+export interface WindowsUserEnv {
+  readonly USERDOMAIN?: string | undefined;
+  readonly USERNAME?: string | undefined;
+  readonly COMPUTERNAME?: string | undefined;
+}
+
+/**
+ * Resolve the `<UserId>` for the scheduled task's principal (pure).
+ *
+ * schtasks resolves `<UserId>` to a SID via LookupAccountName, which needs the
+ * NetBIOS domain/computer name — NOT the DNS hostname `os.hostname()` returns.
+ * On a machine whose DNS name differs from its NetBIOS name (or is a FQDN),
+ * `hostname\user` fails with "No mapping between account names and security IDs".
+ * Windows exposes the authoritative values as `%USERDOMAIN%\%USERNAME%`, so we
+ * prefer those; fall back to `%COMPUTERNAME%`, then the injected hostname.
+ *
+ * @throws {Error} when no username can be determined.
+ */
+export function resolveWindowsUserId(env: WindowsUserEnv, fallbackHostname: string): string {
+  const username = env.USERNAME?.trim();
+  if (!username) {
+    throw new Error("cannot resolve Windows UserId: %USERNAME% is empty");
+  }
+  const domain = env.USERDOMAIN?.trim() || env.COMPUTERNAME?.trim() || fallbackHostname.trim();
+  if (!domain) {
+    throw new Error("cannot resolve Windows UserId: no USERDOMAIN/COMPUTERNAME/hostname");
+  }
+  return `${domain}\\${username}`;
+}
+
 /**
  * Render the `.ps1` body that starts the gateway (pure).
  *

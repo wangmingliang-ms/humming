@@ -26,6 +26,7 @@ import {
   uninstallWindowsAutostart,
   queryWindowsAutostart,
   renderTaskXml,
+  resolveWindowsUserId,
   type WindowsDeps,
 } from "./windows-installer.js";
 import {
@@ -111,7 +112,7 @@ export function buildAutostartRuntime(homeDir: string, selfPath: string): Autost
       });
     },
     installWindows: () => {
-      const userId = `${os.hostname()}\\${os.userInfo().username}`;
+      const userId = resolveWindowsUserId(process.env, os.hostname());
       const taskXml = renderTaskXml({
         description: "Humming gateway autostart",
         pwshPath: "pwsh.exe",

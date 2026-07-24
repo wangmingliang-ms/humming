@@ -15,8 +15,9 @@ Omit `--chat-id` and `--thread-id` for the current topic.
 
 You can send real images into the chat — screenshots, generated pictures, images
 downloaded from a web page, or any local image file. Just reference the image in
-your normal reply; the Humming gateway uploads it to Feishu/Lark and delivers it
-as a standalone image message. You do NOT call any Humming command to do this.
+your normal reply; the Humming gateway uploads it to Feishu/Lark and renders it
+**inline in the reply card**, interleaved with your text in its original position.
+You do NOT call any Humming command to do this.
 
 Three ways to reference an image (all supported, mix freely with text):
 
@@ -31,10 +32,10 @@ Three ways to reference an image (all supported, mix freely with text):
 
 Notes:
 
-- The markdown image is stripped from the text, and the picture is sent as its
-  own image message — so write a sentence of context around it.
+- The markdown image is replaced in place by the picture — write text around it
+  and it renders where you wrote it (text → image → text, in order).
 - Supported formats: PNG, JPEG, GIF, WEBP, BMP. Max ~10 MiB per image.
-- On failure (download/upload error, oversize, not an image) the gateway posts a
+- On failure (download/upload error, oversize, not an image) the card shows a
   short text placeholder instead of silently dropping it — the local file path
   is never leaked into chat.
 - To take a screenshot first, use whatever capture tool the host provides, save

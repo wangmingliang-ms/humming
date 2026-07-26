@@ -3423,7 +3423,7 @@ function escapeXmlAttribute(value: string): string {
 }
 
 function renderInlineControlHint(): string {
-  return `<humming-hint>涉及 Humming 自身操作时（绑定/改绑仓库、把 topic 绑定到已有 Agent session、修改当前会话 Agent/Model/Mode/Permission/Config，以及 update/restart/status/logs 等 Gateway 管理），先阅读 ~/.humming/AGENTS.md（或 CLAUDE.md）中的 Humming 指引再执行；本会话标识见上方 feishu-context。群聊/topic 中的会话配置变更只作用于当前会话，不写全局默认。其它请求忽略本提示。</humming-hint>`;
+  return `<humming-hint>涉及 Humming 自身操作时（绑定/改绑仓库、把 topic 绑定到已有 Agent session、修改当前会话 Agent/Model/Mode/Permission/Config，以及 update/restart/status/logs 等 Gateway 管理），先阅读 ~/.humming/AGENTS.md（或 CLAUDE.md）中的 Humming 指引再执行；本会话标识见上方 feishu-context。群聊/topic 中的会话配置变更只作用于当前会话，不写全局默认。要给用户发图片时（截图/生成图/网页图/本地图），直接在回复里用 Markdown 图片语法 ![](绝对路径或http(s)链接) 即可，Humming 会自动上传并内嵌进卡片，无需任何命令。其它请求忽略本提示。</humming-hint>`;
 }
 
 function buildRouteFailureNotice(err: unknown): NoticeCardSpec {

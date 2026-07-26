@@ -23,8 +23,10 @@ Three ways to reference an image (all supported, mix freely with text):
 
 - **Local file** — a screenshot or a file you created/downloaded to disk:
   `![alt](file:///absolute/path/to/image.png)` (or a bare absolute path in the
-  markdown link). Use an absolute path. On Windows, `file:///C:/path/to/pic.png`
-  or a bare `C:\path\to\pic.png` both work.
+  markdown link). Use an absolute path. On Windows, prefer forward slashes or a
+  `file://` URL — `![](file:///C:/path/to/pic.png)` or `![](C:/path/to/pic.png)`;
+  backslash paths (`C:\path\to\pic.png`) are recovered automatically but are less
+  reliable in markdown, so avoid them when you can.
 - **Remote URL** — an image on a web page you want to forward:
   `![alt](https://example.com/pic.png)`. The gateway downloads and re-uploads it.
 - **Generated image** — if your tools/skills emit an image as an ACP `image`

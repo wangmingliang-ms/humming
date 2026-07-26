@@ -102,11 +102,36 @@ function walkLeafTokens(
     if (at < 0) continue; // shouldn't happen; skip without advancing past real content
     if (token.type === "image") {
       const image = token as Tokens.Image;
-      const source = classifyImageHref(image.href, image.text);
+      // `marked` treats backslashes in the href as escape sequences, which
+      // mangles Windows paths like `C:\Users\...\.humming` (the `\.` is eaten).
+      // Recover the verbatim href from `raw` so backslash paths survive; fall
+      // back to the parsed href when the shape is unexpected.
+      const href = hrefFromRaw(image.raw) ?? image.href;
+      const source = classifyImageHref(href, image.text);
       if (source !== null) out.push({ source, start: at, length: raw.length });
     }
     cursor.value = at + raw.length;
   }
+}
+
+/** Regex extracting the verbatim href from a raw `![alt](href)` span. */
+const RAW_IMAGE_HREF_RE = /^!\[[^\]]*\]\(\s*(.*?)\s*\)$/s;
+
+/**
+ * Extract the href exactly as written from an image token's `raw` text, before
+ * `marked` applied backslash-escaping. Returns `null` if `raw` isn't a plain
+ * `![alt](href)` span (e.g. a title is present), so the caller uses the parsed
+ * href instead. Also strips an optional `"title"` if one slipped in.
+ */
+function hrefFromRaw(raw: string): string | null {
+  const match = RAW_IMAGE_HREF_RE.exec(raw);
+  if (match === null) return null;
+  const inner = match[1];
+  if (inner === undefined || inner.length === 0) return null;
+  // Drop a trailing markdown title: `path "alt"` → `path`. Only when the href
+  // isn't quoted itself and a space-quote follows.
+  const titleAt = inner.search(/\s+"[^"]*"$/);
+  return titleAt >= 0 ? inner.slice(0, titleAt) : inner;
 }
 
 /**

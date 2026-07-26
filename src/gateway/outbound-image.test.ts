@@ -58,6 +58,26 @@ describe("splitMarkdownIntoSegments", () => {
     ]);
   });
 
+  it("recovers a Windows backslash path that marked would mangle", () => {
+    // `marked` eats the backslash in `\.humming` when reading token.href; the
+    // verbatim path must be recovered from the raw span instead.
+    const segments = splitMarkdownIntoSegments("![](C:\\Users\\wangmi\\.humming\\pic.png)");
+    expect(segments).toEqual([
+      {
+        kind: "image",
+        source: { kind: "local-file", path: "C:\\Users\\wangmi\\.humming\\pic.png" },
+      },
+    ]);
+  });
+
+  it("still handles a Windows file:// URL", () => {
+    const segments = splitMarkdownIntoSegments("![](file:///C:/Users/wangmi/.humming/pic.png)");
+    expect(segments[0]).toMatchObject({
+      kind: "image",
+      source: { kind: "local-file" },
+    });
+  });
+
   it("does not mislocate a real image when an inline code span holds the same raw", () => {
     // The code span `![](https://x.test/c.png)` is not an image; the later real
     // image with identical raw must be located at ITS position, and the code

@@ -117,6 +117,10 @@ humming autostart status        # 只读查询：已安装/已启用状态
 - `session configure` 默认不加 `--cwd`；不要改 `runtime.agent`，不要把 Agent 写进 `bindings`。
 - 只发消息、不改变 Profile 时用 `humming session send --message ...`（或 `--message-file` / `--message-stdin`），不要把它和 `session configure` 的语义混用。
 - `session bind` 只绑定当前 chat repo 内的 session；不接受 `--cwd`。session 已绑定到别处时不要手改 `sessions.json` 绕过。
+- 历史回放：把已有 session 的历史（用户输入 + Agent 最终文本，跳过思考/工具）重放进当前 topic thread。每个历史 turn 独立成 Response，长 turn 由卡片预算自动分卡。需要 gateway 运行，且 Agent 必须支持 ACP `loadSession`（仅 resume 的 Agent 会报错且不回放）。
+  - 飞书内 `/replay`：手动重放当前 topic 已绑定 session 的历史；未绑定则回一条 notice。
+  - `humming session bind --session-id <id> --replay`：绑定到已有 session 时顺带回放（gateway 未运行时报错且不降级为本地绑定）。
+  - 自然语言映射：用户说“绑定 Session 并且重放历史”时，执行 `humming session bind --session-id <id> --replay`。
 - 群聊里不要打印完整 session/chat/thread id。
 
 # TypeScript 工程准则（TypeScript 5.x / Strict Mode）

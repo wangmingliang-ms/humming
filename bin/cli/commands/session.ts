@@ -133,7 +133,10 @@ export function registerSessionCommand(program: Command): void {
   addChatIdOption(bind);
   addThreadIdOption(bind);
   addSessionIdOption(bind);
-  bind.option("--replay", "replay the bound session's history into the current topic (requires a running gateway)");
+  bind.option(
+    "--replay",
+    "replay the bound session's history into the current topic (requires a running gateway)",
+  );
   bind.action(async function (this: Command) {
     await runSessionBind(this.optsWithGlobals<GlobalOptions & SessionBindCliOptions>());
   });

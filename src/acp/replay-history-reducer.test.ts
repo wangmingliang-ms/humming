@@ -28,7 +28,12 @@ describe("foldReplayHistory", () => {
     const updates: acp.SessionUpdate[] = [
       u({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "q" } }),
       u({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } }),
-      u({ sessionUpdate: "tool_call", toolCallId: "t1", title: "run", status: "pending" } as acp.SessionUpdate),
+      u({
+        sessionUpdate: "tool_call",
+        toolCallId: "t1",
+        title: "run",
+        status: "pending",
+      } as acp.SessionUpdate),
       u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } }),
     ];
     expect(foldReplayHistory(updates)).toEqual([{ userText: "q", agentText: "answer" }]);

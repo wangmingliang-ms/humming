@@ -1,4 +1,7 @@
-import type { HistoryTurn } from "../acp/replay-history-reducer.js";
+import type * as acp from "@agentclientprotocol/sdk";
+import type { AgentProcess, SpawnAgentOptions } from "../acp/agent-process.js";
+import { spawnAndLoadAgent as defaultSpawnAndLoad } from "../acp/agent-process.js";
+import { foldReplayHistory, type HistoryTurn } from "../acp/replay-history-reducer.js";
 import type { TopicConversationSession } from "../conversation/topic-conversation-session.js";
 
 type RenderableSession = Pick<
@@ -30,4 +33,53 @@ export async function renderHistoryTurn(
   }
   await session.finishOwner("complete");
   await session.flushPresentation();
+}
+
+export interface ReplaySessionInput {
+  readonly session: RenderableSession;
+  readonly anchorMessageId: string;
+  readonly sessionId: string;
+  readonly spawnOptions: Omit<SpawnAgentOptions, "client">;
+  readonly onHistoryLoaded?: (turnCount: number) => Promise<void>;
+  /** Injected for tests; defaults to the real force-load spawn. */
+  readonly spawnAndLoad?: (opts: SpawnAgentOptions, sessionId: string) => Promise<AgentProcess>;
+}
+
+export interface ReplaySessionResult {
+  readonly agent: AgentProcess;
+  readonly turnCount: number;
+}
+
+/**
+ * Force-load `sessionId`, capture the streamed history, and render each turn as
+ * its own Response into the current thread. Returns the loaded agent process so
+ * the caller can keep it live.
+ *
+ * @throws {AgentReplayUnsupportedError} when the agent lacks loadSession.
+ * @throws {Error} when spawning/initializing fails or the load itself rejects.
+ */
+export async function replaySessionHistory(
+  input: ReplaySessionInput,
+): Promise<ReplaySessionResult> {
+  const captured: acp.SessionUpdate[] = [];
+  const client: acp.Client = {
+    // A force-load only streams `session/update` notifications. The load path
+    // never asks the client to touch the filesystem or authorize a tool call,
+    // so mirror ListingClient's idle/no-op handling: capture updates, reject
+    // any stray permission request as cancelled.
+    async requestPermission(): Promise<acp.RequestPermissionResponse> {
+      return { outcome: { outcome: "cancelled" } };
+    },
+    async sessionUpdate(params: acp.SessionNotification): Promise<void> {
+      captured.push(params.update);
+    },
+  };
+  const spawn = input.spawnAndLoad ?? defaultSpawnAndLoad;
+  const agent = await spawn({ ...input.spawnOptions, client }, input.sessionId);
+  const turns = foldReplayHistory(captured);
+  await input.onHistoryLoaded?.(turns.length);
+  for (const turn of turns) {
+    await renderHistoryTurn(input.session, input.anchorMessageId, turn);
+  }
+  return { agent, turnCount: turns.length };
 }

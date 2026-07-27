@@ -6,6 +6,7 @@ import {
   capabilitiesFromSessionResponse,
   type SessionRuntimeCapabilities,
 } from "./session-capabilities.js";
+import { AgentReplayUnsupportedError } from "./replay-errors.js";
 
 const STDIO_PIPED: ["pipe", "pipe", "pipe"] = ["pipe", "pipe", "pipe"];
 const WIN32_PLATFORM = "win32";
@@ -544,6 +545,48 @@ export async function spawnAndStrictlyResumeAgent(
   } catch (err) {
     killAgent(proc);
     throw new AgentSessionResumeError(previousSessionId, err);
+  }
+}
+
+/**
+ * Spawn an Agent and force the ACP `session/load` path for `sessionId`, never
+ * `unstable_resumeSession`, so the agent streams prior history back as
+ * `session/update` notifications. The provided `opts.client.sessionUpdate` sees
+ * every streamed update — the caller supplies a capturing client to collect them.
+ *
+ * @throws {AgentReplayUnsupportedError} when the Agent lacks `loadSession`.
+ * @throws {Error} when spawning/initializing fails or the load itself rejects.
+ */
+export async function spawnAndLoadAgent(
+  opts: SpawnAgentOptions,
+  sessionId: string,
+): Promise<AgentProcess> {
+  const { proc, connection, initResult, getRecentStderr } = await spawnAndInit(opts);
+  const agentCaps = initResult.agentCapabilities;
+  const capabilities = (agentCaps ?? {}) as Record<string, unknown>;
+  if (!agentCaps?.loadSession) {
+    killAgent(proc);
+    throw new AgentReplayUnsupportedError(sessionId);
+  }
+  try {
+    const loadResult = await withAgentRequest(
+      connection.loadSession({ sessionId, cwd: opts.cwd, mcpServers: [] }),
+      connection,
+      DEFAULT_AGENT_SESSION_TIMEOUT_MS,
+      `agent loadSession (${formatAgentCommand(opts.command, opts.args)})`,
+    );
+    opts.logger.info({ sessionId, mode: "load" }, "session force-loaded for replay");
+    return {
+      process: proc,
+      connection,
+      sessionId,
+      capabilities,
+      sessionCapabilities: capabilitiesFromSessionResponse(loadResult),
+      getRecentStderr,
+    };
+  } catch (err) {
+    killAgent(proc);
+    throw new Error("Failed to load agent session for replay", { cause: err });
   }
 }
 

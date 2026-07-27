@@ -5,11 +5,15 @@ export {
   createClientSideConnection,
   spawnAgent,
   spawnAndResumeAgent,
+  spawnAndLoadAgent,
   listAgentSessions,
   probeAgentSessionCapabilities,
   killAgent,
   AgentAuthError,
 } from "./agent-process.js";
+export { AgentReplayUnsupportedError } from "./replay-errors.js";
+export { foldReplayHistory } from "./replay-history-reducer.js";
+export type { HistoryTurn } from "./replay-history-reducer.js";
 export type {
   AgentProcess,
   ListedAgentSession,

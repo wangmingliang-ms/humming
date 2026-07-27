@@ -67,6 +67,7 @@ interface SessionListCliOptions extends ChatScopeCliOptions {
 interface SessionBindCliOptions extends ChatScopeCliOptions {
   readonly agent?: string;
   readonly sessionId: string;
+  readonly replay?: boolean;
 }
 
 interface SessionConfigureCliOptions extends ChatScopeCliOptions {
@@ -132,6 +133,7 @@ export function registerSessionCommand(program: Command): void {
   addChatIdOption(bind);
   addThreadIdOption(bind);
   addSessionIdOption(bind);
+  bind.option("--replay", "replay the bound session's history into the current topic (requires a running gateway)");
   bind.action(async function (this: Command) {
     await runSessionBind(this.optsWithGlobals<GlobalOptions & SessionBindCliOptions>());
   });
@@ -282,7 +284,10 @@ async function runSessionBind(globals: GlobalOptions & SessionBindCliOptions): P
   let result2: unknown;
   try {
     result2 = await callGatewayControl(base.homeDir, { method: "bindSession", params: { record } });
-  } catch {
+  } catch (err) {
+    if (globals.replay) {
+      throw new CliError("历史回放需要 gateway 运行；请先 humming start 后重试。", { cause: err });
+    }
     const store = new FileSessionStore(base.dataDir);
     await store.init();
     try {
@@ -291,6 +296,12 @@ async function runSessionBind(globals: GlobalOptions & SessionBindCliOptions): P
       await store.close();
     }
     result2 = { bound: true, sessionId: record.sessionId };
+  }
+  if (globals.replay) {
+    await callGatewayControl(base.homeDir, {
+      method: "replaySession",
+      params: { chatId: record.chatId, threadId: record.threadId, sessionId: record.sessionId },
+    });
   }
   printJson(result2);
 }

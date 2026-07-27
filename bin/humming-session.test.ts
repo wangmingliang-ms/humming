@@ -83,6 +83,13 @@ describe("session bind", () => {
       ]),
     ).rejects.toMatchObject({ code: "commander.unknownOption" });
   });
+
+  it("registers --replay option", () => {
+    const program = newProgram();
+    const sessionCmd = program.commands.find((c) => c.name() === "session");
+    const bindCmd = sessionCmd?.commands.find((c) => c.name() === "bind");
+    expect(bindCmd?.options.some((o) => o.long === "--replay")).toBe(true);
+  });
 });
 
 describe("session capabilities/models/modes/permissions", () => {

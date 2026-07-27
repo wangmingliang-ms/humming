@@ -1710,6 +1710,12 @@ export class LarkGateway {
         .catch((err) => this.logger.warn({ err }, "replay no-anchor notice failed"));
       return;
     }
+    if (runtime.processing) {
+      await this.presenter
+        .replyNoticeCard(anchor, buildReplayNotice("当前 topic 正在处理消息，请等待完成后再回放。"))
+        .catch((err) => this.logger.warn({ err }, "replay busy notice failed"));
+      return;
+    }
     try {
       const turnCount = await runtime.replayHistory(sessionId, anchor, async (n) => {
         await this.presenter

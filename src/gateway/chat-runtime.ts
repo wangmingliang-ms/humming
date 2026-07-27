@@ -412,7 +412,6 @@ export class ChatRuntime {
       },
       ...(onHistoryLoaded !== undefined ? { onHistoryLoaded } : {}),
     });
-    killAgent(result.agent.process);
     return result.turnCount;
   }
 

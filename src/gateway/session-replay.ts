@@ -1,12 +1,12 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type { AgentProcess, SpawnAgentOptions } from "../acp/agent-process.js";
-import { spawnAndLoadAgent as defaultSpawnAndLoad } from "../acp/agent-process.js";
+import { killAgent, spawnAndLoadAgent as defaultSpawnAndLoad } from "../acp/agent-process.js";
 import { foldReplayHistory, type HistoryTurn } from "../acp/replay-history-reducer.js";
 import type { TopicConversationSession } from "../conversation/topic-conversation-session.js";
 
 type RenderableSession = Pick<
   TopicConversationSession,
-  "accept" | "applyAgentUpdate" | "finishOwner" | "flushPresentation"
+  "accept" | "prepare" | "activate" | "applyAgentUpdate" | "finishOwner" | "flushPresentation"
 >;
 
 /**
@@ -25,6 +25,8 @@ export async function renderHistoryTurn(
     content: turn.userText,
     profile: null,
   });
+  await session.prepare(accepted.responseId, null);
+  await session.activate(accepted.responseId);
   if (turn.agentText.length > 0) {
     await session.applyAgentUpdate(accepted.responseId, {
       sessionUpdate: "agent_message_chunk",
@@ -46,14 +48,13 @@ export interface ReplaySessionInput {
 }
 
 export interface ReplaySessionResult {
-  readonly agent: AgentProcess;
   readonly turnCount: number;
 }
 
 /**
  * Force-load `sessionId`, capture the streamed history, and render each turn as
- * its own Response into the current thread. Returns the loaded agent process so
- * the caller can keep it live.
+ * its own Response into the current thread. The loaded agent process is always
+ * killed once rendering finishes or fails — the engine owns its lifecycle.
  *
  * @throws {AgentReplayUnsupportedError} when the agent lacks loadSession.
  * @throws {Error} when spawning/initializing fails or the load itself rejects.
@@ -76,10 +77,14 @@ export async function replaySessionHistory(
   };
   const spawn = input.spawnAndLoad ?? defaultSpawnAndLoad;
   const agent = await spawn({ ...input.spawnOptions, client }, input.sessionId);
-  const turns = foldReplayHistory(captured);
-  await input.onHistoryLoaded?.(turns.length);
-  for (const turn of turns) {
-    await renderHistoryTurn(input.session, input.anchorMessageId, turn);
+  try {
+    const turns = foldReplayHistory(captured);
+    await input.onHistoryLoaded?.(turns.length);
+    for (const turn of turns) {
+      await renderHistoryTurn(input.session, input.anchorMessageId, turn);
+    }
+    return { turnCount: turns.length };
+  } finally {
+    killAgent(agent.process);
   }
-  return { agent, turnCount: turns.length };
 }

@@ -47,4 +47,11 @@ describe("foldReplayHistory", () => {
       { userText: "b", agentText: "2" },
     ]);
   });
+
+  it("opens a synthetic turn with userText '' when agent chunk arrives before any user chunk", () => {
+    const updates: acp.SessionUpdate[] = [
+      u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "orphan" } }),
+    ];
+    expect(foldReplayHistory(updates)).toEqual([{ userText: "", agentText: "orphan" }]);
+  });
 });

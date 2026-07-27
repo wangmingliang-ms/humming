@@ -10,6 +10,10 @@ export interface HistoryTurn {
  * turns. Keeps only user inputs and agent message text; thoughts and tool calls
  * are dropped. A new turn opens on each user message; consecutive agent message
  * chunks concatenate into that turn's agent text.
+ *
+ * **Orphan agent chunks:** if an `agent_message_chunk` arrives before any
+ * `user_message_chunk`, a synthetic turn with `userText: ""` is opened so that
+ * no agent text is silently lost.
  */
 export function foldReplayHistory(updates: readonly acp.SessionUpdate[]): readonly HistoryTurn[] {
   const turns: { userText: string; agentText: string }[] = [];
@@ -29,5 +33,5 @@ export function foldReplayHistory(updates: readonly acp.SessionUpdate[]): readon
       current.agentText += update.content.text;
     }
   }
-  return turns.map((turn) => ({ userText: turn.userText, agentText: turn.agentText }));
+  return turns.map((turn): HistoryTurn => ({ ...turn }));
 }

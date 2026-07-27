@@ -18,6 +18,7 @@ export type LarkCommand =
   | { readonly kind: "bind"; readonly cwd: string; readonly agent: string | null }
   | { readonly kind: "bind-usage" }
   | { readonly kind: "unbind" }
+  | { readonly kind: "replay" }
   | { readonly kind: "where" }
   | { readonly kind: "set-agent"; readonly agent: string }
   | { readonly kind: "list-agents" }
@@ -38,6 +39,7 @@ export type SlashCommandContext = {
   bind(cwd: string, agent: string | null): Promise<void>;
   bindUsage(): Promise<void>;
   unbind(): Promise<void>;
+  replay(): Promise<void>;
   where(): Promise<void>;
   setAgent(agent: string): Promise<void>;
   listAgents(): Promise<void>;
@@ -82,7 +84,7 @@ const PROFILE_PERMISSION_MODES = ["alwaysAsk", "alwaysAllow", "alwaysDeny"] as c
 function defineExactCommand(options: {
   readonly name: string;
   readonly tokens: readonly string[];
-  readonly kind: "cancel" | "new" | "restart" | "help" | "unbind" | "where";
+  readonly kind: "cancel" | "new" | "restart" | "help" | "unbind" | "where" | "replay";
   readonly group: CommandGroup;
   readonly help: readonly CommandHelpEntry[];
   readonly handle: (context: SlashCommandContext) => Promise<void>;
@@ -287,6 +289,20 @@ const unbindCommand = defineExactCommand({
   handle: (context) => context.unbind(),
 });
 
+const replayCommand = defineExactCommand({
+  name: "replay",
+  tokens: ["/replay"],
+  kind: "replay",
+  group: "Repo / session",
+  help: [
+    {
+      syntax: "/replay",
+      description: "把当前 topic 已绑定 session 的历史（用户输入 + Agent 文本）重放进本 thread",
+    },
+  ],
+  handle: (context) => context.replay(),
+});
+
 const newCommand = defineExactCommand({
   name: "new",
   tokens: ["/new"],
@@ -337,6 +353,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   whereCommand,
   unbindCommand,
   newCommand,
+  replayCommand,
   restartCommand,
   cancelCommand,
 ];

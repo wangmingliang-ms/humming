@@ -37,6 +37,7 @@ function recordingContext(): {
       setPermission: (permission) => record(`set-permission:${permission}`),
       listPermissions: () => record("list-permissions"),
       profile: () => record("profile"),
+      replay: () => record("replay"),
     },
   };
 }
@@ -122,5 +123,14 @@ describe("SlashCommandController", () => {
     expect(slashCommandController.resolve("please help")).toBeNull();
     expect(handle).not.toHaveBeenCalled();
     handle.mockRestore();
+  });
+
+  it("parses /replay as a replay command", () => {
+    const resolved = slashCommandController.resolve("/replay");
+    expect(resolved?.command).toEqual({ kind: "replay" });
+  });
+
+  it("does not match /replay with trailing args", () => {
+    expect(slashCommandController.resolve("/replay now")).toBeNull();
   });
 });

@@ -58,6 +58,7 @@ import {
   type ProbeAgentSessionCapabilitiesResult,
 } from "../acp/agent-process.js";
 import { SessionAlreadyBoundError } from "../session-store/file-session-store.js";
+import { AgentReplayUnsupportedError } from "../acp/replay-errors.js";
 import type {
   AgentStatus,
   AgentSwitchWarningCardSpec,
@@ -948,6 +949,8 @@ export class LarkGateway {
         sendMessage: (chatId, threadId, message, noticeMessageId) =>
           this.controlSendMessage(chatId, threadId, message, noticeMessageId),
         bindSession: (record, noticeMessageId) => this.controlBindSession(record, noticeMessageId),
+        replaySession: (chatId, threadId, sessionId, noticeMessageId) =>
+          this.controlReplaySession(chatId, threadId, sessionId, noticeMessageId ?? null),
         agentProbeFailed: (chatId, threadId, agent, error, noticeMessageId) =>
           this.controlAgentProbeFailed(chatId, threadId, agent, error, noticeMessageId),
       },
@@ -1661,6 +1664,72 @@ export class LarkGateway {
 
   // ----- WS event handlers ------------------------------------------------
 
+  private async controlReplaySession(
+    chatId: string,
+    threadId: string | null,
+    sessionId: string,
+    noticeMessageId: string | null,
+  ): Promise<void> {
+    await this.replayForTopic(chatId, threadId, sessionId, noticeMessageId);
+  }
+
+  private async handleReplayCommand(
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<void> {
+    const latest = await this.sessionStore.getLatest(chatId, threadId);
+    if (latest === null || latest.profileOnly === true) {
+      await this.presenter
+        .replyNoticeCard(messageId, buildReplayNotice("当前 topic 未绑定 session，无法回放。"))
+        .catch((err) => this.logger.warn({ err }, "replay unbound notice failed"));
+      return;
+    }
+    await this.replayForTopic(chatId, threadId, latest.sessionId, messageId);
+  }
+
+  private async replayForTopic(
+    chatId: string,
+    threadId: string | null,
+    sessionId: string,
+    anchorMessageId: string | null,
+  ): Promise<void> {
+    const existing = this.chats.get(runtimeKey(chatId, threadId));
+    const before = await this.sessionStore.getLatest(chatId, threadId);
+    const runtime = existing ?? (await this.acquireRuntimeForSend(chatId, anchorMessageId, before));
+    if (runtime === null) return;
+    const anchor = anchorMessageId ?? runtime.lastMessageId;
+    if (anchor === null) {
+      await this.presenter
+        .sendNoticeCard(
+          chatId,
+          buildReplayNotice(
+            "无法回放：当前 topic 尚无可锚定的消息，请先在本 topic 发送一条消息后再试。",
+          ),
+        )
+        .catch((err) => this.logger.warn({ err }, "replay no-anchor notice failed"));
+      return;
+    }
+    try {
+      const turnCount = await runtime.replayHistory(sessionId, anchor, async (n) => {
+        await this.presenter
+          .replyNoticeCard(anchor, buildReplayNotice(`以下为历史回放（${n} 轮）`))
+          .catch((err) => this.logger.warn({ err }, "replay header notice failed"));
+      });
+      this.logger.info({ chatId, threadId, sessionId, turnCount }, "session history replayed");
+    } catch (err) {
+      if (err instanceof AgentReplayUnsupportedError) {
+        await this.presenter
+          .replyNoticeCard(anchor, buildReplayNotice("该 Agent 不支持历史回放（仅 resume）。"))
+          .catch((notifyErr) =>
+            this.logger.warn({ err: notifyErr }, "replay unsupported notice failed"),
+          );
+        return;
+      }
+      throw err;
+    }
+  }
+
   private handleMessage(event: Lark.RawMessageEvent): void {
     const { message, sender } = event;
     if (sender.sender_type !== SENDER_TYPE_USER) return;
@@ -1811,6 +1880,7 @@ export class LarkGateway {
       cancel: () => this.handleCancelCommand(chatId, threadId, messageId),
       newSession: () => this.handleNewSessionCommand(chatId, threadId, messageId),
       restart: () => this.handleRestartCommand(chatId, threadId, messageId),
+      replay: () => this.handleReplayCommand(chatId, threadId, messageId),
       help: () => this.presenter.replyCommandResultCard(messageId, buildHelpNotice()),
       capabilities: (agent) => this.handleCapabilitiesCommand(agent, chatId, threadId, messageId),
       bind: (cwd, agent) => this.handleBind(cwd, agent, chatId, messageId),
@@ -3469,6 +3539,14 @@ function envEqual(
   const rightKeys = Object.keys(right).sort();
   if (!arrayEqual(leftKeys, rightKeys)) return false;
   return leftKeys.every((key) => left[key] === right[key]);
+}
+
+function buildReplayNotice(body: string): NoticeCardSpec {
+  return {
+    title: "🔁 历史回放",
+    body,
+    template: "blue",
+  };
 }
 
 function buildSessionBoundNotice(

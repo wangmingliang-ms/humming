@@ -89,6 +89,16 @@ export type ControlRequest =
     }
   | {
       readonly id?: string | number;
+      readonly method: "replaySession";
+      readonly params: {
+        readonly chatId: string;
+        readonly threadId: string | null;
+        readonly sessionId: string;
+        readonly noticeMessageId?: string | null;
+      };
+    }
+  | {
+      readonly id?: string | number;
       readonly method: "agentProbeFailed";
       readonly params: {
         readonly chatId: string;
@@ -136,6 +146,12 @@ export interface GatewayControlHandlers {
     noticeMessageId?: string | null,
   ): Promise<unknown>;
   bindSession(record: SessionRecord, noticeMessageId?: string | null): Promise<unknown>;
+  replaySession(
+    chatId: string,
+    threadId: string | null,
+    sessionId: string,
+    noticeMessageId?: string | null,
+  ): Promise<unknown>;
   agentProbeFailed(
     chatId: string,
     threadId: string | null,
@@ -313,6 +329,17 @@ export class GatewayControlServer {
               parsed.params.noticeMessageId ?? null,
             ),
           };
+        case "replaySession":
+          return {
+            ok: true,
+            id: parsed.id,
+            result: await this.handlers.replaySession(
+              parsed.params.chatId,
+              parsed.params.threadId ?? null,
+              parsed.params.sessionId,
+              parsed.params.noticeMessageId ?? null,
+            ),
+          };
         case "agentProbeFailed":
           return {
             ok: true,
@@ -427,6 +454,15 @@ function isControlRequest(value: unknown): value is ControlRequest {
   if (value["method"] === "bindSession") {
     const params = value["params"];
     return isRecord(params) && isSessionRecord(params["record"]);
+  }
+  if (value["method"] === "replaySession") {
+    const params = value["params"];
+    return (
+      isRecord(params) &&
+      typeof params["chatId"] === "string" &&
+      (typeof params["threadId"] === "string" || params["threadId"] === null) &&
+      typeof params["sessionId"] === "string"
+    );
   }
   if (value["method"] === "agentProbeFailed") {
     const params = value["params"];

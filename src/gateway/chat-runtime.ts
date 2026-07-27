@@ -39,6 +39,7 @@ import {
   type OutboundImageSource,
 } from "./outbound-image.js";
 import { resolveImageBytes } from "./outbound-image-loader.js";
+import { replaySessionHistory } from "./session-replay.js";
 
 const SHUTDOWN_FINALIZE_TIMEOUT_MS = 3_000;
 
@@ -383,6 +384,36 @@ export class ChatRuntime {
       if (this.bootstrapPromise === bootstrap) this.bootstrapPromise = null;
       this.booting = false;
     }
+  }
+
+  /**
+   * Replay the given session's history (user inputs + agent text) into this
+   * topic's conversation as standalone Responses. Uses a throwaway agent that is
+   * force-loaded to stream history, then killed; the topic's next message
+   * re-bootstraps the session normally.
+   *
+   * @throws {AgentReplayUnsupportedError} when the agent does not support loadSession.
+   */
+  async replayHistory(
+    sessionId: string,
+    anchorMessageId: string,
+    onHistoryLoaded?: (turnCount: number) => Promise<void>,
+  ): Promise<number> {
+    const result = await replaySessionHistory({
+      session: this.conversation,
+      anchorMessageId,
+      sessionId,
+      spawnOptions: {
+        command: this.opts.agentCommand,
+        args: this.opts.agentArgs,
+        cwd: this.opts.agentCwd,
+        ...(this.opts.agentEnv !== undefined ? { env: this.opts.agentEnv } : {}),
+        logger: this.logger,
+      },
+      ...(onHistoryLoaded !== undefined ? { onHistoryLoaded } : {}),
+    });
+    killAgent(result.agent.process);
+    return result.turnCount;
   }
 
   private scheduleAdmissionDrain(): void {

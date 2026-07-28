@@ -16,6 +16,7 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -161,6 +162,17 @@ export function clearGatewayRestartMarker(homeDir: string): void {
 export function gatewayUnitName(homeDir: string): string {
   const digest = crypto.createHash("sha1").update(path.resolve(homeDir)).digest("hex").slice(0, 10);
   return `${SYSTEMD_UNIT_PREFIX}-${digest}${SYSTEMD_UNIT_SUFFIX}`;
+}
+
+/**
+ * Absolute path where a persistent user unit file for the runtime unit name
+ * would live. The runtime unit is meant to be purely transient (created by
+ * `systemd-run --collect`), so a file existing here is leftover contamination
+ * (e.g. from an older autostart that wrote the runtime name instead of the
+ * `-boot` name) — see {@link startGatewayWithSystemd}.
+ */
+export function gatewayUnitFilePath(homeDir: string): string {
+  return path.join(os.homedir(), ".config", "systemd", "user", gatewayUnitName(homeDir));
 }
 
 /** Properties that make systemd the gateway's restart authority. */
@@ -503,6 +515,16 @@ async function startGatewayWithSystemd(
   // Remove that inactive unit before recreating the stable per-home name.
   runSystemctl(["stop", opts.unitName], false);
   runSystemctl(["reset-failed", opts.unitName], false);
+  // A persistent unit file at the runtime name is contamination (an older
+  // autostart wrote the runtime name instead of the `-boot` name). Such a unit
+  // never reaches `not-found` after stop — it stays `loaded/inactive/dead`
+  // forever — so `waitForSystemdUnitUnload` would always time out. Remove the
+  // stray file and reload so the unit actually unloads.
+  const unitFilePath = gatewayUnitFilePath(opts.homeDir);
+  if (fs.existsSync(unitFilePath)) {
+    removeQuietly(unitFilePath);
+    runSystemctl(["daemon-reload"], false);
+  }
   await waitForSystemdUnitUnload(opts.unitName);
 
   const args = [
@@ -586,7 +608,9 @@ async function startGatewayDetached(opts: StartOptions): Promise<void> {
     removeQuietly(pidPath);
     const tail = readLastLines(logPath, FAILURE_TAIL_LINES);
     const detail = tail.length > 0 ? `\n--- log tail ---\n${tail}` : "";
-    throw new ProcessControlError(`gateway exited immediately after start; see ${logPath}${detail}`);
+    throw new ProcessControlError(
+      `gateway exited immediately after start; see ${logPath}${detail}`,
+    );
   }
 
   process.stdout.write(`gateway started (PID ${pid})\n`);

@@ -10,6 +10,7 @@ import {
   gatewayPidPath,
   gatewayRestartMarkerPath,
   gatewayUnitName,
+  gatewayUnitFilePath,
   buildSystemdServiceProperties,
   clearGatewayRestartMarker,
   isAlive,
@@ -61,6 +62,12 @@ describe("path helpers", () => {
     expect(gatewayUnitName(dir)).toMatch(/^humming-gateway-[a-f0-9]{10}\.service$/);
     expect(gatewayUnitName(dir)).toBe(gatewayUnitName(dir));
     expect(gatewayUnitName(path.join(dir, "other"))).not.toBe(gatewayUnitName(dir));
+  });
+
+  it("locates the on-disk unit file for the runtime unit name", () => {
+    expect(gatewayUnitFilePath(dir)).toBe(
+      path.join(os.homedir(), ".config", "systemd", "user", gatewayUnitName(dir)),
+    );
   });
 });
 

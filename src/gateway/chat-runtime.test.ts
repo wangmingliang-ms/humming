@@ -1322,6 +1322,82 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     expect(order).toEqual(["cancel", "kill"]);
   });
 
+  it("shuts down an active prompt without surfacing a SIGTERM crash card", async () => {
+    const states: RecordedConversationState[] = [];
+    const notices: Array<{ title: string; body: string; template: string }> = [];
+    const fake = makeFakeAgent();
+    killAgentMock.mockImplementation(() => {
+      fake.exitProcess(null, "SIGTERM");
+      fake.closeConnection();
+    });
+    spawnAgentMock.mockResolvedValue(fake.agent);
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter(states, notices),
+      sessionStore: stubSessionStore(),
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "working in the old repo" }],
+      messageId: "om_rebind",
+      chatId: "oc_test",
+    });
+    await vi.waitFor(() => expect(fake.prompts()).toHaveLength(1));
+
+    await runtime.shutdown("cancelled");
+
+    await vi.waitFor(() => expect(states.at(-1)).toMatchObject({ cancellable: false }));
+    // killAgent closed the connection synchronously; handlePromptError then runs
+    // as a microtask via processQueue's catch. Flush so a would-be crash notice
+    // is emitted before we assert it was suppressed (guards against a false pass).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notices.some((n) => n.title.includes("异常退出"))).toBe(false);
+  });
+
+  it("still reports a second genuine crash after the first crash's internal shutdown", async () => {
+    const states: RecordedConversationState[] = [];
+    const notices: Array<{ title: string; body: string; template: string }> = [];
+    const first = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(first.agent);
+    const runtime = new ChatRuntime({
+      ...opts(),
+      presenter: recordingPresenter(states, notices),
+      sessionStore: stubSessionStore(),
+    });
+
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "first task" }],
+      messageId: "om_first",
+      chatId: "oc_test",
+    });
+    await vi.waitFor(() => expect(first.prompts()).toHaveLength(1));
+
+    // First genuine crash: handlePromptError calls shutdown(null) internally,
+    // which sets the suppress flag. The card for THIS crash still renders.
+    first.closeConnection();
+    await vi.waitFor(() =>
+      expect(notices.filter((n) => n.title.includes("异常退出"))).toHaveLength(1),
+    );
+
+    // Same runtime respawns for the next message; a second genuine crash MUST
+    // surface — the suppress flag must not have leaked from the first shutdown.
+    const second = makeFakeAgent();
+    spawnAgentMock.mockResolvedValue(second.agent);
+    await runtime.enqueue({
+      prompt: [{ type: "text", text: "second task" }],
+      messageId: "om_second",
+      chatId: "oc_test",
+    });
+    await vi.waitFor(() => expect(second.prompts()).toHaveLength(1));
+
+    second.closeConnection();
+    await vi.waitFor(
+      () => expect(notices.filter((n) => n.title.includes("异常退出"))).toHaveLength(2),
+      { timeout: 1_000, interval: 20 },
+    );
+  });
+
   it("waits for an in-flight bootstrap and cancels its Agent before reporting drained", async () => {
     const fake = makeFakeAgent();
     let releaseSpawn!: () => void;

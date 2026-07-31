@@ -420,6 +420,7 @@ export class ChatRuntime {
       this.aborted = false;
       this.topicCancelRequested = false;
       this.followupInterruptRequested = false;
+      this.suppressPromptErrorNotice = false;
       const ownsBootstrap = this.bootstrapPromise === null;
       if (ownsBootstrap) {
         if (pending.response !== undefined) {
@@ -637,6 +638,10 @@ export class ChatRuntime {
   /** Tear down the agent process so the next message starts fresh. */
   async shutdown(_finalStatus: AgentStatus | null = "cancelled"): Promise<void> {
     this.aborted = true;
+    // This is a deliberate teardown (rebind/unbind/evict). If a prompt is still
+    // in flight, killAgent's SIGTERM must surface as a cancellation, not a scary
+    // "Agent 异常退出" crash card — mirror supersede()/drain().
+    this.suppressPromptErrorNotice = true;
     const state = this.state;
     if (!state) {
       await this.conversation.interruptTopic();

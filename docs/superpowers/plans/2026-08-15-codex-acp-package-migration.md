@@ -46,7 +46,7 @@ Run:
 npx vitest run bin/humming-agent.test.ts -t "supports --json"
 ```
 
-Expected: FAIL because the current Codex args contain `@zed-industries/codex-acp`.
+Expected: FAIL because the current Codex args do not contain the maintained package.
 
 ### Task 2: Migrate the built-in preset and current fixtures
 
@@ -83,7 +83,7 @@ if (selection === "codex") {
 }
 ```
 
-Replace remaining `@zed-industries/codex-acp` literals in this test file when they represent the current built-in Codex preset. Do not add a legacy migration fixture because migration of existing sessions is out of scope.
+Replace outdated Codex package literals in this test file with `@agentclientprotocol/codex-acp` when they represent the current built-in preset. Do not add a legacy migration fixture because migration of existing sessions is out of scope.
 
 - [ ] **Step 3: Update supported-agent documentation**
 
@@ -108,10 +108,10 @@ Expected: both files pass with zero failed tests.
 Run:
 
 ```bash
-rg -n -F '@zed-industries/codex-acp' bin src README.md tests
+rg -n -F '@agentclientprotocol/codex-acp' bin src README.md tests
 ```
 
-Expected: no matches. Do not search or modify persisted files under `~/.humming`; existing sessions are out of scope.
+Expected: the built-in preset and its current-package fixtures use the maintained package. Do not search or modify persisted files under `~/.humming`; existing sessions are out of scope.
 
 ### Task 3: Run project-wide static and automated verification
 

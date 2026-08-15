@@ -236,7 +236,7 @@ function resolver(selection: string): ResolvedAgentInvocation {
   if (selection === "codex") {
     return { command: "npx", args: ["-y", "@agentclientprotocol/codex-acp"], label: "codex" };
   }
-  return { command: "npx", args: ["-y", "@zed-industries/claude-code-acp"], label: "claude" };
+  return { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"], label: "claude" };
 }
 
 function makeGateway(
@@ -362,11 +362,18 @@ function existingClaudeSession(): SessionRecord {
     threadId: "omt_1",
     sessionId: "sess_claude",
     agentCommand: "npx",
-    agentArgs: ["-y", "@zed-industries/claude-code-acp"],
+    agentArgs: ["-y", "@agentclientprotocol/claude-agent-acp"],
     agentLabel: "claude",
     cwd: "/tmp",
     createdAt: 1,
     updatedAt: 2,
+  };
+}
+
+function legacyClaudeSession(): SessionRecord {
+  return {
+    ...existingClaudeSession(),
+    agentArgs: ["-y", "@legacy/claude-code-acp"],
   };
 }
 
@@ -389,7 +396,7 @@ function codexProfileRecord(): SessionRecord {
 function fakeCapabilitiesSnapshot(): SessionCapabilitiesSnapshot {
   return {
     session: { chatId: "oc_A", threadId: "omt_1", sessionId: "sess_claude" },
-    agent: { command: "npx", args: ["-y", "@zed-industries/claude-code-acp"], cwd: "/tmp" },
+    agent: { command: "npx", args: ["-y", "@agentclientprotocol/claude-agent-acp"], cwd: "/tmp" },
     gatewayPermissionModes: ["alwaysAllow", "alwaysDeny", "alwaysAsk"],
     gatewayPermissionMode: "alwaysAsk",
   };
@@ -510,10 +517,10 @@ describe("LarkGateway topic Agent restart", () => {
   });
 });
 
-it("migrates a persisted Claude preset to the maintained adapter on resume", async () => {
+it("migrates a persisted legacy Claude preset to the maintained adapter on resume", async () => {
   spawnAgentMock.mockReset();
   spawnAgentMock.mockResolvedValue(fakeAgentProcess("sess_claude"));
-  const store = new MemorySessionStore([existingClaudeSession()]);
+  const store = new MemorySessionStore([legacyClaudeSession()]);
   const events: PresenterEvents = {
     warnings: [],
     warningResolutions: [],
@@ -1226,7 +1233,7 @@ describe("LarkGateway destructive Agent switch confirmation", () => {
     await testable.acquireRuntime("oc_A", "omt_1", {
       cwd: "/tmp",
       command: "npx",
-      args: ["-y", "@zed-industries/claude-code-acp"],
+      args: ["-y", "@agentclientprotocol/claude-agent-acp"],
       label: "claude",
       explicit: true,
       reception: false,
@@ -1287,7 +1294,7 @@ describe("LarkGateway destructive Agent switch confirmation", () => {
     await testable.acquireRuntime("oc_A", "omt_1", {
       cwd: "/tmp",
       command: "npx",
-      args: ["-y", "@zed-industries/claude-code-acp"],
+      args: ["-y", "@agentclientprotocol/claude-agent-acp"],
       label: "claude",
       explicit: true,
       reception: false,
@@ -1475,7 +1482,7 @@ describe("LarkGateway destructive Agent switch confirmation", () => {
         agent: {
           label: "claude",
           command: "npx",
-          args: ["-y", "@zed-industries/claude-code-acp"],
+          args: ["-y", "@agentclientprotocol/claude-agent-acp"],
           cwd: "/tmp",
         },
         models: {
@@ -1846,7 +1853,7 @@ describe("LarkGateway destructive Agent switch confirmation", () => {
     const runtime = await testable.acquireRuntime("oc_A", "omt_1", {
       cwd: "/tmp",
       command: "npx",
-      args: ["-y", "@zed-industries/claude-code-acp"],
+      args: ["-y", "@agentclientprotocol/claude-agent-acp"],
       label: "claude",
       explicit: true,
       reception: false,
@@ -1988,7 +1995,7 @@ describe("LarkGateway global defaults from direct-message control chat", () => {
           sessionId: "profile:dm",
           profileOnly: true,
           agentCommand: "npx",
-          agentArgs: ["-y", "@zed-industries/claude-code-acp"],
+          agentArgs: ["-y", "@agentclientprotocol/claude-agent-acp"],
           agentLabel: "claude",
           cwd: "/tmp",
           createdAt: 1,
@@ -2117,7 +2124,7 @@ describe("LarkGateway global defaults from direct-message control chat", () => {
     const runtime = await testable.acquireRuntime("oc_A", "omt_new", {
       cwd: "/tmp",
       command: "npx",
-      args: ["-y", "@zed-industries/claude-code-acp"],
+      args: ["-y", "@agentclientprotocol/claude-agent-acp"],
       label: "claude",
       explicit: true,
       reception: false,
@@ -2302,7 +2309,7 @@ describe("LarkGateway Pending Configuration lock — runtime acquisition under l
     await testable.acquireRuntime("oc_A", "omt_1", {
       cwd: "/tmp",
       command: "npx",
-      args: ["-y", "@zed-industries/claude-code-acp"],
+      args: ["-y", "@agentclientprotocol/claude-agent-acp"],
       label: "claude",
       explicit: true,
       reception: false,

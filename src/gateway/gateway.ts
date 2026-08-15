@@ -3995,7 +3995,7 @@ function sessionRecordToEffectiveBinding(
   };
 }
 
-const DEPRECATED_CLAUDE_ACP_PACKAGE = "@zed-industries/claude-code-acp";
+const LEGACY_CLAUDE_ACP_EXECUTABLE = "claude-code-acp";
 const MAINTAINED_CLAUDE_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp";
 const CLAUDE_AGENT_LABELS = new Set(["claude", "claude-agent"]);
 
@@ -4003,14 +4003,15 @@ function normalizePersistedAgentInvocation(record: SessionRecord): {
   readonly command: string;
   readonly args: readonly string[];
 } {
-  const isDeprecatedClaudePreset =
+  const packageExecutable = record.agentArgs[1]?.split("/").at(-1);
+  const isLegacyClaudePreset =
     record.agentCommand === "npx" &&
     record.agentArgs.length === 2 &&
     record.agentArgs[0] === "-y" &&
-    record.agentArgs[1] === DEPRECATED_CLAUDE_ACP_PACKAGE &&
+    packageExecutable === LEGACY_CLAUDE_ACP_EXECUTABLE &&
     record.agentLabel !== undefined &&
     CLAUDE_AGENT_LABELS.has(record.agentLabel);
-  if (!isDeprecatedClaudePreset) {
+  if (!isLegacyClaudePreset) {
     return { command: record.agentCommand, args: record.agentArgs };
   }
   return { command: record.agentCommand, args: ["-y", MAINTAINED_CLAUDE_ACP_PACKAGE] };

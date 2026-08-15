@@ -8,7 +8,7 @@
       "sessionUpdatedAt": "2026-07-05T12:00:00.000Z",
       "agentLabel": "claude",
       "agentCommand": "npx",
-      "agentArgs": ["-y", "@zed-industries/claude-code-acp"],
+      "agentArgs": ["-y", "@agentclientprotocol/claude-agent-acp"],
       "cwd": "/absolute/path/to/repo",
       "controls": {
         "modelId": "example-model-id",

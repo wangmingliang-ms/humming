@@ -2,9 +2,8 @@
 
 ## Goal
 
-Migrate Humming's built-in Codex preset from the deprecated
-`@zed-industries/codex-acp` package to the maintained
-`@agentclientprotocol/codex-acp` package.
+Migrate Humming's built-in Codex preset to the maintained
+`@agentclientprotocol/codex-acp` package and remove deprecated vendor-scope references.
 
 Every newly created Codex session must launch through:
 

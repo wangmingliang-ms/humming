@@ -1083,7 +1083,7 @@ describe("session bind conflicts", () => {
         {
           label: "copilot",
           command: "npx",
-          args: ["-y", "@zed-industries/copilot-acp"],
+          args: ["-y", "@github/copilot", "--acp"],
           cwd: repoA,
         },
         "Authentication required",

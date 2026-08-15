@@ -58,8 +58,8 @@ export const BUILT_IN_AGENTS: Readonly<Record<string, AgentPreset>> = {
   codex: {
     label: "Codex CLI",
     command: "npx",
-    args: ["-y", "@zed-industries/codex-acp"],
-    description: "OpenAI Codex via Zed's ACP adapter",
+    args: ["-y", "@agentclientprotocol/codex-acp"],
+    description: "OpenAI Codex via the maintained ACP adapter",
   },
   gemini: {
     label: "Gemini CLI",

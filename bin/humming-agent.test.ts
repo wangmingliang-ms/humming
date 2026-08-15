@@ -85,6 +85,11 @@ describe("agent list", () => {
       "-y",
       "@agentclientprotocol/claude-agent-acp",
     ]);
+    expect(parsed.find((entry) => entry.id === "codex")).toMatchObject({ source: "built-in" });
+    expect(parsed.find((entry) => entry.id === "codex")?.args).toEqual([
+      "-y",
+      "@agentclientprotocol/codex-acp",
+    ]);
   });
 
   it("does not require --agent", async () => {

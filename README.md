@@ -238,7 +238,7 @@ Agent 请求使用工具时，Humming 会应用以下 approval-card 策略之一
 | -------------- | ---------------------------------------------------------------- |
 | `claude`       | 维护中的 Claude Agent SDK ACP adapter，沿用本机 Claude Code 认证 |
 | `claude-agent` | `claude` 的兼容别名                                              |
-| `codex`        | 通过 Zed ACP adapter 接入 OpenAI Codex                           |
+| `codex`        | 通过维护中的 ACP adapter 接入 OpenAI Codex                       |
 | `copilot`      | GitHub Copilot CLI 原生 ACP 模式                                 |
 | `gemini`       | Google Gemini CLI 实验性 ACP 模式                                |
 | `opencode`     | OpenCode `acp`；要求 `opencode` 已在 `PATH` 中                   |
@@ -352,9 +352,9 @@ humming session bind --agent claude --session-id <session-id>
 | ------------------------- | ----------------------------------------------------- |
 | `settings.json`           | 凭据、机器默认值、Agent preset 和 chat → repo binding |
 | `sessions.json`           | Topic Session 与 Session Profile 状态                 |
-| `gateway.log`              | 后台 Gateway 日志                                      |
-| `gateway.pid`              | 受管进程标识                                          |
-| `gateway.launch.json`      | 已保存的 Gateway 启动配置                              |
+| `gateway.log`             | 后台 Gateway 日志                                     |
+| `gateway.pid`             | 受管进程标识                                          |
+| `gateway.launch.json`     | 已保存的 Gateway 启动配置                             |
 | `AGENTS.md` / `CLAUDE.md` | 提供给 Agent 的 Humming 操作说明                      |
 
 使用 `--home <path>` 或 `HUMMING_HOME` 可以选择其他 home。`humming init` 会刷新说明模板并创建

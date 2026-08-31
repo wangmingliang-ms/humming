@@ -63,7 +63,7 @@ Notes:
 - Send a task without profile changes: `humming session send --message-file <absolute-path>`
 - Bind an existing Agent session: first `humming session list --agent <agent> --json`, then
   `humming session bind --agent <agent> --session-id <id>`
-- Bind/rebind chat repository: update only `bindings.<chatId>.cwd` in `{{SETTINGS_PATH}}`
+- Bind/rebind repository: update the current binding scope in `{{SETTINGS_PATH}}`; use `bindings.<chatId>.cwd` for the chat default or `bindings.<chatId>.topics.<threadId>.cwd` for a topic override
 - Show Gateway status: `humming status`
 - Show Gateway logs: `humming logs`
 - Restart Gateway: `humming restart`
@@ -116,13 +116,26 @@ the query fails or the requested value is absent, stop and tell the user what va
 
 ### Bind sessions and repositories
 
-- Bind/rebind a repository: change only `bindings.<chatId>.cwd` in `settings.json`.
-- Bind an existing Agent session: list with `session list`, choose a session in the current chat
-  repository, then use `session bind`.
+- Bindings store only repositories: `bindings.<chatId>.cwd` is the chat default and
+  `bindings.<chatId>.topics.<threadId>.cwd` is a topic override. Never write
+  Agent/Model/Mode/Permission/Config into `bindings`, and do not migrate an override from historical
+  `SessionRecord.cwd`.
+- In a topic, `/bind <path>` sets that topic override; in the chat main conversation it sets the chat
+  default. `/bind --chat <path>` explicitly sets the chat default from a topic.
+- In a topic, `/unbind` removes that topic override so it inherits the chat default; in the chat main
+  conversation it removes the chat default but keeps topic overrides. `/unbind --chat` removes the
+  chat default from a topic.
+- `/new` resets only the ACP session; it preserves the repository binding.
+- Bind an existing Agent session: list with `session list`, choose a session in the current binding
+  scope, then use `session bind`.
 - Multiple sessions match: show short candidates and ask the user to choose.
 - Session already belongs to another topic: ask the user to reset the original topic; do not edit
   `sessions.json`.
-- Do not pass `--cwd` to `session bind`.
+- Do not pass `--cwd` to `session bind`. `--cwd` is valid only with `session configure --agent`; it
+  updates the current binding scope while switching Agent.
+- Topic overrides take precedence over the chat default.
+- Effective cwd precedence is explicit command cwd > topic override > chat default > `runtime.cwd` >
+  reception / `runtime.unboundCwd`.
 
 ### Choose Permission, Mode, or Config
 
@@ -145,6 +158,7 @@ humming session configure --mode <mode-id>
 humming session configure --config <config-id>=<value>
 humming session configure --permission <alwaysAsk|alwaysAllow|alwaysDeny>
 humming session configure --agent <agent>
+humming session configure --agent <agent> --cwd <absolute-path>
 ```
 
 When Agent/Profile changes and a task are requested together, combine everything into one command:
@@ -159,8 +173,9 @@ humming session configure \
   --message-file <absolute-path>
 ```
 
-Do not use `--cwd` with `session configure` unless the user explicitly requests another repository.
-Do not write Agent/Model/Mode/Permission/Config into `bindings`.
+Do not use `--cwd` with `session configure` unless the user explicitly requests another repository;
+it is valid only together with `--agent` and updates the current binding scope. Do not write
+Agent/Model/Mode/Permission/Config into `bindings`.
 Do not edit `sessions.json`; use `humming session ...`.
 
 ## Built-in chat commands
@@ -177,8 +192,10 @@ Do not reinterpret:
 /permission [alwaysAsk|alwaysAllow|alwaysDeny]
 /profile
 /bind <path>
+/bind --chat <path>
 /where
 /unbind
+/unbind --chat
 /new
 /cancel
 ```

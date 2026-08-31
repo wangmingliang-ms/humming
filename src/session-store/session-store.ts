@@ -76,9 +76,9 @@ export interface PendingTargetAgent {
  * `configure`/`send` request merges into it field-by-field with
  * last-write-wins semantics (spec §9.4); the complete merged candidate is
  * validated against the resolved Desired Agent before it replaces the
- * previous value. It is applied — target profile, then controls, then the
- * attached Message — at the next Turn boundary while busy, or immediately
- * while idle (spec §9.5).
+ * previous value. It is applied — explicit binding, then target profile,
+ * controls, then the attached Message — at the next Turn boundary while busy,
+ * or immediately while idle (spec §9.5).
  */
 export interface PendingSessionConfiguration {
   /** Present only when the desired change includes an Agent switch/start. */
@@ -87,6 +87,8 @@ export interface PendingSessionConfiguration {
   readonly controls?: SessionControlPatch;
   /** Message to send once the target profile is fully active. */
   readonly message?: PendingSessionMessage;
+  /** Explicit CLI repository selection, applied with this configuration at its safe boundary. */
+  readonly bindingCwd?: string;
   /** Card id of the "queued" notice; patched in place when applied or rejected. */
   readonly noticeMessageId?: string;
   readonly createdAt: number;

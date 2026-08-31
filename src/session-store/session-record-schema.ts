@@ -49,6 +49,7 @@ const pendingSessionConfigurationSchema = z.object({
   targetAgent: pendingTargetAgentSchema.optional(),
   controls: sessionControlPatchSchema.optional(),
   message: pendingSessionMessageSchema.optional(),
+  bindingCwd: z.string().min(1).optional(),
   noticeMessageId: z.string().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),

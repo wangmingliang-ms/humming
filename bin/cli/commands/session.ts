@@ -322,6 +322,7 @@ async function runSessionConfigure(
   const { chatId, threadId } = resolveRequiredChatScope(globals, "session configure");
 
   let targetAgent: PendingTargetAgent | undefined;
+  let bindingCwd: string | undefined;
   if (globals.agent !== undefined) {
     const target = resolveAgentProbeTarget(base, {
       agent: globals.agent,
@@ -339,6 +340,7 @@ async function runSessionConfigure(
       ...(target.invocation.label !== undefined ? { agentLabel: target.invocation.label } : {}),
       cwd: target.cwd,
     };
+    bindingCwd = globals.cwd === undefined ? undefined : target.cwd;
   }
 
   const message: PendingSessionMessage | undefined =
@@ -350,6 +352,7 @@ async function runSessionConfigure(
       chatId,
       threadId,
       ...(targetAgent ? { targetAgent } : {}),
+      ...(bindingCwd !== undefined ? { bindingCwd } : {}),
       ...(controls ? { controls } : {}),
       ...(message ? { message } : {}),
     },

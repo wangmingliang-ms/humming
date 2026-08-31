@@ -74,11 +74,17 @@ import type {
   SessionStore,
 } from "../session-store/session-store.js";
 import {
+  isPendingSessionMessage,
+  isPendingTargetAgent,
+  isSessionControlPatch,
   mergePendingSessionConfiguration,
   mergeSessionControls,
   pendingConfigurationHasProfileField,
 } from "../session-store/session-controls.js";
-import type { BindingStore, ChatBinding } from "../binding-store/binding-store.js";
+import { repositoryCwdSchema } from "../binding-store/binding-schema.js";
+import { effectiveRepositoryCwd } from "../binding-store/binding-store.js";
+import type { BindingStore, ChatBinding, RepositoryScope } from "../binding-store/binding-store.js";
+import type { BindingCommandScope } from "../interpreter/commands.js";
 import {
   readSettingsFileObject,
   readSettingsObjectField,
@@ -101,6 +107,7 @@ const SENDER_TYPE_USER = "user";
 const CHAT_TYPE_GROUP = "group";
 
 const HOME_PREFIX = "~";
+const PATH_IDENTITY_MISSING_ERROR_CODES = new Set(["ENOENT", "ENOTDIR"]);
 
 const COMMAND_NOTICES: Readonly<Record<"cancel" | "new" | "unbind", NoticeCardSpec>> = {
   cancel: {
@@ -160,6 +167,10 @@ function runtimeKey(chatId: string, threadId: string | null): string {
  */
 class BindError extends Error {
   override readonly name = "BindError";
+}
+
+class RepositoryPathIdentityError extends Error {
+  override readonly name = "RepositoryPathIdentityError";
 }
 
 class TopicRestartUnavailableError extends Error {
@@ -462,6 +473,8 @@ interface EffectiveBinding {
   readonly profileSelected?: boolean;
   /** `true` when it came from an explicit `/bind`, `false` for the default. */
   readonly explicit: boolean;
+  /** Repository directory selection layer used by `/where`. */
+  readonly source: "topic" | "chat" | "default" | "reception";
   /**
    * `true` when this is the ephemeral reception-area binding (default agent in
    * `unboundCwd`) for a chat with no real binding. The gateway injects
@@ -487,7 +500,8 @@ interface UnavailableBinding {
 }
 
 interface BindingSnapshot {
-  readonly cwd: string;
+  readonly cwd?: string;
+  readonly topics?: Readonly<Record<string, { readonly cwd: string }>>;
 }
 
 interface PendingAgentSwitch {
@@ -518,6 +532,12 @@ type PendingConfigurationApplyTrigger = "idle" | "turn-boundary" | "recovery";
  */
 type RuntimeAcquisitionRecovery = "recover-on-acquire" | "pending-observed-under-lock";
 
+type BindingResetBarrier = {
+  readonly finished: Promise<void>;
+  complete(): void;
+  fail(reason: unknown): void;
+};
+
 /** Outcome of applying a topic's persisted Pending Configuration. */
 interface PendingConfigurationApplyResult {
   /** `false` when there was nothing to apply (no pending config, or quiescing). */
@@ -547,6 +567,33 @@ export type GatewayLifecycleState =
 
 const POST_TURN_AGENT_SWITCH_TASK_HINT =
   "[humming: this prompt is the task portion of an already-applied Agent handoff. Do not call Humming session-control commands again unless the user explicitly requests another Agent/Model/Mode/Permission/Config change.]";
+
+/**
+ * @throws the first rejected reason after every concurrent operation has settled.
+ */
+function rethrowFirstRejection<T>(results: readonly PromiseSettledResult<T>[]): void {
+  const failed = results.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (failed) throw failed.reason;
+}
+
+function createBindingResetBarrier(): BindingResetBarrier {
+  let resolveFinished: (() => void) | undefined;
+  let rejectFinished: ((reason?: unknown) => void) | undefined;
+  const finished = new Promise<void>((resolve, reject) => {
+    resolveFinished = resolve;
+    rejectFinished = reject;
+  });
+  // A reset can fail without any competing acquisition. Observe that rejection
+  // here while preserving it for acquisitions that do await `finished`.
+  void finished.catch(() => undefined);
+  return {
+    finished,
+    complete: () => resolveFinished?.(),
+    fail: (reason) => rejectFinished?.(reason),
+  };
+}
 
 /**
  * Top-level gateway that connects a Lark bot to ACP agents.
@@ -613,6 +660,12 @@ export class LarkGateway {
    * held" — lock-held callers use {@link RuntimeAcquisitionRecovery} instead.
    */
   private readonly pendingConfigurationApplyInFlight = new Set<string>();
+  /** Acquisitions wait for an active scope reset before reading a Session or registering a runtime. */
+  private readonly bindingResetsInFlight = new Map<string, Promise<void>>();
+  /** Incremented when a scope reset starts to invalidate earlier acquisitions immediately. */
+  private readonly bindingResetGenerations = new Map<string, number>();
+  /** Successful configure transactions invalidate reload work planned before their scope lock. */
+  private readonly scopeConfigurationVersions = new Map<string, number>();
   private readonly promptIngress = new Map<string, Promise<void>>();
   private readonly runtimeTurnCompletions = new Set<Promise<void>>();
   private lifecycleState: GatewayLifecycleState = { kind: "running" };
@@ -626,11 +679,16 @@ export class LarkGateway {
   private ws: LarkWsConnection | null = null;
   private controlServer: GatewayControlServer | null = null;
   private started = false;
+  private stopping = false;
   /** fs.watch handle for hot-reloading settings.json (null when disabled). */
   private settingsWatcher: fs.FSWatcher | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Snapshot of the last-applied bindings, for diffing on hot-reload. */
+  /** Tail of every reload, including a failed one until its caller has observed it. */
+  private reloadInFlight: Promise<void> | null = null;
+  /** Snapshot of the last fully-applied bindings, for diffing on hot-reload. */
   private bindingSnapshots = new Map<string, BindingSnapshot>();
+  /** Effective cwd recorded after each successfully reset scope, including partial reloads. */
+  private readonly bindingScopeSnapshots = new Map<string, string | null>();
 
   constructor(opts: LarkGatewayOptions) {
     this.lark = opts.lark;
@@ -708,6 +766,7 @@ export class LarkGateway {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    this.stopping = false;
 
     await this.sessionStore.init();
     await this.bindingStore.init();
@@ -742,6 +801,9 @@ export class LarkGateway {
   async stop(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    this.stopping = true;
+    this.ws?.close();
+    this.ws = null;
     this.logger.info("stopping gateway");
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     if (this.reloadTimer) clearTimeout(this.reloadTimer);
@@ -749,8 +811,8 @@ export class LarkGateway {
       this.settingsWatcher.close();
       this.settingsWatcher = null;
     }
-    this.ws?.close();
-    this.ws = null;
+    const activeReload = this.reloadInFlight;
+    if (activeReload) await activeReload;
     // If beginLifecycle already drained runtimes and emitted its terminal old-process
     // notice, stop() only releases process resources. Compatibility signal/control
     // shutdowns still use the legacy best-effort drain and notice path.
@@ -907,6 +969,10 @@ export class LarkGateway {
     return this.chats.size;
   }
 
+  private acceptsIngress(): boolean {
+    return !this.stopping && this.lifecycleState.kind === "running";
+  }
+
   private async startControlServer(): Promise<void> {
     if (!this.controlSocketPath) return;
     this.controlServer = new GatewayControlServer({
@@ -965,8 +1031,8 @@ export class LarkGateway {
   }
 
   /**
-   * Merge a desired target Agent / controls / message into the chat/thread's
-   * single Pending Configuration, validate the complete candidate against the
+   * Merge a desired target Agent / controls / message / explicit binding cwd
+   * into the chat/thread's single Pending Configuration, validate the complete candidate against the
    * resolved Desired Agent, and either apply it now (idle) or queue it for
    * the next Turn boundary (busy). See docs/cli-command-model-SPEC.md §9.
    *
@@ -982,44 +1048,64 @@ export class LarkGateway {
     | { readonly queued: true; readonly agent?: string }
     | { readonly rejected: true; readonly reason: string }
   > {
+    if (!this.acceptsIngress()) {
+      return { rejected: true, reason: "gateway lifecycle is quiescing" };
+    }
     return this.withPendingConfigurationLock(chatId, threadId, async () => {
-      const key = runtimeKey(chatId, threadId);
-      const before = await this.sessionStore.getLatest(chatId, threadId);
-      const existingPending = before?.pendingConfiguration;
-      const runtime = this.chats.get(key);
-      const replyTo = noticeMessageId ?? runtime?.lastMessageId ?? null;
-
-      const trimmedMessage = input.message
-        ? { prompt: input.message.prompt.trim(), createdAt: input.message.createdAt }
-        : undefined;
-      if (trimmedMessage && trimmedMessage.prompt.length === 0) {
-        return { rejected: true, reason: "message prompt must not be empty" };
+      if (!this.acceptsIngress()) {
+        return { rejected: true, reason: "gateway lifecycle is quiescing" };
       }
+      const invalidInputReason = validateConfigureSessionInput(input);
+      if (invalidInputReason) return { rejected: true, reason: invalidInputReason };
 
-      const merged = mergePendingSessionConfiguration(existingPending, {
-        ...(input.targetAgent ? { targetAgent: input.targetAgent } : {}),
-        ...(input.controls ? { controls: input.controls } : {}),
-        ...(trimmedMessage ? { message: trimmedMessage } : {}),
-      });
-
-      if (!pendingConfigurationHasProfileField(merged)) {
-        return {
-          rejected: true,
-          reason:
-            "configure requires at least one of Agent, Model, Mode, Permission, or Config; use sendMessage for a message-only request",
-        };
-      }
-
-      if (runtime?.processing) {
-        return this.queuePendingConfiguration(chatId, threadId, before, merged, replyTo);
-      }
-
-      // Idle: persist the merged candidate as the single source of truth, then
-      // apply it through the canonical applier (which re-reads the persisted
-      // snapshot, not this local object). A brand-new topic with a target Agent
-      // has no Session to attach it to, so first persist a profile-only carrier
-      // derived from that target Agent.
       try {
+        const key = runtimeKey(chatId, threadId);
+        const before = await this.sessionStore.getLatest(chatId, threadId);
+        const existingPending = before?.pendingConfiguration;
+        const runtime = this.chats.get(key);
+        const replyTo = noticeMessageId ?? runtime?.lastMessageId ?? null;
+
+        const trimmedMessage = input.message
+          ? { prompt: input.message.prompt.trim(), createdAt: input.message.createdAt }
+          : undefined;
+        if (trimmedMessage && trimmedMessage.prompt.length === 0) {
+          return { rejected: true, reason: "message prompt must not be empty" };
+        }
+
+        const merged = mergePendingSessionConfiguration(existingPending, {
+          ...(input.targetAgent ? { targetAgent: input.targetAgent } : {}),
+          ...(input.controls ? { controls: input.controls } : {}),
+          ...(trimmedMessage ? { message: trimmedMessage } : {}),
+          ...(input.bindingCwd !== undefined ? { bindingCwd: input.bindingCwd } : {}),
+        });
+        const mergedInvariantFailure = validatePendingConfigurationBinding(merged);
+        if (mergedInvariantFailure) return { rejected: true, reason: mergedInvariantFailure };
+
+        if (!pendingConfigurationHasProfileField(merged)) {
+          return {
+            rejected: true,
+            reason:
+              "configure requires at least one of Agent, Model, Mode, Permission, or Config; use sendMessage for a message-only request",
+          };
+        }
+
+        if (runtime?.processing) {
+          const queued = await this.queuePendingConfiguration(
+            chatId,
+            threadId,
+            before,
+            merged,
+            replyTo,
+          );
+          this.markScopeConfigured(chatId, threadId);
+          return queued;
+        }
+
+        // Idle: persist the merged candidate as the single source of truth, then
+        // apply it through the canonical applier (which re-reads the persisted
+        // snapshot, not this local object). A brand-new topic with a target Agent
+        // has no Session to attach it to, so first persist a profile-only carrier
+        // derived from that target Agent.
         if (merged.targetAgent && !before) {
           await this.sessionStore.save({
             ...pendingTargetAgentToSessionRecord(chatId, threadId, merged.targetAgent),
@@ -1035,6 +1121,7 @@ export class LarkGateway {
           replyTo,
           "idle",
         );
+        this.markScopeConfigured(chatId, threadId);
         return {
           applied: true,
           ...(outcome.agent !== undefined ? { agent: outcome.agent } : {}),
@@ -1044,6 +1131,37 @@ export class LarkGateway {
         return { rejected: true, reason: formatControlFailure(err) };
       }
     });
+  }
+
+  /**
+   * Persist an explicit CLI cwd selection at its chat/topic scope and discard
+   * only Sessions whose effective repository changed.
+   *
+   * @returns whether the requested scope's effective repository changed.
+   * @throws when the binding store cannot persist the requested cwd or a
+   *         changed scope cannot be reset.
+   */
+  private async persistControlBinding(
+    chatId: string,
+    threadId: string | null,
+    cwd: string,
+  ): Promise<boolean> {
+    const scope: RepositoryScope =
+      threadId === null ? { kind: "chat" } : { kind: "topic", threadId };
+    const existing = await this.bindingStore.get(chatId);
+    const affected = await this.bindingChangeTargets(chatId, scope, existing);
+    const before = this.effectiveCwdsForThreads(chatId, existing, affected);
+    await this.bindingStore.set(chatId, scope, cwd);
+    const updated = await this.bindingStore.get(chatId);
+    const resetSessions = await this.resetChangedBindingThreads(
+      chatId,
+      affected,
+      before,
+      updated,
+      threadId,
+    );
+    this.updateBindingSnapshot(chatId, updated);
+    return resetSessions;
   }
 
   /**
@@ -1058,9 +1176,11 @@ export class LarkGateway {
     message: PendingSessionMessage,
     noticeMessageId?: string | null,
   ): Promise<{ readonly sent: true } | { readonly queued: true }> {
+    if (!this.acceptsIngress()) throw new Error("gateway lifecycle is quiescing");
     const prompt = message.prompt.trim();
     if (!prompt) throw new Error("message prompt must not be empty");
     return this.withPendingConfigurationLock(chatId, threadId, async () => {
+      if (!this.acceptsIngress()) throw new Error("gateway lifecycle is quiescing");
       const key = runtimeKey(chatId, threadId);
       const before = await this.sessionStore.getLatest(chatId, threadId);
       const existingPending = before?.pendingConfiguration;
@@ -1092,7 +1212,13 @@ export class LarkGateway {
       // would otherwise re-enter this same lock and deadlock.
       const targetRuntime =
         runtime ??
-        (await this.acquireRuntimeForSend(chatId, replyTo, before, "pending-observed-under-lock"));
+        (await this.acquireRuntimeForSend(
+          chatId,
+          threadId,
+          replyTo,
+          before,
+          "pending-observed-under-lock",
+        ));
       if (!targetRuntime) return { queued: true };
       await this.enqueueRuntimeMessage(targetRuntime, chatId, threadId, {
         prompt: [{ type: "text", text: prompt }],
@@ -1105,14 +1231,14 @@ export class LarkGateway {
 
   private async acquireRuntimeForSend(
     chatId: string,
+    threadId: string | null,
     replyTo: string | null,
     before: SessionRecord | null,
     recovery: RuntimeAcquisitionRecovery = "recover-on-acquire",
   ): Promise<ChatRuntime | null> {
-    const threadId = before?.threadId ?? null;
     const binding = before
       ? sessionRecordToEffectiveBinding(before, true, true)
-      : await this.resolveBinding(chatId);
+      : await this.resolveBinding(chatId, threadId);
     if (!binding) {
       if (replyTo) {
         await this.presenter
@@ -1128,6 +1254,11 @@ export class LarkGateway {
       return null;
     }
     return this.acquireRuntime(chatId, threadId, binding, recovery);
+  }
+
+  private markScopeConfigured(chatId: string, threadId: string | null): void {
+    const key = runtimeKey(chatId, threadId);
+    this.scopeConfigurationVersions.set(key, (this.scopeConfigurationVersions.get(key) ?? 0) + 1);
   }
 
   /** Runs `fn` serialized per chat/thread key; see {@link pendingConfigurationLocks}. */
@@ -1149,6 +1280,11 @@ export class LarkGateway {
     return run;
   }
 
+  /**
+   * Persist a fully validated Pending Configuration for a busy topic.
+   *
+   * @throws when its binding invariant is invalid or persistence fails.
+   */
   private async queuePendingConfiguration(
     chatId: string,
     threadId: string | null,
@@ -1156,6 +1292,8 @@ export class LarkGateway {
     candidate: PendingSessionConfiguration,
     replyTo: string | null,
   ): Promise<{ readonly queued: true; readonly agent?: string }> {
+    const invariantFailure = validatePendingConfigurationBinding(candidate);
+    if (invariantFailure) throw new Error(invariantFailure);
     const notice = buildPendingConfigurationQueuedNotice(before, candidate);
     let noticeMessageId = candidate.noticeMessageId;
     const existingCard = noticeMessageId ? restoreWipNoticeCard(noticeMessageId) : null;
@@ -1379,7 +1517,8 @@ export class LarkGateway {
     }
 
     if (!configuration.message) return false;
-    const targetRuntime = runtime ?? (await this.acquireRuntimeForSend(chatId, replyTo, before));
+    const targetRuntime =
+      runtime ?? (await this.acquireRuntimeForSend(chatId, threadId, replyTo, before));
     if (!targetRuntime) {
       throw new Error("no repo/session available to deliver the pending message");
     }
@@ -1402,7 +1541,7 @@ export class LarkGateway {
     threadId: string | null,
     messageId: string,
   ): Promise<void> {
-    if (this.lifecycleState.kind !== "running") return;
+    if (!this.acceptsIngress()) return;
     if (this.pendingConfigurationApplyInFlight.has(runtimeKey(chatId, threadId))) return;
     await this.withPendingConfigurationLock(chatId, threadId, () =>
       this.applyPersistedPendingConfiguration(chatId, threadId, messageId, "turn-boundary"),
@@ -1417,15 +1556,16 @@ export class LarkGateway {
    * Gateway restart. Callers must already hold
    * {@link withPendingConfigurationLock}.
    *
-   * Order is target profile -> controls -> Message (spec §9.5); the Pending
-   * Configuration is cleared only on full success, and only conditionally so a
+   * Order is explicit binding -> target profile -> controls -> Message (spec §9.5);
+   * the Pending Configuration is cleared only on full success, and only conditionally so a
    * newer request written meanwhile is never clobbered (spec §9.3). On failure
    * it is left in place for retry; Turn-boundary/recovery surface a failure
    * notice while idle propagates a `rejected` result. The key is marked in
    * {@link pendingConfigurationApplyInFlight} while applying so the attached
    * Message's nested `acquireRuntime` does not re-enter recovery and loop.
    *
-   * @throws when applying the target profile, controls, or Message fails.
+   * @throws when binding persistence, carrier re-arming, or applying the target profile,
+   *         controls, or Message fails.
    */
   private async applyPersistedPendingConfiguration(
     chatId: string,
@@ -1436,7 +1576,7 @@ export class LarkGateway {
     const before = await this.sessionStore.getLatest(chatId, threadId);
     const configuration = before?.pendingConfiguration;
     if (!before || !configuration) return { applied: false, messageSent: false };
-    if (trigger === "turn-boundary" && this.lifecycleState.kind !== "running") {
+    if (trigger === "turn-boundary" && !this.acceptsIngress()) {
       return { applied: false, messageSent: false };
     }
 
@@ -1447,6 +1587,11 @@ export class LarkGateway {
 
     this.pendingConfigurationApplyInFlight.add(key);
     try {
+      const invariantFailure = validatePendingConfigurationBinding(configuration);
+      if (invariantFailure) throw new Error(invariantFailure);
+      if (configuration.bindingCwd !== undefined) {
+        await this.persistControlBinding(chatId, threadId, configuration.bindingCwd);
+      }
       const targetAgent = configuration.targetAgent;
       if (targetAgent) {
         const { record, inherited } = await this.resolveTargetAgentApplyRecord(
@@ -1455,7 +1600,11 @@ export class LarkGateway {
           targetAgent,
           configuration.controls,
         );
-        if (trigger === "turn-boundary" && this.lifecycleState.kind !== "running") {
+        if (trigger === "turn-boundary" && !this.acceptsIngress()) {
+          // Binding persistence may have reset the profile-only carrier before
+          // lifecycle quiescing closed this apply window. Re-arm the exact
+          // durable snapshot so restart recovery can replay it under the new binding.
+          await this.sessionStore.save(before);
           return { applied: false, messageSent: false };
         }
         // Carrier (profile-only, same sessionId as its target): the switch is
@@ -1573,6 +1722,7 @@ export class LarkGateway {
       ...(record.agentEnv ? { env: record.agentEnv } : {}),
       label: record.agentLabel ?? record.agentCommand,
       explicit: true,
+      source: record.threadId === null ? "chat" : "topic",
       reception: false,
       ...(record.controls ? { inheritedControls: record.controls } : {}),
     });
@@ -1675,7 +1825,7 @@ export class LarkGateway {
     // behaviour). A populated value scopes this message to its own topic.
     const threadId = message.thread_id ?? null;
 
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       void this.rejectQuiescingIngress(messageId);
       return;
     }
@@ -1700,7 +1850,7 @@ export class LarkGateway {
     chatId: string,
     threadId: string | null,
   ): Promise<void> {
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       await this.rejectQuiescingIngress(messageId);
       return;
     }
@@ -1730,7 +1880,7 @@ export class LarkGateway {
       }
     }
 
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       await this.rejectQuiescingIngress(messageId);
       return;
     }
@@ -1813,10 +1963,10 @@ export class LarkGateway {
       restart: () => this.handleRestartCommand(chatId, threadId, messageId),
       help: () => this.presenter.replyCommandResultCard(messageId, buildHelpNotice()),
       capabilities: (agent) => this.handleCapabilitiesCommand(agent, chatId, threadId, messageId),
-      bind: (cwd, agent) => this.handleBind(cwd, agent, chatId, messageId),
+      bind: (cwd, scope) => this.handleBind(cwd, scope, chatId, threadId, messageId),
       bindUsage: () => this.presenter.replyCommandResultCard(messageId, BIND_USAGE_NOTICE),
-      unbind: () => this.handleUnbind(chatId, messageId),
-      where: () => this.handleWhere(chatId, messageId),
+      unbind: (scope) => this.handleUnbind(scope, chatId, threadId, messageId),
+      where: () => this.handleWhere(chatId, threadId, messageId),
       setAgent: (agent) => this.handleSetAgentCommand(agent, chatId, threadId, messageId, context),
       listAgents: () =>
         this.presenter.replyCommandResultCard(
@@ -1956,16 +2106,17 @@ export class LarkGateway {
 
   private async handleBind(
     rawCwd: string,
-    rawAgent: string | null,
+    commandScope: BindingCommandScope,
     chatId: string,
+    threadId: string | null,
     messageId: string,
   ): Promise<void> {
     let cwd: string;
     try {
-      cwd = this.resolveBindTarget(rawCwd, rawAgent);
+      cwd = this.resolveBindTarget(rawCwd);
     } catch (err) {
       const reason = err instanceof BindError ? err.message : formatBootstrapError(err);
-      this.logger.warn({ err, chatId }, "bind rejected");
+      this.logger.warn({ err, chatId, threadId }, "bind rejected");
       await this.presenter.replyNoticeCard(messageId, {
         title: "⚠️ 绑定失败",
         body: reason,
@@ -1974,50 +2125,67 @@ export class LarkGateway {
       return;
     }
 
-    const now = Date.now();
+    const scope = bindingScopeForCommand(commandScope, threadId);
     const existing = await this.bindingStore.get(chatId);
-    const binding: ChatBinding = {
-      chatId,
-      cwd,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
-    await this.bindingStore.set(binding);
-    this.bindingSnapshots.set(chatId, bindingSnapshotOf(binding));
+    const affected = await this.bindingChangeTargets(chatId, scope, existing);
+    const before = this.effectiveCwdsForThreads(chatId, existing, affected);
+    await this.bindingStore.set(chatId, scope, cwd);
+    const updated = await this.bindingStore.get(chatId);
+    const resetSessions = await this.resetChangedBindingThreads(chatId, affected, before, updated);
+    this.updateBindingSnapshot(chatId, updated);
 
-    // A rebind changes repo; tear down the live runtime and drop any persisted
-    // ACP sessions so the next message starts fresh in the new cwd instead of
-    // resuming a session that belongs to the old repo.
-    await this.teardownChat(chatId);
-    await this.clearChatSessions(chatId);
-
-    this.logger.info({ chatId, cwd }, "chat bound");
-    await this.presenter.replyNoticeCard(messageId, buildRepoBoundNotice(existing, binding));
+    this.logger.info({ chatId, threadId, scope: scope.kind, cwd }, "repository bound");
+    const previousCwd = before.get(scope.kind === "chat" ? null : threadId);
+    await this.presenter.replyNoticeCard(
+      messageId,
+      buildRepoBoundNotice(
+        previousCwd === null || previousCwd === undefined ? {} : { cwd: previousCwd },
+        {
+          cwd,
+        },
+        resetSessions,
+      ),
+    );
   }
 
-  private async handleUnbind(chatId: string, messageId: string): Promise<void> {
+  private async handleUnbind(
+    commandScope: BindingCommandScope,
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<void> {
+    const scope = bindingScopeForCommand(commandScope, threadId);
     const existing = await this.bindingStore.get(chatId);
-    if (!existing) {
+    if (!hasBindingAtScope(existing, scope)) {
       await this.presenter.replyNoticeCard(messageId, {
         title: "ℹ️ 未绑定",
-        body: "本会话当前没有显式绑定。",
+        body: "当前目标范围没有显式 repo binding。",
         template: "grey",
       });
       return;
     }
-    await this.bindingStore.delete(chatId);
-    await this.teardownChat(chatId);
-    await this.clearChatSessions(chatId);
-    this.logger.info({ chatId }, "chat unbound");
-    await this.presenter.replyNoticeCard(messageId, COMMAND_NOTICES.unbind);
+
+    const affected = await this.bindingChangeTargets(chatId, scope, existing);
+    const before = this.effectiveCwdsForThreads(chatId, existing, affected);
+    await this.bindingStore.delete(chatId, scope);
+    const updated = await this.bindingStore.get(chatId);
+    const resetSessions = await this.resetChangedBindingThreads(chatId, affected, before, updated);
+    this.updateBindingSnapshot(chatId, updated);
+
+    this.logger.info({ chatId, threadId, scope: scope.kind }, "repository unbound");
+    await this.presenter.replyNoticeCard(messageId, buildRepoUnboundNotice(resetSessions));
   }
 
-  private async handleWhere(chatId: string, messageId: string): Promise<void> {
-    const binding = await this.resolveBinding(chatId);
+  private async handleWhere(
+    chatId: string,
+    threadId: string | null,
+    messageId: string,
+  ): Promise<void> {
+    const binding = await this.resolveBinding(chatId, threadId);
     if (!binding) {
       await this.presenter.replyNoticeCard(messageId, {
         title: "ℹ️ 未绑定",
-        body: "本会话尚未绑定，且没有配置默认目录。\n请先 /bind <路径> [agent]。",
+        body: "本会话尚未绑定，且没有配置默认目录。\n请先 /bind <路径>。",
         template: "orange",
       });
       return;
@@ -2026,12 +2194,143 @@ export class LarkGateway {
       await this.notifyUnavailableBindingFallback(messageId, binding.fallbackFrom);
       return;
     }
-    const source = binding.explicit ? "显式绑定" : "默认配置（未显式绑定）";
     await this.presenter.replyNoticeCard(messageId, {
       title: "📍 当前绑定",
-      body: `• 目录：${binding.cwd}\n• Agent：${binding.label}\n• 来源：${source}`,
+      body: `• 目录：${binding.cwd}\n• Agent：${binding.label}\n• 来源：${binding.source}`,
       template: "blue",
     });
+  }
+
+  private async bindingChangeTargets(
+    chatId: string,
+    scope: RepositoryScope,
+    binding: ChatBinding | null,
+  ): Promise<readonly (string | null)[]> {
+    if (scope.kind === "topic") return [scope.threadId];
+
+    const topicIds = new Set<string>();
+    for (const runtime of this.chats.values()) {
+      if (runtime.chatId === chatId && runtime.threadId !== null) topicIds.add(runtime.threadId);
+    }
+    const sessions = await this.sessionStore.listByChat(chatId);
+    for (const session of sessions) {
+      if (session.threadId !== null) topicIds.add(session.threadId);
+    }
+    for (const topicId of Object.keys(binding?.topics ?? {})) topicIds.add(topicId);
+
+    return [null, ...[...topicIds].filter((topicId) => binding?.topics?.[topicId] === undefined)];
+  }
+
+  private effectiveCwdsForThreads(
+    chatId: string,
+    binding: Pick<ChatBinding, "cwd" | "topics"> | null,
+    threadIds: readonly (string | null)[],
+  ): ReadonlyMap<string | null, string | null> {
+    return new Map(
+      threadIds.map((candidateThreadId) => {
+        const key = runtimeKey(chatId, candidateThreadId);
+        const recorded = this.bindingScopeSnapshots.get(key);
+        return [
+          candidateThreadId,
+          recorded === undefined
+            ? (effectiveRepositoryCwd(
+                binding,
+                candidateThreadId,
+                this.defaultCwd,
+                this.unboundCwd,
+              ) ?? null)
+            : recorded,
+        ];
+      }),
+    );
+  }
+
+  private async resetChangedBindingThreads(
+    chatId: string,
+    threadIds: readonly (string | null)[],
+    before: ReadonlyMap<string | null, string | null>,
+    after: Pick<ChatBinding, "cwd" | "topics"> | null,
+    heldThreadId: string | null | undefined = undefined,
+    plannedConfigurationVersions?: ReadonlyMap<string, number>,
+    isCurrent?: (
+      threadId: string | null,
+      generation: number,
+      configurationVersion: number,
+    ) => Promise<boolean>,
+  ): Promise<boolean> {
+    const changed = threadIds.filter((candidateThreadId) => {
+      const beforeCwd = before.get(candidateThreadId);
+      const afterCwd =
+        effectiveRepositoryCwd(after, candidateThreadId, this.defaultCwd, this.unboundCwd) ?? null;
+      try {
+        return hasEffectiveCwdChanged(beforeCwd, afterCwd);
+      } catch (err) {
+        this.logger.warn(
+          { err, chatId, threadId: candidateThreadId, beforeCwd, afterCwd },
+          "repository identity comparison failed; treating binding as changed",
+        );
+        return true;
+      }
+    });
+    const resetTargets = changed.map((candidateThreadId) => {
+      const key = runtimeKey(chatId, candidateThreadId);
+      return {
+        threadId: candidateThreadId,
+        generation: this.bindingResetGenerations.get(key) ?? 0,
+        configurationVersion:
+          plannedConfigurationVersions === undefined
+            ? (this.scopeConfigurationVersions.get(key) ?? 0)
+            : (plannedConfigurationVersions.get(key) ?? 0),
+      };
+    });
+    const resetScope = async (target: (typeof resetTargets)[number]): Promise<boolean> => {
+      const { threadId: candidateThreadId, generation, configurationVersion } = target;
+      if (isCurrent && !(await isCurrent(candidateThreadId, generation, configurationVersion))) {
+        return false;
+      }
+
+      const key = runtimeKey(chatId, candidateThreadId);
+      const barrier = createBindingResetBarrier();
+      this.bindingResetsInFlight.set(key, barrier.finished);
+      this.bindingResetGenerations.set(key, (this.bindingResetGenerations.get(key) ?? 0) + 1);
+      try {
+        await this.teardownThread(chatId, candidateThreadId);
+        await this.clearThreadSessions(chatId, candidateThreadId);
+        this.bindingScopeSnapshots.set(
+          key,
+          effectiveRepositoryCwd(after, candidateThreadId, this.defaultCwd, this.unboundCwd) ??
+            null,
+        );
+        barrier.complete();
+        if (this.bindingResetsInFlight.get(key) === barrier.finished) {
+          this.bindingResetsInFlight.delete(key);
+        }
+        return true;
+      } catch (err) {
+        barrier.fail(err);
+        throw err;
+      }
+    };
+    const results = await Promise.allSettled(
+      resetTargets.map((target) =>
+        target.threadId === heldThreadId
+          ? resetScope(target)
+          : this.withPendingConfigurationLock(chatId, target.threadId, () => resetScope(target)),
+      ),
+    );
+    rethrowFirstRejection(results);
+    return results.some((result) => result.status === "fulfilled" && result.value);
+  }
+
+  private updateBindingSnapshot(
+    chatId: string,
+    binding: Pick<ChatBinding, "cwd" | "topics"> | null,
+  ): void {
+    if (binding === null) {
+      this.bindingSnapshots.delete(chatId);
+      return;
+    }
+    this.bindingSnapshots.set(chatId, bindingSnapshotOf(binding));
   }
 
   private async handleSetControlsCommand(
@@ -2089,7 +2388,7 @@ export class LarkGateway {
     threadId: string | null,
     messageId: string,
   ): Promise<SessionCapabilitiesSnapshot | null> {
-    const binding = await this.resolveBinding(chatId);
+    const binding = await this.resolveBinding(chatId, threadId);
     if (!binding) {
       await this.presenter.replyNoticeCard(
         messageId,
@@ -2156,7 +2455,7 @@ export class LarkGateway {
     const runtime = this.chats.get(runtimeKey(chatId, threadId));
     if (runtime) return runtime.capabilities();
 
-    const binding = await this.resolveBinding(chatId);
+    const binding = await this.resolveBinding(chatId, threadId);
     if (!binding) {
       await this.presenter.replyNoticeCard(
         messageId,
@@ -2200,7 +2499,7 @@ export class LarkGateway {
     messageId: string,
     context: CommandContext = { isDirectMessage: false },
   ): Promise<void> {
-    const binding = await this.resolveBinding(chatId);
+    const binding = await this.resolveBinding(chatId, threadId);
     if (!binding) {
       await this.presenter.replyNoticeCard(
         messageId,
@@ -2418,20 +2717,16 @@ export class LarkGateway {
       await this.presenter.replyNoticeCard(messageId, buildStoredProfileNotice(latest));
       return;
     }
-    const binding = await this.resolveBinding(chatId);
+    const binding = await this.resolveBinding(chatId, threadId);
     await this.presenter.replyNoticeCard(messageId, buildNoProfileNotice(binding));
   }
 
   /**
    * Expand + validate a `/bind` target.
    *
-   * @throws {BindError} when the path is missing / not a directory, or the
-   *         agent selection cannot be resolved.
+   * @throws {BindError} when the path is missing or not a directory.
    */
-  private resolveBindTarget(rawCwd: string, rawAgent: string | null): string {
-    if (rawAgent) {
-      throw new BindError("/bind 现在只绑定 repo，不再绑定 Agent。请使用 /bind <路径>。");
-    }
+  private resolveBindTarget(rawCwd: string): string {
     return expandAndValidateDir(rawCwd);
   }
 
@@ -2445,7 +2740,7 @@ export class LarkGateway {
     messageId: string,
     segments: PromptSegment[],
   ): Promise<void> {
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       return this.rejectQuiescingIngress(messageId);
     }
     const key = runtimeKey(chatId, threadId);
@@ -2490,12 +2785,12 @@ export class LarkGateway {
     segments: PromptSegment[],
     admit: () => void,
   ): Promise<void> {
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       await this.rejectQuiescingIngress(messageId);
       return;
     }
-    const binding = await this.resolveBinding(chatId);
-    if (this.lifecycleState.kind !== "running") {
+    const binding = await this.resolveBinding(chatId, threadId);
+    if (!this.acceptsIngress()) {
       await this.rejectQuiescingIngress(messageId);
       return;
     }
@@ -2504,7 +2799,7 @@ export class LarkGateway {
       this.logger.info({ chatId }, "message in unbound chat — reception disabled, prompting /bind");
       await this.presenter.replyNoticeCard(messageId, {
         title: "⚠️ 尚未绑定仓库",
-        body: "本会话还没有绑定仓库目录。请先发送：\n/bind <路径> [agent]\n\n例如：/bind ~/workspace/copilot-intellij claude\n查看用法：/bind",
+        body: "本会话还没有绑定仓库目录。请先发送：\n/bind <路径>\n\n例如：/bind ~/workspace/humming\n查看用法：/bind",
         template: "orange",
       });
       return;
@@ -2536,7 +2831,7 @@ export class LarkGateway {
         return;
       }
     }
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       await this.rejectQuiescingIngress(messageId);
       return;
     }
@@ -2619,36 +2914,54 @@ export class LarkGateway {
   }
 
   /**
-   * Resolve a chat's effective binding: an explicit `/bind` if present,
-   * else the configured default, else `null` (chat must `/bind` first).
+   * Resolve a topic's effective binding: topic override, chat default, runtime
+   * default, then reception area. An unavailable explicit cwd is only rebound
+   * at its own scope, so one broken topic cannot overwrite sibling overrides.
    */
-  private async resolveBinding(chatId: string): Promise<EffectiveBinding | null> {
+  private async resolveBinding(
+    chatId: string,
+    threadId: string | null,
+  ): Promise<EffectiveBinding | null> {
     this.refreshRuntimeDefaultsFromSettings();
     const stored = await this.bindingStore.get(chatId);
-    if (stored) {
-      const unavailable = describeUnavailableCwd(stored.cwd);
+    const topicCwd = threadId === null ? undefined : stored?.topics?.[threadId]?.cwd;
+    const explicitCwd = effectiveRepositoryCwd(stored, threadId, undefined, undefined);
+    const explicitScope: RepositoryScope | null =
+      threadId !== null && topicCwd
+        ? { kind: "topic", threadId }
+        : stored?.cwd
+          ? { kind: "chat" }
+          : null;
+    const source = topicCwd ? "topic" : "chat";
+
+    if (explicitCwd && explicitScope) {
+      const unavailable = describeUnavailableCwd(explicitCwd);
       if (unavailable) {
         const fallback = await this.rebindUnavailableBindingToReception(
           chatId,
-          stored,
+          threadId,
+          explicitScope,
+          explicitCwd,
           unavailable,
         );
         if (fallback) {
           this.logger.warn(
-            { chatId, cwd: stored.cwd, reason: unavailable },
+            { chatId, threadId, cwd: explicitCwd, reason: unavailable },
             "explicit binding cwd unavailable — rebound to reception area",
           );
           return fallback;
         }
+        return null;
       }
       if (!this.defaultAgent) return null;
       return {
-        cwd: stored.cwd,
+        cwd: explicitCwd,
         command: this.defaultAgent.command,
         args: this.defaultAgent.args,
         ...(this.defaultAgent.env ? { env: this.defaultAgent.env } : {}),
         label: this.defaultAgent.label,
         explicit: true,
+        source,
         reception: false,
       };
     }
@@ -2667,6 +2980,7 @@ export class LarkGateway {
           );
           return fallback;
         }
+        return null;
       }
       return {
         cwd: this.defaultCwd,
@@ -2675,6 +2989,7 @@ export class LarkGateway {
         ...(this.defaultAgent.env ? { env: this.defaultAgent.env } : {}),
         label: this.defaultAgent.label,
         explicit: false,
+        source: "default",
         reception: false,
       };
     }
@@ -2686,6 +3001,7 @@ export class LarkGateway {
     // are configured, spawn the agent there so the user can converse and ask
     // it to bind the chat by natural language.
     if (this.unboundCwd && this.defaultAgent) {
+      if (describeUnavailableCwd(this.unboundCwd) !== null) return null;
       return {
         cwd: this.unboundCwd,
         command: this.defaultAgent.command,
@@ -2693,6 +3009,7 @@ export class LarkGateway {
         ...(this.defaultAgent.env ? { env: this.defaultAgent.env } : {}),
         label: this.defaultAgent.label,
         explicit: false,
+        source: "reception",
         reception: true,
       };
     }
@@ -2717,32 +3034,28 @@ export class LarkGateway {
 
   private async rebindUnavailableBindingToReception(
     chatId: string,
-    stored: ChatBinding,
+    threadId: string | null,
+    scope: RepositoryScope,
+    cwd: string,
     reason: string,
   ): Promise<EffectiveBinding | null> {
     const fallback = this.buildReceptionBinding();
     if (!fallback) return null;
 
-    const now = Date.now();
-    const rebound: ChatBinding = {
-      chatId,
-      cwd: fallback.cwd,
-      createdAt: stored.createdAt,
-      updatedAt: now,
-    };
+    const existing = await this.bindingStore.get(chatId);
+    const affected = await this.bindingChangeTargets(chatId, scope, existing);
+    const before = this.effectiveCwdsForThreads(chatId, existing, affected);
+    await this.bindingStore.set(chatId, scope, fallback.cwd);
+    const updated = await this.bindingStore.get(chatId);
+    try {
+      await this.resetChangedBindingThreads(chatId, affected, before, updated);
+      this.updateBindingSnapshot(chatId, updated);
+    } catch (err) {
+      this.logger.warn({ err, chatId, threadId }, "failed to reset unavailable repository binding");
+      this.scheduleReload();
+    }
 
-    await this.bindingStore.set(rebound);
-    this.bindingSnapshots.set(chatId, bindingSnapshotOf(rebound));
-    await this.teardownChat(chatId);
-    await this.clearChatSessions(chatId).catch((err) =>
-      this.logger.warn({ err, chatId }, "failed to clear sessions on unavailable repo rebind"),
-    );
-
-    return this.buildReceptionFallback({
-      chatId,
-      cwd: stored.cwd,
-      reason,
-    });
+    return this.buildReceptionFallback({ chatId, cwd, reason });
   }
 
   private async notifyUnavailableBindingFallback(
@@ -2761,10 +3074,19 @@ export class LarkGateway {
     recovery: RuntimeAcquisitionRecovery = "recover-on-acquire",
     restartOwner = false,
   ): Promise<ChatRuntime> {
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       throw new Error("gateway lifecycle is quiescing; runtime acquisition rejected");
     }
     const key = runtimeKey(chatId, threadId);
+    let currentBinding = binding;
+    const resetInFlight = this.bindingResetsInFlight.get(key);
+    if (resetInFlight) {
+      await resetInFlight;
+      const reboundBinding = await this.resolveBinding(chatId, threadId);
+      if (!reboundBinding) throw new Error("binding disappeared while waiting for a reset");
+      currentBinding = reboundBinding;
+    }
+    const bindingResetGeneration = this.bindingResetGenerations.get(key) ?? 0;
     if (!restartOwner) {
       const restart = this.topicRestarts.get(key);
       if (restart !== undefined) return restart;
@@ -2792,10 +3114,15 @@ export class LarkGateway {
     const { effective, inherited, usesGlobalDefaults } = await this.resolveRuntimeSessionProfile(
       chatId,
       threadId,
-      binding,
+      currentBinding,
     );
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       throw new Error("gateway lifecycle is quiescing; runtime acquisition rejected");
+    }
+    if ((this.bindingResetGenerations.get(key) ?? 0) !== bindingResetGeneration) {
+      const currentBinding = await this.resolveBinding(chatId, threadId);
+      if (!currentBinding) throw new Error("binding disappeared while acquiring runtime");
+      return this.acquireRuntime(chatId, threadId, currentBinding, recovery, restartOwner);
     }
 
     if (inherited) {
@@ -2833,7 +3160,7 @@ export class LarkGateway {
       idleStatusCardMs: this.display.idleStatusCardMs,
       permissionMode: this.display.permissionMode,
       agentLabel: effective.label,
-      ...(binding.fallbackFrom ? { ignoreStoredSession: true } : {}),
+      ...(currentBinding.fallbackFrom ? { ignoreStoredSession: true } : {}),
       ...(effective.inheritedControls ? { inheritedControls: effective.inheritedControls } : {}),
       ...(usesGlobalDefaults ? { persistInheritedControls: true } : {}),
       onTurnComplete: (messageId) => {
@@ -2861,6 +3188,9 @@ export class LarkGateway {
     return runtime;
   }
 
+  /**
+   * @throws when reading or clearing persisted sessions fails.
+   */
   private async resolveRuntimeSessionProfile(
     chatId: string,
     threadId: string | null,
@@ -2875,11 +3205,23 @@ export class LarkGateway {
     if (!binding.fallbackFrom) {
       const pinned = await this.sessionStore.getLatest(chatId, threadId);
       if (pinned) {
-        return {
-          effective: sessionRecordToEffectiveBinding(pinned, binding.explicit, false),
-          inherited: null,
-          usesGlobalDefaults: false,
-        };
+        let matchesBinding = false;
+        try {
+          matchesBinding = !hasEffectiveCwdChanged(pinned.cwd, binding.cwd);
+        } catch (err) {
+          this.logger.warn(
+            { err, chatId, threadId, pinnedCwd: pinned.cwd, bindingCwd: binding.cwd },
+            "pinned session repository identity comparison failed; ignoring stale session",
+          );
+        }
+        if (matchesBinding) {
+          return {
+            effective: sessionRecordToEffectiveBinding(pinned, binding.explicit, false),
+            inherited: null,
+            usesGlobalDefaults: false,
+          };
+        }
+        await this.clearThreadSessions(chatId, threadId);
       }
 
       const inherited = await this.findRecentRepoSessionProfile(chatId, threadId, binding.cwd);
@@ -2911,16 +3253,26 @@ export class LarkGateway {
     return this.defaultControls ? { ...binding, inheritedControls: this.defaultControls } : binding;
   }
 
+  /**
+   * @throws when listing persisted sessions fails.
+   */
   private async findRecentRepoSessionProfile(
     chatId: string,
     threadId: string | null,
     cwd: string,
   ): Promise<SessionRecord | null> {
     const sessions = await this.sessionStore.listByChat(chatId);
-    const resolvedCwd = path.resolve(cwd);
     for (const session of sessions) {
       if (session.threadId === threadId) continue;
-      if (path.resolve(session.cwd) !== resolvedCwd) continue;
+      try {
+        if (hasEffectiveCwdChanged(session.cwd, cwd)) continue;
+      } catch (err) {
+        this.logger.warn(
+          { err, chatId, threadId, sessionId: session.sessionId, sessionCwd: session.cwd, cwd },
+          "session repository identity comparison failed; skipping profile inheritance",
+        );
+        continue;
+      }
       if (!session.agentCommand) continue;
       return session;
     }
@@ -3090,6 +3442,7 @@ export class LarkGateway {
   /** Snapshot the current bindings. Used as the baseline the watcher diffs against. */
   private async snapshotBindings(): Promise<void> {
     this.bindingSnapshots.clear();
+    this.bindingScopeSnapshots.clear();
     const all = await this.bindingStore.list();
     for (const b of all) {
       this.bindingSnapshots.set(b.chatId, bindingSnapshotOf(b));
@@ -3134,11 +3487,26 @@ export class LarkGateway {
   }
 
   /**
-   * Re-read bindings and apply any adds/changes/removals. A changed or removed
-   * binding tears down that chat's live runtime so the next message respawns
-   * in the new cwd (or the reception area). Other chats + the WS are untouched.
+   * Re-read bindings and reset only the chat/topic scopes whose effective
+   * physical cwd changed. A source-only edit (including a symlink alias) keeps
+   * its existing runtime and ACP session intact.
    */
-  private async reloadBindings(): Promise<void> {
+  private reloadBindings(): Promise<void> {
+    const previous = this.reloadInFlight ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(() => this.reloadBindingsNow());
+    const tracked = current
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        if (this.reloadInFlight === tracked) this.reloadInFlight = null;
+      });
+    this.reloadInFlight = tracked;
+    return current;
+  }
+
+  private async reloadBindingsNow(): Promise<void> {
     // Skip transient corruption: if the store can tell us the settings file is
     // mid-write / unparseable, wait for the next event rather than mistaking a
     // half-written file for "all bindings removed" and tearing down every chat.
@@ -3166,36 +3534,129 @@ export class LarkGateway {
     for (const [chatId, before] of this.bindingSnapshots) {
       if (!next.has(chatId)) affected.push({ chatId, before });
     }
+    const plannedConfigurationVersions = new Map(this.scopeConfigurationVersions);
 
     if (affected.length === 0) return;
 
-    this.bindingSnapshots = next;
+    let firstFailure: unknown;
     for (const change of affected) {
       const { chatId } = change;
-      const hadRuntime = this.chats.has(chatId);
-      await this.teardownChat(chatId);
-      // The chat's persisted ACP sessions belonged to the *previous* binding
-      // (often the reception-area agent). A new binding means a different cwd
-      // and possibly a different agent binary, so resuming those sessions
-      // would fail. Drop them: the next message starts a fresh session in the
-      // newly-bound repo.
-      await this.clearChatSessions(chatId).catch((err) =>
-        this.logger.warn({ err, chatId }, "failed to clear sessions on rebind"),
-      );
-      this.logger.info(
-        { chatId, rebound: next.has(chatId), hadRuntime },
-        "binding changed — chat runtime reset",
-      );
-      if (change.after) {
-        await this.presenter
-          .sendNoticeCard(chatId, buildRepoBoundNotice(change.before ?? null, change.after))
-          .catch((err) => this.logger.warn({ err, chatId }, "repo bind notice failed"));
+      try {
+        const threadIds = await this.bindingReloadTargets(chatId, change.before, change.after);
+        const before = this.effectiveCwdsForThreads(chatId, change.before ?? null, threadIds);
+        let staleTarget = false;
+        const resetSessions = await this.resetChangedBindingThreads(
+          chatId,
+          threadIds,
+          before,
+          change.after ?? null,
+          undefined,
+          plannedConfigurationVersions,
+          async (threadId, generation, configurationVersion) => {
+            const current = await this.isReloadResetCurrent(
+              chatId,
+              threadId,
+              change.before,
+              change.after,
+              generation,
+              configurationVersion,
+            );
+            if (!current) staleTarget = true;
+            return current;
+          },
+        );
+        if (staleTarget) {
+          this.logger.info({ chatId }, "stale binding reload target skipped");
+          continue;
+        }
+        this.updateBindingSnapshot(chatId, change.after ?? null);
+        this.logger.info(
+          { chatId, rebound: next.has(chatId), resetSessions },
+          "binding changed — affected scopes reset",
+        );
+        if (change.after) {
+          await this.presenter
+            .sendNoticeCard(
+              chatId,
+              buildRepoBoundNotice(change.before ?? null, change.after, resetSessions),
+            )
+            .catch((err) => this.logger.warn({ err, chatId }, "repo bind notice failed"));
+        }
+      } catch (err) {
+        firstFailure ??= err;
+        this.logger.warn({ err, chatId }, "binding hot-reload reset deferred for retry");
       }
+    }
+    if (firstFailure !== undefined) throw firstFailure;
+  }
+
+  /**
+   * @throws when the binding store cannot read the current binding.
+   */
+  private async isReloadResetCurrent(
+    chatId: string,
+    threadId: string | null,
+    expectedBefore: BindingSnapshot | undefined,
+    expectedAfter: BindingSnapshot | undefined,
+    generation: number,
+    configurationVersion: number,
+  ): Promise<boolean> {
+    const key = runtimeKey(chatId, threadId);
+    if ((this.bindingResetGenerations.get(key) ?? 0) !== generation) return false;
+    if ((this.scopeConfigurationVersions.get(key) ?? 0) !== configurationVersion) return false;
+
+    const currentStored = await this.bindingStore.get(chatId);
+    const currentSnapshot = this.bindingSnapshots.get(chatId);
+    const beforeCwd =
+      effectiveRepositoryCwd(expectedBefore ?? null, threadId, this.defaultCwd, this.unboundCwd) ??
+      null;
+    const afterCwd =
+      effectiveRepositoryCwd(expectedAfter ?? null, threadId, this.defaultCwd, this.unboundCwd) ??
+      null;
+    const snapshotCwd =
+      effectiveRepositoryCwd(currentSnapshot ?? null, threadId, this.defaultCwd, this.unboundCwd) ??
+      null;
+    const storedCwd =
+      effectiveRepositoryCwd(currentStored, threadId, this.defaultCwd, this.unboundCwd) ?? null;
+
+    try {
+      const snapshotMatchesPlan =
+        !hasEffectiveCwdChanged(snapshotCwd, beforeCwd) ||
+        !hasEffectiveCwdChanged(snapshotCwd, afterCwd);
+      return snapshotMatchesPlan && !hasEffectiveCwdChanged(storedCwd, afterCwd);
+    } catch (err) {
+      this.logger.warn(
+        { err, chatId, threadId, beforeCwd, afterCwd, snapshotCwd, storedCwd },
+        "repository identity comparison failed; skipping stale reload target",
+      );
+      return false;
     }
   }
 
+  /**
+   * Collect every scope that can have observed the previous binding: main,
+   * active runtimes, persisted sessions, and topic keys in either snapshot.
+   */
+  private async bindingReloadTargets(
+    chatId: string,
+    before: BindingSnapshot | undefined,
+    after: BindingSnapshot | undefined,
+  ): Promise<readonly (string | null)[]> {
+    const topicIds = new Set<string>();
+    for (const runtime of this.chats.values()) {
+      if (runtime.chatId === chatId && runtime.threadId !== null) topicIds.add(runtime.threadId);
+    }
+    const sessions = await this.sessionStore.listByChat(chatId);
+    for (const session of sessions) {
+      if (session.threadId !== null) topicIds.add(session.threadId);
+    }
+    for (const topicId of Object.keys(before?.topics ?? {})) topicIds.add(topicId);
+    for (const topicId of Object.keys(after?.topics ?? {})) topicIds.add(topicId);
+    return [null, ...topicIds];
+  }
+
   private handleCardAction(event: Lark.CardActionEvent): void {
-    if (this.lifecycleState.kind !== "running") {
+    if (!this.acceptsIngress()) {
       this.logger.info("card action ignored while gateway is quiescing");
       return;
     }
@@ -3279,7 +3740,7 @@ export class LarkGateway {
     const runtime = this.chats.get(key);
     if (!runtime) return;
     await runtime.shutdown("cancelled");
-    this.chats.delete(key);
+    if (this.chats.get(key) === runtime) this.chats.delete(key);
   }
 
   /**
@@ -3293,7 +3754,7 @@ export class LarkGateway {
     for (const [key, runtime] of this.chats) {
       if (runtime.chatId !== chatId) continue;
       await runtime.shutdown("cancelled");
-      this.chats.delete(key);
+      if (this.chats.get(key) === runtime) this.chats.delete(key);
     }
   }
 
@@ -3303,7 +3764,10 @@ export class LarkGateway {
    */
   private async clearChatSessions(chatId: string): Promise<void> {
     const sessions = await this.sessionStore.listByChat(chatId);
-    await Promise.all(sessions.map((s) => this.sessionStore.delete(chatId, s.sessionId)));
+    const results = await Promise.allSettled(
+      sessions.map((session) => this.sessionStore.delete(chatId, session.sessionId)),
+    );
+    rethrowFirstRejection(results);
   }
 
   /**
@@ -3312,7 +3776,10 @@ export class LarkGateway {
    */
   private async clearThreadSessions(chatId: string, threadId: string | null): Promise<void> {
     const sessions = await this.sessionStore.listByThread(chatId, threadId);
-    await Promise.all(sessions.map((s) => this.sessionStore.delete(chatId, s.sessionId)));
+    const results = await Promise.allSettled(
+      sessions.map((session) => this.sessionStore.delete(chatId, session.sessionId)),
+    );
+    rethrowFirstRejection(results);
   }
 
   private async evictIdle(): Promise<void> {
@@ -3362,6 +3829,43 @@ export class LarkGateway {
       ),
     );
   }
+}
+
+/** Validate direct control calls before they can mutate binding or session state. */
+function validateConfigureSessionInput(input: ConfigureSessionInput): string | null {
+  if (input.targetAgent !== undefined && !isPendingTargetAgent(input.targetAgent)) {
+    return "target Agent is invalid";
+  }
+  if (input.controls !== undefined && !isSessionControlPatch(input.controls)) {
+    return "session controls are invalid";
+  }
+  if (input.message !== undefined && !isPendingSessionMessage(input.message)) {
+    return "message is invalid";
+  }
+  if (input.bindingCwd === undefined) return null;
+  if (!repositoryCwdSchema.safeParse(input.bindingCwd).success) {
+    return "binding cwd must be a non-empty string";
+  }
+  if (input.targetAgent === undefined || input.bindingCwd !== input.targetAgent.cwd) {
+    return "binding cwd must match the target Agent cwd";
+  }
+  return null;
+}
+
+function validatePendingConfigurationBinding(
+  configuration: PendingSessionConfiguration,
+): string | null {
+  if (configuration.bindingCwd === undefined) return null;
+  if (!repositoryCwdSchema.safeParse(configuration.bindingCwd).success) {
+    return "binding cwd must be a non-empty string";
+  }
+  if (
+    configuration.targetAgent === undefined ||
+    configuration.targetAgent.cwd !== configuration.bindingCwd
+  ) {
+    return "binding cwd must match the target Agent cwd";
+  }
+  return null;
 }
 
 function pendingTargetAgentToSessionRecord(
@@ -3990,6 +4494,7 @@ function sessionRecordToEffectiveBinding(
     label: record.agentLabel ?? record.agentCommand,
     profileSelected: true,
     explicit,
+    source: record.threadId === null ? "chat" : "topic",
     reception: false,
     ...(includeControls && record.controls ? { inheritedControls: record.controls } : {}),
   };
@@ -4236,39 +4741,106 @@ function displayControlPatch(controls: SessionControlPatch | undefined): string 
   return parts.length > 0 ? parts.join(" · ") : "—";
 }
 
-function bindingSnapshotOf(binding: ChatBinding): BindingSnapshot {
-  return { cwd: binding.cwd };
+function bindingScopeForCommand(
+  commandScope: BindingCommandScope,
+  threadId: string | null,
+): RepositoryScope {
+  if (commandScope === "chat" || threadId === null) return { kind: "chat" };
+  return { kind: "topic", threadId };
+}
+
+function hasBindingAtScope(binding: ChatBinding | null, scope: RepositoryScope): boolean {
+  if (!binding) return false;
+  if (scope.kind === "chat") return binding.cwd !== undefined;
+  return binding.topics?.[scope.threadId] !== undefined;
+}
+
+/**
+ * Compare effective repository directories by their canonical filesystem
+ * identity, not their user-supplied spelling. Missing paths have no physical
+ * identity, so their resolved lexical paths remain distinct.
+ *
+ * @throws {RepositoryPathIdentityError} when an existing path cannot be
+ * canonicalized.
+ */
+function hasEffectiveCwdChanged(before: string | null | undefined, after: string | null): boolean {
+  if (before === after) return false;
+  if (before === null || before === undefined || after === null) return true;
+  return repositoryPathIdentity(before) !== repositoryPathIdentity(after);
+}
+
+/**
+ * Resolve a repository path to its filesystem identity when it exists.
+ *
+ * @throws {RepositoryPathIdentityError} when an existing path cannot be
+ * canonicalized.
+ */
+function repositoryPathIdentity(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  try {
+    return fs.realpathSync(resolved);
+  } catch (err) {
+    if (
+      isNodeErrno(err) &&
+      err.code !== undefined &&
+      PATH_IDENTITY_MISSING_ERROR_CODES.has(err.code)
+    ) {
+      return resolved;
+    }
+    throw new RepositoryPathIdentityError(`无法规范化仓库路径：${resolved}`, { cause: err });
+  }
+}
+
+function bindingSnapshotOf(binding: Pick<ChatBinding, "cwd" | "topics">): BindingSnapshot {
+  return {
+    ...(binding.cwd === undefined ? {} : { cwd: binding.cwd }),
+    ...(binding.topics === undefined ? {} : { topics: binding.topics }),
+  };
 }
 
 function sameBindingSnapshot(
   before: BindingSnapshot | undefined,
   after: BindingSnapshot | undefined,
 ): boolean {
-  return before?.cwd === after?.cwd;
+  return isDeepStrictEqual(before, after);
 }
 
 function buildRepoBoundNotice(
   before: BindingSnapshot | ChatBinding | null | undefined,
   after: BindingSnapshot | ChatBinding,
+  resetSessions = true,
 ): NoticeCardSpec {
   const beforeCwd = before?.cwd ?? "未绑定";
+  const afterCwd = after.cwd ?? "未绑定";
   const changedRepo = before?.cwd !== after.cwd;
+  const continuation = resetSessions
+    ? "下条消息将在该目录启动 Agent；会话配置会从最近的 session 继承，否则使用全局默认配置。"
+    : "绑定已更新，后续消息会继续使用当前 Agent。";
   const lines = [
     "本会话已绑定到 repo。",
     "",
     "**修改明细**",
-    `• Repo：${beforeCwd} → ${after.cwd}`,
+    `• Repo：${beforeCwd} → ${afterCwd}`,
     `• 变更项：${changedRepo ? "repo" : "无实际变化"}`,
     "",
     "**绑定后**",
-    `• Repo：${after.cwd}`,
+    `• Repo：${afterCwd}`,
     "",
-    "下条消息将在该目录启动 Agent；会话配置会从最近的 session 继承，否则使用全局默认配置。",
+    continuation,
   ];
   return {
     title: "✅ 已绑定 repo",
     body: lines.join("\n"),
     template: "green",
+  };
+}
+
+function buildRepoUnboundNotice(resetSessions: boolean): NoticeCardSpec {
+  if (resetSessions) return COMMAND_NOTICES.unbind;
+  return {
+    title: "⛔ 已解绑",
+    body: "当前目标范围的显式 repo binding 已解除。绑定已更新，后续消息会继续使用当前 Agent。",
+    template: "grey",
   };
 }
 

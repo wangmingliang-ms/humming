@@ -23,6 +23,7 @@ import {
   type ResolvedAgentInvocation,
 } from "../src/index.js";
 import type * as Lark from "@larksuiteoapi/node-sdk";
+import { slashCommandController } from "../src/interpreter/commands.js";
 
 const probeAgentSessionCapabilitiesMock = vi.fn(async (_opts?: unknown) => ({
   sessionId: "probe_session",
@@ -96,7 +97,7 @@ interface ReceptionBinding {
   };
 }
 interface GatewayInternals {
-  resolveBinding(chatId: string): Promise<ReceptionBinding | null>;
+  resolveBinding(chatId: string, threadId: string | null): Promise<ReceptionBinding | null>;
   reloadBindings(): Promise<void>;
   snapshotBindings(): Promise<void>;
   acquireRuntime(
@@ -184,6 +185,7 @@ let root: string;
 let home: string;
 let settingsPath: string;
 let repoA: string;
+let reception: string;
 let presenter: RecordingPresenter;
 let bindingStore: SettingsBindingStore;
 let sessionStore: FileSessionStore;
@@ -215,8 +217,10 @@ beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "humming-recv-"));
   home = path.join(root, "home");
   repoA = path.join(root, "repo-a");
+  reception = path.join(root, "reception");
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(repoA, { recursive: true });
+  fs.mkdirSync(reception, { recursive: true });
   settingsPath = path.join(home, "settings.json");
 
   presenter = new RecordingPresenter();
@@ -270,28 +274,59 @@ describe("reception area", () => {
   it("routes an unbound chat to the reception cwd with the default agent", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    const eff = await b.resolveBinding("oc_new");
+    const eff = await b.resolveBinding("oc_new", null);
     expect(eff).toMatchObject({ cwd: home, label: "claude", explicit: false, reception: true });
   });
 
   it("returns null (no reception) when unboundCwd is disabled", async () => {
     gateway = makeGateway({ unboundCwd: null });
     const b = asInternals(gateway);
-    expect(await b.resolveBinding("oc_new")).toBeNull();
+    expect(await b.resolveBinding("oc_new", null)).toBeNull();
+  });
+
+  it("does not persist an unavailable reception fallback for a deleted binding", async () => {
+    gateway = makeGateway({ unboundCwd: reception });
+    const b = asInternals(gateway);
+    await bindingStore.set("oc_deleted", { kind: "chat" }, repoA);
+    const set = vi.spyOn(bindingStore, "set");
+    fs.rmSync(repoA, { recursive: true, force: true });
+    fs.rmSync(reception, { recursive: true, force: true });
+
+    await expect(b.resolveBinding("oc_deleted", null)).resolves.toBeNull();
+    await expect(b.resolveBinding("oc_deleted", null)).resolves.toBeNull();
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it("shows a parser-accepted bind example when reception is disabled", async () => {
+    gateway = makeGateway({ unboundCwd: null });
+    const b = asInternals(gateway);
+    const example = "/bind ~/workspace/humming";
+
+    await b.routeMessage(
+      textEvent("please help", "oc_unbound", null, "om_unbound"),
+      "ou_user",
+      "om_unbound",
+      "oc_unbound",
+      null,
+    );
+
+    expect(slashCommandController.resolve(example)).not.toBeNull();
+    expect(presenter.notices.at(-1)?.body).toContain(example);
+    expect(presenter.notices.at(-1)?.body).not.toContain("[agent]");
   });
 
   it("prefers a real repo binding over the reception area and uses the default agent", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_bound", cwd: repoA, createdAt: 1, updatedAt: 1 });
-    const eff = await b.resolveBinding("oc_bound");
+    await bindingStore.set("oc_bound", { kind: "chat" }, repoA);
+    const eff = await b.resolveBinding("oc_bound", null);
     expect(eff).toMatchObject({ cwd: repoA, label: "claude", explicit: true, reception: false });
   });
 
   it("new topic runtime inherits Agent + controls from the latest session in the same repo", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_bound", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_bound", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_bound",
       threadId: "th_old",
@@ -305,7 +340,7 @@ describe("reception area", () => {
       updatedAt: 10,
     });
 
-    const eff = await b.resolveBinding("oc_bound");
+    const eff = await b.resolveBinding("oc_bound", "th_new");
     const runtime = await b.acquireRuntime("oc_bound", "th_new", eff!);
 
     const opts = (
@@ -323,10 +358,10 @@ describe("reception area", () => {
   it("warns once and automatically rebinds to the reception area when the bound repo was deleted", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_deleted", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_deleted", { kind: "chat" }, repoA);
     fs.rmSync(repoA, { recursive: true, force: true });
 
-    const eff = await b.resolveBinding("oc_deleted");
+    const eff = await b.resolveBinding("oc_deleted", null);
 
     expect(eff).toMatchObject({
       cwd: home,
@@ -342,7 +377,7 @@ describe("reception area", () => {
     });
     expect(await bindingStore.get("oc_deleted")).toMatchObject({ cwd: home });
 
-    const next = await b.resolveBinding("oc_deleted");
+    const next = await b.resolveBinding("oc_deleted", null);
     expect(next).toMatchObject({ cwd: home, label: "claude", explicit: true, reception: false });
     expect(next?.fallbackFrom).toBeUndefined();
   });
@@ -350,10 +385,10 @@ describe("reception area", () => {
   it("sends an error notice and continues in the reception area for a deleted repo", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_deleted", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_deleted", { kind: "chat" }, repoA);
     fs.rmSync(repoA, { recursive: true, force: true });
 
-    const eff = await b.resolveBinding("oc_deleted");
+    const eff = await b.resolveBinding("oc_deleted", null);
     await b.notifyUnavailableBindingFallback("om_deleted", eff!.fallbackFrom!);
     await b.acquireRuntime("oc_deleted", null, eff!);
 
@@ -369,7 +404,7 @@ describe("reception area", () => {
     expect(fs.readFileSync(path.join(home, "AGENTS.md"), "utf-8")).toContain("oc_deleted");
 
     const count = presenter.notices.length;
-    const next = await b.resolveBinding("oc_deleted");
+    const next = await b.resolveBinding("oc_deleted", null);
     if (next?.fallbackFrom)
       await b.notifyUnavailableBindingFallback("om_deleted_2", next.fallbackFrom);
     expect(presenter.notices.length).toBe(count);
@@ -378,7 +413,7 @@ describe("reception area", () => {
   it("drops AGENTS.md + CLAUDE.md bind instructions into the reception cwd", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    const eff = await b.resolveBinding("oc_new");
+    const eff = await b.resolveBinding("oc_new", null);
     await b.acquireRuntime("oc_new", null, eff!);
     const agents = fs.readFileSync(path.join(home, "AGENTS.md"), "utf-8");
     const claude = fs.readFileSync(path.join(home, "CLAUDE.md"), "utf-8");
@@ -422,7 +457,7 @@ describe("hot-reload of bindings", () => {
     await b.snapshotBindings();
 
     // A reception runtime exists for the unbound chat.
-    const recv = await b.resolveBinding("oc_x");
+    const recv = await b.resolveBinding("oc_x", null);
     await b.acquireRuntime("oc_x", null, recv!);
     expect(b.activeChatCount).toBe(1);
 
@@ -434,7 +469,7 @@ describe("hot-reload of bindings", () => {
 
     // The stale reception runtime is gone; next message will respawn in repoA.
     expect(b.activeChatCount).toBe(0);
-    const eff = await b.resolveBinding("oc_x");
+    const eff = await b.resolveBinding("oc_x", null);
     expect(eff).toMatchObject({ cwd: repoA, label: "claude", explicit: true });
     const notice = presenter.notices.find((n) => n.title === "✅ 已绑定 repo");
     expect(notice?.body).toContain("修改明细");
@@ -445,9 +480,9 @@ describe("hot-reload of bindings", () => {
   it("no-ops when the settings file is unchanged", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_y", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_y", { kind: "chat" }, repoA);
     await b.snapshotBindings();
-    const recv = await b.resolveBinding("oc_y");
+    const recv = await b.resolveBinding("oc_y", null);
     await b.acquireRuntime("oc_y", null, recv!);
     expect(b.activeChatCount).toBe(1);
 
@@ -455,21 +490,31 @@ describe("hot-reload of bindings", () => {
     expect(b.activeChatCount).toBe(1); // runtime survives
   });
 
-  it("tolerates a half-written settings.json (keeps last-good state)", async () => {
+  it("keeps the last-known-good binding through malformed settings and applies recovery diff", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_z", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_z", { kind: "chat" }, repoA);
     await b.snapshotBindings();
-    await b.acquireRuntime("oc_z", null, (await b.resolveBinding("oc_z"))!);
+    await b.acquireRuntime("oc_z", null, (await b.resolveBinding("oc_z", null))!);
     expect(b.activeChatCount).toBe(1);
 
-    fs.writeFileSync(settingsPath, "{ half writ"); // corrupt mid-write
+    fs.writeFileSync(settingsPath, "{ half writ");
     await b.reloadBindings();
 
-    // A transient corrupt read must NOT be mistaken for "all bindings removed":
-    // the live runtime survives and the binding is still resolvable once the
-    // file is (conceptually) rewritten. The reload simply deferred.
     expect(b.activeChatCount).toBe(1);
+    expect(await b.resolveBinding("oc_z", null)).toMatchObject({ cwd: repoA, explicit: true });
+
+    fs.writeFileSync(settingsPath, JSON.stringify({ bindings: { oc_z: { cwd: "" } } }));
+    await b.reloadBindings();
+
+    expect(b.activeChatCount).toBe(1);
+    expect(await b.resolveBinding("oc_z", null)).toMatchObject({ cwd: repoA, explicit: true });
+
+    fs.writeFileSync(settingsPath, JSON.stringify({ bindings: { oc_z: { cwd: home } } }));
+    await b.reloadBindings();
+
+    expect(b.activeChatCount).toBe(0);
+    expect(await b.resolveBinding("oc_z", null)).toMatchObject({ cwd: home, explicit: true });
   });
 });
 
@@ -527,7 +572,7 @@ describe("compact slash session profile commands", () => {
   it("lists available Models via bare /model by probing the effective Agent", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
 
     await b.routeMessage(
       textEvent("/model", "oc_x", "th_topic", "om_model_list"),
@@ -550,7 +595,7 @@ describe("compact slash session profile commands", () => {
   it("lists available Modes via bare /mode by probing the effective Agent", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
 
     await b.routeMessage(
       textEvent("/mode", "oc_x", "th_topic", "om_mode_list"),
@@ -590,7 +635,7 @@ describe("compact slash session profile commands", () => {
   it("lists full capabilities for the current effective Agent via /capabilities", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
 
     await b.routeMessage(
       textEvent("/capabilities", "oc_x", "th_topic", "om_caps"),
@@ -620,7 +665,7 @@ describe("compact slash session profile commands", () => {
   it("probes another Agent capabilities via /capabilities <agent> without switching", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -693,7 +738,7 @@ describe("compact slash session profile commands", () => {
   it("stores a caller-supplied /model without probing capabilities", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -727,7 +772,7 @@ describe("compact slash session profile commands", () => {
   it("trusts caller-supplied controls through configureSession", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -828,7 +873,7 @@ describe("compact slash session profile commands", () => {
   it("warns before switching Agent via /agent when the topic already has a session", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -871,7 +916,7 @@ describe("compact slash session profile commands", () => {
   it("switches Agent after the user confirms the context-loss warning", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -923,7 +968,7 @@ describe("compact slash session profile commands", () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
     probeAgentSessionCapabilitiesMock.mockRejectedValueOnce(new Error("Authentication required"));
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -967,7 +1012,7 @@ describe("session bind conflicts", () => {
   it("switches the current topic Agent by replacing the old session with a profile-only boundary", async () => {
     gateway = makeGateway({ unboundCwd: home });
     const b = asInternals(gateway);
-    await bindingStore.set({ chatId: "oc_x", cwd: repoA, createdAt: 1, updatedAt: 1 });
+    await bindingStore.set("oc_x", { kind: "chat" }, repoA);
     await sessionStore.save({
       chatId: "oc_x",
       threadId: "th_topic",
@@ -1034,7 +1079,7 @@ describe("session bind conflicts", () => {
       },
     });
 
-    const eff = await b.resolveBinding("oc_x");
+    const eff = await b.resolveBinding("oc_x", "th_topic");
     const runtime = await b.acquireRuntime("oc_x", "th_topic", eff!);
     const opts = (
       runtime as {

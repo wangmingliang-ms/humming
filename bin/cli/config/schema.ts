@@ -4,6 +4,7 @@
  * JSON validators — every external shape is parsed through one of these.
  */
 import { z } from "zod";
+import { storedBindingSchema } from "../../../src/binding-store/binding-schema.js";
 import { permissionModeSchema, sessionControlsSchema } from "../../../src/index.js";
 import type { SessionCapabilitiesSnapshot, SessionConfigControlValue } from "../../../src/index.js";
 
@@ -15,10 +16,6 @@ const userPresetPatchSchema = z.object({
   args: z.array(z.string()).optional(),
   description: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
-});
-
-const storedBindingSchema = z.object({
-  cwd: z.string().min(1),
 });
 
 const fileCredentialsSchema = z.object({

@@ -47,8 +47,8 @@ Config 控制、流式互动卡片、中断与会话恢复；Agent、代码、�
      │  WebSocket 事件 + 互动卡片
      ▼
 Humming Gateway
-     ├── chat → 本地 repo binding
-     ├── topic → Agent Session + Session Profile
+     ├── chat → 本地 repo 默认 binding
+     ├── topic → repo override + Agent Session + Session Profile
      ├── 权限与卡片生命周期
      └── ~/.humming 下的持久化状态
      │  ACP
@@ -59,8 +59,8 @@ Claude Code / Codex / Copilot / Gemini / OpenCode / 自定义 Agent
 本地仓库与工具
 ```
 
-**Gateway** 是一个长期运行的本地进程。一个 chat 持有 repo binding，每个 chat topic 则持有独立的
-**Topic Session** 和 **Session Profile**：
+**Gateway** 是一个长期运行的本地进程。一个 chat 持有 repo 的默认 binding；topic 可选择覆盖它，且每个
+chat topic 持有独立的 **Topic Session** 和 **Session Profile**：
 
 ```text
 Session Profile = Agent + Model + Mode + Permission + Config
@@ -143,8 +143,9 @@ humming logs -f
 /bind /absolute/path/to/repository
 ```
 
-随后创建一个 topic 并描述任务。chat 会保留 repo binding，每个 topic 则拥有自己的 session 和
-profile。
+在 chat 主会话执行 `/bind <path>` 会设置 chat 默认 repo；在 topic 执行则只设置当前 topic 的 repo
+override。要从 topic 修改 chat 默认 repo，请用 `/bind --chat <path>`。chat 默认与 topic override 都只
+保存 repo；每个 topic 仍拥有自己的 session 和 profile。
 
 未绑定的 chat 默认进入以 Humming home 为根目录的接待区。可以用 `runtime.unboundCwd` 指向其他
 目录；设为空字符串则会要求先执行 `/bind`。
@@ -182,20 +183,23 @@ Config 与附带任务可以作为一次 profile handoff 原子应用：只有�
 普通消息会交给当前 Agent。需要确定性快捷操作时，也可以使用下面这些由 Humming 直接处理的 slash
 command。
 
-| 命令                                 | 用途                                                |
-| ------------------------------------ | --------------------------------------------------- |
-| `/help`                              | 查看全部 Humming chat command                       |
-| `/capabilities`                      | 查看当前 Agent 的 Model、Mode、Config 和 Permission |
-| `/capabilities <agent>`              | 只 probe 另一个 Agent，不切换                       |
-| `/agent` / `/agent <agent>`          | 查看 Agent 或切换当前 topic 的 Agent                |
-| `/model` / `/model <id>`             | 查看或选择 Model；`/model auto` 清除显式覆盖        |
-| `/mode` / `/mode <id>`               | 查看或选择 ACP Mode                                 |
-| `/permission` / `/permission <mode>` | 查看或设置权限策略                                  |
-| `/profile`                           | 查看当前 topic profile                              |
-| `/bind <path>`                       | 把当前 chat 绑定到本地 repo                         |
-| `/where` / `/unbind`                 | 查看或解除 repo binding                             |
-| `/new`                               | 重置当前 topic 的 Agent Session                     |
-| `/cancel`                            | 中断当前任务                                        |
+| 命令                                 | 用途                                                             |
+| ------------------------------------ | ---------------------------------------------------------------- |
+| `/help`                              | 查看全部 Humming chat command                                    |
+| `/capabilities`                      | 查看当前 Agent 的 Model、Mode、Config 和 Permission              |
+| `/capabilities <agent>`              | 只 probe 另一个 Agent，不切换                                    |
+| `/agent` / `/agent <agent>`          | 查看 Agent 或切换当前 topic 的 Agent                             |
+| `/model` / `/model <id>`             | 查看或选择 Model；`/model auto` 清除显式覆盖                     |
+| `/mode` / `/mode <id>`               | 查看或选择 ACP Mode                                              |
+| `/permission` / `/permission <mode>` | 查看或设置权限策略                                               |
+| `/profile`                           | 查看当前 topic profile                                           |
+| `/bind <path>`                       | 在 topic 设当前 override；在 chat 主会话设 chat 默认 repo        |
+| `/bind --chat <path>`                | 从 topic 显式设置 chat 默认 repo                                 |
+| `/where`                             | 查看当前生效的 repo binding                                      |
+| `/unbind`                            | topic 中删当前 override 并继承默认；主会话删默认且保留 overrides |
+| `/unbind --chat`                     | 从 topic 删除 chat 默认 repo                                     |
+| `/new`                               | 只重置当前 topic 的 ACP session，保留 repo binding               |
+| `/cancel`                            | 中断当前任务                                                     |
 
 `/commands`、`/restart`、`/stop`、`/pwd`、`/unpin` 等别名也可使用。以 `/help` 显示的当前列表
 为准。
@@ -342,7 +346,7 @@ humming session list --agent claude --json
 humming session bind --agent claude --session-id <session-id>
 ```
 
-目标 session 必须属于当前 chat 所绑定的 repo，而且不能已被另一个 chat topic 占用。
+目标 session 必须属于当前 binding scope 的 effective cwd，而且不能已被另一个 topic 占用。
 
 ## 配置
 
@@ -397,13 +401,30 @@ humming session bind --agent claude --session-id <session-id>
   "bindings": {
     "oc_example_chat_id": {
       "cwd": "/absolute/path/to/repository",
+      "topics": {
+        "om_example_thread_id": {
+          "cwd": "/absolute/path/to/topic-repository",
+        },
+      },
     },
   },
 }
 ```
 
-`agents` 中的条目可以新增 preset，也可以只覆盖内置 preset 的部分字段。binding 只拥有 repo
-路径；Agent、Model、Mode、Permission 和 Config 属于 topic session。
+`agents` 中的条目可以新增 preset，也可以只覆盖内置 preset 的部分字段。`bindings.<chatId>.cwd`
+是 chat 默认 repo，`bindings.<chatId>.topics.<threadId>.cwd` 是 topic override；binding 只拥有 repo
+路径，Agent、Model、Mode、Permission 和 Config 属于 topic session。不要从历史
+`SessionRecord.cwd` 迁移 topic override。
+
+有效 repo cwd 优先级：
+
+```text
+显式 command cwd > topic override > chat default > runtime.cwd > reception / runtime.unboundCwd
+```
+
+`session configure --agent <agent> --cwd <path>` 会显式更新当前 binding scope 并切换 Agent；
+`--cwd` 只能与 `--agent` 一起用于 `session configure`。`session bind` 不接受 `--cwd`，只绑定当前
+scope 中已有的 Agent session。
 
 配置优先级：
 

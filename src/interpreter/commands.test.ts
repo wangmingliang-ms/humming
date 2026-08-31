@@ -24,9 +24,9 @@ function recordingContext(): {
       restart: () => record("restart"),
       help: () => record("help"),
       capabilities: (agent) => record(`capabilities:${agent ?? ""}`),
-      bind: (cwd, agent) => record(`bind:${cwd}:${agent ?? ""}`),
+      bind: (cwd, scope) => record(`bind:${scope}:${cwd}`),
       bindUsage: () => record("bind-usage"),
-      unbind: () => record("unbind"),
+      unbind: (scope) => record(`unbind:${scope}`),
       where: () => record("where"),
       setAgent: (agent) => record(`set-agent:${agent}`),
       listAgents: () => record("list-agents"),
@@ -66,9 +66,13 @@ describe("SlashCommandController", () => {
       ["/permission alwaysAllow", "set-permission:alwaysAllow"],
       ["/profile", "profile"],
       ["/bind", "bind-usage"],
-      ["/bind /repo claude", "bind:/repo:claude"],
+      ["/bind /repo", "bind:current:/repo"],
+      ["/bind --chat /repo", "bind:chat:/repo"],
       ["/where", "where"],
-      ["/unbind", "unbind"],
+      ["/unbind", "unbind:current"],
+      ["/unbind --chat", "unbind:chat"],
+      ["/unpin", "unbind:current"],
+      ["/unpin --chat", "unbind:chat"],
       ["/new", "new"],
       ["/restart", "restart"],
       ["/cancel", "cancel"],
@@ -80,6 +84,41 @@ describe("SlashCommandController", () => {
       const { context, calls } = recordingContext();
       if (invocation !== null) await slashCommandController.dispatch(invocation, context);
       expect(calls, input).toEqual([expected]);
+    }
+  });
+
+  it("parses scoped binding commands without treating a second business argument as an Agent", () => {
+    expect(slashCommandController.resolve("/bind /repo")).toMatchObject({
+      command: { kind: "bind", cwd: "/repo", scope: "current" },
+    });
+    expect(slashCommandController.resolve("/bind --chat /repo")).toMatchObject({
+      command: { kind: "bind", cwd: "/repo", scope: "chat" },
+    });
+    expect(slashCommandController.resolve("/unbind")).toMatchObject({
+      command: { kind: "unbind", scope: "current" },
+    });
+    expect(slashCommandController.resolve("/unbind --chat")).toMatchObject({
+      command: { kind: "unbind", scope: "chat" },
+    });
+    expect(slashCommandController.resolve("/unpin")).toMatchObject({
+      command: { kind: "unbind", scope: "current" },
+    });
+    expect(slashCommandController.resolve("/unpin --chat")).toMatchObject({
+      command: { kind: "unbind", scope: "chat" },
+    });
+
+    for (const input of [
+      "/bind /repo codex",
+      "/bind /repo --chat",
+      "/bind --chat --chat /repo",
+      "/bind --other /repo",
+      "/bind --other",
+      "/bind --chat --other",
+      "/unbind /repo",
+      "/unbind --chat extra",
+      "/unbind --other",
+    ]) {
+      expect(slashCommandController.resolve(input), input).toBeNull();
     }
   });
 

@@ -456,6 +456,7 @@ describe("FileSessionStore session controls", () => {
           agentLabel: "copilot",
           cwd: "/tmp",
         },
+        bindingCwd: "/tmp",
         controls: { modelId: "gpt-5.5" },
         message: { prompt: "continue with target", createdAt: 123 },
         createdAt: 123,
@@ -466,6 +467,7 @@ describe("FileSessionStore session controls", () => {
     expect(queued).toMatchObject({
       pendingConfiguration: {
         targetAgent: { agentLabel: "copilot" },
+        bindingCwd: "/tmp",
         controls: { modelId: "gpt-5.5" },
         message: { prompt: "continue with target", createdAt: 123 },
       },

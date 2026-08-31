@@ -77,12 +77,13 @@ export interface PendingSessionConfigurationInput {
   readonly targetAgent?: PendingTargetAgent;
   readonly controls?: SessionControlPatch;
   readonly message?: PendingSessionMessage;
+  readonly bindingCwd?: string;
 }
 
 /**
  * Merge a new `configure`/`send` request into an existing Pending
  * Configuration field-by-field, last-write-wins (spec §9.4): later scalars
- * (Agent, Message) and Config keys win, unmentioned fields are retained, and
+ * (Agent, Message, explicit binding cwd) and Config keys win, unmentioned fields are retained, and
  * omitting a field never clears it. Does not validate — the caller validates
  * the merged candidate against the resolved Desired Agent (spec §9.3, §9.6).
  */
@@ -90,7 +91,13 @@ export function mergePendingSessionConfiguration(
   existing: PendingSessionConfiguration | undefined,
   incoming: PendingSessionConfigurationInput,
 ): PendingSessionConfiguration {
-  const targetAgent = incoming.targetAgent ?? existing?.targetAgent;
+  const bindingCwd = incoming.bindingCwd ?? existing?.bindingCwd;
+  const targetAgent = alignedPendingTargetAgent(
+    incoming.targetAgent,
+    existing?.targetAgent,
+    bindingCwd,
+    incoming.bindingCwd,
+  );
   const controls = mergeSessionControlPatchesOrUndefined(existing?.controls, incoming.controls);
   const message = incoming.message ?? existing?.message;
   const now = Date.now();
@@ -98,10 +105,27 @@ export function mergePendingSessionConfiguration(
     ...(targetAgent ? { targetAgent } : {}),
     ...(controls ? { controls } : {}),
     ...(message ? { message } : {}),
+    ...(bindingCwd ? { bindingCwd } : {}),
     ...(existing?.noticeMessageId ? { noticeMessageId: existing.noticeMessageId } : {}),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
+}
+
+/**
+ * Preserve an already-explicit repository intent across a later Agent-only
+ * handoff. An incoming explicit binding is validated by the control boundary
+ * and therefore remains coupled to its supplied Agent cwd instead.
+ */
+function alignedPendingTargetAgent(
+  incoming: PendingTargetAgent | undefined,
+  existing: PendingTargetAgent | undefined,
+  effectiveBindingCwd: string | undefined,
+  incomingBindingCwd: string | undefined,
+): PendingTargetAgent | undefined {
+  if (incoming === undefined) return existing;
+  if (effectiveBindingCwd === undefined || incomingBindingCwd !== undefined) return incoming;
+  return { ...incoming, cwd: effectiveBindingCwd };
 }
 
 /**

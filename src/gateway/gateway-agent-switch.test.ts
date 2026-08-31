@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type * as acp from "@agentclientprotocol/sdk";
+import type { LifecycleTransaction } from "../../bin/lifecycle-coordinator.js";
 import { LarkGateway, type ResolvedAgentInvocation } from "./gateway.js";
 import { slashCommandController, type SlashCommandInvocation } from "../interpreter/commands.js";
 import type {
@@ -11,7 +12,7 @@ import type {
   ProbeAgentSessionCapabilitiesResult,
   SpawnAgentOptions,
 } from "../acp/agent-process.js";
-import type { BindingStore, ChatBinding } from "../binding-store/binding-store.js";
+import type { BindingStore, ChatBinding, RepositoryScope } from "../binding-store/binding-store.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type {
   AgentSwitchWarningCardSpec,
@@ -172,15 +173,28 @@ class MemorySessionStore implements SessionStore {
 }
 
 class MemoryBindingStore implements BindingStore {
-  constructor(private readonly binding: ChatBinding | null) {}
+  private binding: ChatBinding | null;
+
+  constructor(binding: ChatBinding | null) {
+    this.binding = binding;
+  }
 
   async init(): Promise<void> {}
   async close(): Promise<void> {}
   async get(_chatId: string): Promise<ChatBinding | null> {
     return this.binding;
   }
-  async set(_binding: ChatBinding): Promise<void> {}
-  async delete(_chatId: string): Promise<void> {}
+  async set(chatId: string, scope: RepositoryScope, cwd: string): Promise<void> {
+    const current = this.binding ?? { chatId, createdAt: 1, updatedAt: 1 };
+    this.binding =
+      scope.kind === "chat"
+        ? { ...current, cwd }
+        : {
+            ...current,
+            topics: { ...current.topics, [scope.threadId]: { cwd } },
+          };
+  }
+  async delete(_chatId: string, _scope: RepositoryScope): Promise<void> {}
   async list(): Promise<readonly ChatBinding[]> {
     return this.binding ? [this.binding] : [];
   }
@@ -246,6 +260,7 @@ function makeGateway(
     readonly settingsPath?: string;
     readonly globalDefaultControlChatIds?: readonly string[];
     readonly defaultControls?: SessionControls;
+    readonly bindingStore?: BindingStore;
   } = {},
 ): LarkGateway {
   return new LarkGateway({
@@ -256,12 +271,14 @@ function makeGateway(
       defaultCwd: "/tmp",
       ...(opts.defaultControls !== undefined ? { defaultControls: opts.defaultControls } : {}),
     },
-    bindingStore: new MemoryBindingStore({
-      chatId: "oc_A",
-      cwd: "/tmp",
-      createdAt: 1,
-      updatedAt: 1,
-    }),
+    bindingStore:
+      opts.bindingStore ??
+      new MemoryBindingStore({
+        chatId: "oc_A",
+        cwd: "/tmp",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
     sessionStore,
     presenter,
     logger,
@@ -271,6 +288,609 @@ function makeGateway(
       : {}),
   });
 }
+
+describe("LarkGateway control repository binding", () => {
+  beforeEach(() => {
+    spawnAgentMock.mockReset();
+    spawnAgentMock.mockResolvedValue(fakeAgentProcess("sess_codex"));
+  });
+
+  it("persists an explicit cwd handoff as a topic binding without clearing sibling scopes", async () => {
+    const bindingStore = new MemoryBindingStore({
+      chatId: "oc_A",
+      cwd: "/tmp",
+      topics: { omt_sibling: { cwd: "/sibling-repo" } },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const store = new MemorySessionStore([
+      existingClaudeSession(),
+      {
+        ...existingClaudeSession(),
+        threadId: "omt_sibling",
+        sessionId: "sess_sibling",
+        cwd: "/sibling-repo",
+      },
+    ]);
+    const gateway = makeGateway(
+      store,
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const testable = gateway as unknown as {
+      controlConfigureSession(
+        chatId: string,
+        threadId: string | null,
+        input: { readonly targetAgent: PendingTargetAgent; readonly bindingCwd: string },
+      ): Promise<unknown>;
+    };
+
+    await testable.controlConfigureSession("oc_A", "omt_1", {
+      targetAgent: {
+        sessionId: "profile:topic-cwd",
+        profileOnly: true,
+        agentCommand: "npx",
+        agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+        agentLabel: "codex",
+        cwd: "/topic-repo",
+      },
+      bindingCwd: "/topic-repo",
+    });
+
+    expect(await bindingStore.get("oc_A")).toMatchObject({
+      cwd: "/tmp",
+      topics: { omt_1: { cwd: "/topic-repo" }, omt_sibling: { cwd: "/sibling-repo" } },
+    });
+    expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+      agentLabel: "codex",
+      cwd: "/topic-repo",
+    });
+    expect(await store.getLatest("oc_A", "omt_sibling")).toMatchObject({
+      sessionId: "sess_sibling",
+      cwd: "/sibling-repo",
+    });
+  });
+
+  it("persists the binding before sending a handoff message", async () => {
+    const bindingStore = new MemoryBindingStore({
+      chatId: "oc_A",
+      cwd: "/tmp",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const gateway = makeGateway(
+      new MemorySessionStore(),
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const testable = gateway as unknown as {
+      controlConfigureSession(
+        chatId: string,
+        threadId: string | null,
+        input: {
+          readonly targetAgent: PendingTargetAgent;
+          readonly bindingCwd: string;
+          readonly message: PendingSessionMessage;
+        },
+      ): Promise<unknown>;
+    };
+    let bindingAtSpawn: ChatBinding | null = null;
+    spawnAgentMock.mockImplementation(async () => {
+      bindingAtSpawn = await bindingStore.get("oc_A");
+      const agent = fakeAgentProcess("sess_message");
+      agent.connection.prompt = vi.fn(() => new Promise<never>(() => {}));
+      return agent;
+    });
+
+    await testable.controlConfigureSession("oc_A", "omt_message", {
+      targetAgent: {
+        sessionId: "profile:message-cwd",
+        profileOnly: true,
+        agentCommand: "npx",
+        agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+        agentLabel: "codex",
+        cwd: "/message-repo",
+      },
+      bindingCwd: "/message-repo",
+      message: { prompt: "continue", createdAt: 1 },
+    });
+
+    await vi.waitFor(() => {
+      expect(bindingAtSpawn).toMatchObject({ topics: { omt_message: { cwd: "/message-repo" } } });
+    });
+  });
+
+  it("persists a main-scope handoff as the chat binding without clearing topic overrides", async () => {
+    const bindingStore = new MemoryBindingStore({
+      chatId: "oc_A",
+      cwd: "/tmp",
+      topics: { omt_topic: { cwd: "/topic-repo" } },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const store = new MemorySessionStore([
+      {
+        ...existingClaudeSession(),
+        threadId: null,
+        sessionId: "sess_main",
+      },
+      {
+        ...existingClaudeSession(),
+        threadId: "omt_topic",
+        sessionId: "sess_topic",
+        cwd: "/topic-repo",
+      },
+    ]);
+    const gateway = makeGateway(
+      store,
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const testable = gateway as unknown as {
+      controlConfigureSession(
+        chatId: string,
+        threadId: string | null,
+        input: { readonly targetAgent: PendingTargetAgent; readonly bindingCwd: string },
+      ): Promise<unknown>;
+    };
+
+    await testable.controlConfigureSession("oc_A", null, {
+      targetAgent: {
+        sessionId: "profile:main-cwd",
+        profileOnly: true,
+        agentCommand: "npx",
+        agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+        agentLabel: "codex",
+        cwd: "/main-repo",
+      },
+      bindingCwd: "/main-repo",
+    });
+
+    expect(await bindingStore.get("oc_A")).toMatchObject({
+      cwd: "/main-repo",
+      topics: { omt_topic: { cwd: "/topic-repo" } },
+    });
+    expect(await store.getLatest("oc_A", null)).toMatchObject({
+      agentLabel: "codex",
+      cwd: "/main-repo",
+    });
+    expect(await store.getLatest("oc_A", "omt_topic")).toMatchObject({
+      sessionId: "sess_topic",
+      cwd: "/topic-repo",
+    });
+  });
+
+  it("keeps a busy turn and its queued fields intact until binding applies at the turn boundary", async () => {
+    const bindingStore = new MemoryBindingStore({
+      chatId: "oc_A",
+      cwd: "/tmp",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const store = new MemorySessionStore([
+      {
+        ...existingClaudeSession(),
+        pendingConfiguration: {
+          controls: { modeId: "existing-mode", config: { retained: { value: "yes" } } },
+          message: { prompt: "existing message", createdAt: 1 },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+    ]);
+    const gateway = makeGateway(
+      store,
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const testable = gateway as unknown as {
+      controlConfigureSession(
+        chatId: string,
+        threadId: string | null,
+        input: {
+          readonly targetAgent: PendingTargetAgent;
+          readonly bindingCwd: string;
+          readonly controls: SessionControlPatch;
+          readonly message: PendingSessionMessage;
+        },
+        noticeMessageId?: string | null,
+      ): Promise<{ readonly queued?: true }>;
+      handleRuntimeTurnComplete(
+        chatId: string,
+        threadId: string | null,
+        messageId: string,
+      ): Promise<void>;
+    };
+    const oldTurn = {
+      processing: true,
+      lastMessageId: "om_active",
+      shutdown: vi.fn(async () => {}),
+    };
+    (gateway as unknown as { chats: Map<string, typeof oldTurn> }).chats.set(
+      "oc_A\u0000omt_1",
+      oldTurn,
+    );
+    let bindingAtTargetSpawn: ChatBinding | null = null;
+    spawnAgentMock.mockImplementation(async () => {
+      bindingAtTargetSpawn = await bindingStore.get("oc_A");
+      const agent = fakeAgentProcess("sess_new");
+      agent.connection.prompt = vi.fn(() => new Promise<never>(() => {}));
+      return agent;
+    });
+
+    const result = await testable.controlConfigureSession("oc_A", "omt_1", {
+      targetAgent: {
+        sessionId: "profile:deferred-binding",
+        profileOnly: true,
+        agentCommand: "npx",
+        agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+        agentLabel: "codex",
+        cwd: "/topic-repo",
+      },
+      bindingCwd: "/topic-repo",
+      controls: { modelId: "new-model" },
+      message: { prompt: "new message", createdAt: 2 },
+    });
+
+    expect(result).toMatchObject({ queued: true });
+    expect(oldTurn.shutdown).not.toHaveBeenCalled();
+    expect(await bindingStore.get("oc_A")).toMatchObject({ cwd: "/tmp" });
+    expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+      agentLabel: "claude",
+      pendingConfiguration: {
+        targetAgent: { agentLabel: "codex" },
+        bindingCwd: "/topic-repo",
+        controls: {
+          modeId: "existing-mode",
+          modelId: "new-model",
+          config: { retained: { value: "yes" } },
+        },
+        message: { prompt: "new message" },
+      },
+    });
+
+    oldTurn.processing = false;
+    await testable.handleRuntimeTurnComplete("oc_A", "omt_1", "om_active");
+
+    await vi.waitFor(async () => {
+      expect(bindingAtTargetSpawn).toMatchObject({
+        topics: { omt_1: { cwd: "/topic-repo" } },
+      });
+      expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+        agentLabel: "codex",
+        cwd: "/topic-repo",
+      });
+    });
+    expect(oldTurn.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("aligns a later busy Agent handoff with the earlier pending binding cwd", async () => {
+    const bindingStore = new MemoryBindingStore({
+      chatId: "oc_A",
+      cwd: "/tmp",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const store = new MemorySessionStore([existingClaudeSession()]);
+    const gateway = makeGateway(
+      store,
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const testable = gateway as unknown as {
+      controlConfigureSession(
+        chatId: string,
+        threadId: string | null,
+        input: {
+          readonly targetAgent?: PendingTargetAgent;
+          readonly bindingCwd?: string;
+          readonly controls?: SessionControlPatch;
+        },
+      ): Promise<{ readonly queued?: true }>;
+      handleRuntimeTurnComplete(
+        chatId: string,
+        threadId: string | null,
+        messageId: string,
+      ): Promise<void>;
+    };
+    const oldTurn = {
+      processing: true,
+      lastMessageId: "om_active",
+      shutdown: vi.fn(async () => {}),
+    };
+    (gateway as unknown as { chats: Map<string, typeof oldTurn> }).chats.set(
+      "oc_A\u0000omt_1",
+      oldTurn,
+    );
+    spawnAgentMock.mockImplementation(async () => {
+      const agent = fakeAgentProcess("sess_b");
+      agent.connection.prompt = vi.fn(() => new Promise<never>(() => {}));
+      return agent;
+    });
+
+    await testable.controlConfigureSession("oc_A", "omt_1", {
+      targetAgent: {
+        sessionId: "profile:a",
+        profileOnly: true,
+        agentCommand: "npx",
+        agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+        agentLabel: "agent-a",
+        cwd: "/repo-a",
+      },
+      bindingCwd: "/repo-a",
+    });
+    await testable.controlConfigureSession("oc_A", "omt_1", {
+      targetAgent: {
+        sessionId: "profile:b",
+        profileOnly: true,
+        agentCommand: "npx",
+        agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+        agentLabel: "agent-b",
+        cwd: "/tmp",
+      },
+    });
+    await testable.controlConfigureSession("oc_A", "omt_1", {
+      controls: { modeId: "agent" },
+    });
+
+    expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+      pendingConfiguration: {
+        targetAgent: { agentLabel: "agent-b", cwd: "/repo-a" },
+        bindingCwd: "/repo-a",
+        controls: { modeId: "agent" },
+      },
+    });
+
+    oldTurn.processing = false;
+    await testable.handleRuntimeTurnComplete("oc_A", "omt_1", "om_active");
+
+    await vi.waitFor(async () => {
+      expect(await bindingStore.get("oc_A")).toMatchObject({
+        topics: { omt_1: { cwd: "/repo-a" } },
+      });
+      expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+        agentLabel: "agent-b",
+        cwd: "/repo-a",
+        controls: { modeId: "agent" },
+      });
+    });
+  });
+
+  it("re-arms a cleared binding carrier when lifecycle quiesces during turn-boundary application", async () => {
+    const targetAgent: PendingTargetAgent = {
+      sessionId: "profile:replay-after-quiesce",
+      profileOnly: true,
+      agentCommand: "npx",
+      agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+      agentLabel: "codex",
+      cwd: "/repo-a",
+    };
+    const pending: PendingSessionConfiguration = {
+      targetAgent,
+      bindingCwd: "/repo-a",
+      controls: { modelId: "replay-model" },
+      message: { prompt: "replay after restart", createdAt: 1 },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const carrier: SessionRecord = {
+      ...existingClaudeSession(),
+      sessionId: targetAgent.sessionId,
+      profileOnly: true,
+      agentCommand: targetAgent.agentCommand,
+      agentArgs: [...targetAgent.agentArgs],
+      agentLabel: targetAgent.agentLabel,
+      cwd: targetAgent.cwd,
+      pendingConfiguration: pending,
+    };
+    const bindingStore = new MemoryBindingStore({
+      chatId: "oc_A",
+      cwd: "/tmp",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const store = new MemorySessionStore([carrier]);
+    const gateway = makeGateway(
+      store,
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const testable = gateway as unknown as {
+      beginLifecycle(transaction: LifecycleTransaction): Promise<unknown>;
+      applyPersistedPendingConfiguration(
+        chatId: string,
+        threadId: string | null,
+        replyTo: string | null,
+        trigger: "turn-boundary",
+      ): Promise<unknown>;
+      chats: Map<string, unknown>;
+    };
+    const lifecycleTransaction: LifecycleTransaction = {
+      id: "lifecycle-during-binding-reset",
+      intent: "shutdown",
+      home: "/tmp",
+      oldPid: 1,
+      launch: {
+        spawnArgv: ["gateway", "run"],
+        workingDirectory: "/tmp",
+        savedAt: "2026-08-31T00:00:00.000Z",
+      },
+      deadlines: { readyToExitAt: 1, oldPidExitAt: 2, restartReadyAt: 3 },
+      statePath: "/tmp/lifecycle-during-binding-reset.json",
+    };
+    const drainingRuntime = {
+      chatId: "oc_A",
+      threadId: "omt_1",
+      shutdown: vi.fn(async () => {}),
+      drain: vi.fn(async () => ({
+        intent: "shutdown",
+        outcome: "drained",
+        cancel: "accepted",
+        persisted: true,
+        agentClose: "closed",
+      })),
+    };
+    testable.chats.set("oc_A\u0000omt_1", drainingRuntime);
+    const originalSet = bindingStore.set.bind(bindingStore);
+    let lifecycle: Promise<unknown> | null = null;
+    bindingStore.set = async (chatId, scope, cwd) => {
+      lifecycle = testable.beginLifecycle(lifecycleTransaction);
+      await originalSet(chatId, scope, cwd);
+    };
+
+    await expect(
+      testable.applyPersistedPendingConfiguration("oc_A", "omt_1", "om_turn", "turn-boundary"),
+    ).resolves.toMatchObject({ applied: false });
+    if (lifecycle === null) throw new Error("binding reset did not start lifecycle quiescing");
+    await lifecycle;
+
+    expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+      sessionId: targetAgent.sessionId,
+      profileOnly: true,
+      pendingConfiguration: {
+        targetAgent: { agentLabel: "codex", cwd: "/repo-a" },
+        bindingCwd: "/repo-a",
+        controls: { modelId: "replay-model" },
+        message: { prompt: "replay after restart" },
+      },
+    });
+
+    const restartedGateway = makeGateway(
+      store,
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const restartable = restartedGateway as unknown as {
+      acquireRuntime(chatId: string, threadId: string | null, binding: unknown): Promise<unknown>;
+    };
+    const agent = fakeAgentProcess("sess_replayed");
+    const replayPrompt = vi.fn(() => new Promise<never>(() => {}));
+    agent.connection.prompt = replayPrompt;
+    spawnAgentMock.mockResolvedValue(agent);
+
+    await restartable.acquireRuntime("oc_A", "omt_1", {
+      cwd: "/repo-a",
+      command: targetAgent.agentCommand,
+      args: targetAgent.agentArgs,
+      label: targetAgent.agentLabel,
+      explicit: true,
+      reception: false,
+    });
+
+    await vi.waitFor(async () => {
+      expect(await store.getLatest("oc_A", "omt_1")).toMatchObject({
+        agentLabel: "codex",
+        cwd: "/repo-a",
+      });
+      expect(replayPrompt).toHaveBeenCalledTimes(1);
+    });
+    expect((await store.getLatest("oc_A", "omt_1"))?.pendingConfiguration).toBeUndefined();
+  });
+
+  it("rejects direct mismatched or invalid control handoffs before mutating binding or session", async () => {
+    const bindingStore = new MemoryBindingStore({
+      chatId: "oc_A",
+      cwd: "/tmp",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const store = new MemorySessionStore([existingClaudeSession()]);
+    const gateway = makeGateway(
+      store,
+      recordingPresenter({
+        warnings: [],
+        warningResolutions: [],
+        notices: [],
+        commandResults: [],
+        noticeUpdates: [],
+      }),
+      { bindingStore },
+    );
+    const testable = gateway as unknown as {
+      controlConfigureSession(
+        chatId: string,
+        threadId: string | null,
+        input: {
+          readonly targetAgent: PendingTargetAgent;
+          readonly bindingCwd: string;
+          readonly controls?: SessionControlPatch;
+        },
+      ): Promise<{ readonly rejected?: true }>;
+    };
+    const targetAgent: PendingTargetAgent = {
+      sessionId: "profile:validation",
+      profileOnly: true,
+      agentCommand: "npx",
+      agentArgs: ["-y", "@agentclientprotocol/codex-acp"],
+      agentLabel: "codex",
+      cwd: "/topic-repo",
+    };
+
+    await expect(
+      testable.controlConfigureSession("oc_A", "omt_1", {
+        targetAgent,
+        bindingCwd: "/different-repo",
+      }),
+    ).resolves.toMatchObject({ rejected: true });
+    await expect(
+      testable.controlConfigureSession("oc_A", "omt_1", {
+        targetAgent,
+        bindingCwd: "/topic-repo",
+        controls: { modeId: "" },
+      }),
+    ).resolves.toMatchObject({ rejected: true });
+
+    expect(await bindingStore.get("oc_A")).toMatchObject({ cwd: "/tmp" });
+    const unchangedSession = await store.getLatest("oc_A", "omt_1");
+    expect(unchangedSession).toMatchObject({
+      sessionId: "sess_claude",
+      agentLabel: "claude",
+    });
+    expect(unchangedSession?.pendingConfiguration).toBeUndefined();
+  });
+});
 
 describe("LarkGateway shutdown", () => {
   it("shuts down runtimes before awaiting the lifecycle notice", async () => {
@@ -2151,7 +2771,7 @@ describe("LarkGateway global defaults from direct-message control chat", () => {
       };
       const gateway = makeGateway(store, recordingPresenter(events), { settingsPath });
       const testable = gateway as unknown as {
-        resolveBinding(chatId: string): Promise<unknown>;
+        resolveBinding(chatId: string, threadId: string | null): Promise<unknown>;
         acquireRuntime(
           chatId: string,
           threadId: string | null,
@@ -2161,7 +2781,7 @@ describe("LarkGateway global defaults from direct-message control chat", () => {
         }>;
       };
 
-      const bindingResolvedBeforeSettingsChange = await testable.resolveBinding("oc_A");
+      const bindingResolvedBeforeSettingsChange = await testable.resolveBinding("oc_A", "omt_hot");
       spawnAgentMock.mockResolvedValueOnce(
         fakeAgentProcess("sess_codex_hot", {
           models: {

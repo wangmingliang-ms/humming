@@ -19,6 +19,7 @@ import {
   isLifecycleTransaction,
   type LifecycleTransaction,
 } from "../../bin/lifecycle-coordinator.js";
+import { repositoryCwdSchema } from "../binding-store/binding-schema.js";
 
 export interface AgentProbeFailureTarget {
   readonly label?: string;
@@ -30,6 +31,7 @@ export interface AgentProbeFailureTarget {
 /** Wire payload for `configureSession` — see docs/cli-command-model-SPEC.md §9. */
 export interface ConfigureSessionInput {
   readonly targetAgent?: PendingTargetAgent;
+  readonly bindingCwd?: string;
   readonly controls?: SessionControlPatch;
   readonly message?: PendingSessionMessage;
 }
@@ -67,6 +69,7 @@ export type ControlRequest =
         readonly chatId: string;
         readonly threadId?: string | null;
         readonly targetAgent?: PendingTargetAgent;
+        readonly bindingCwd?: string;
         readonly controls?: SessionControlPatch;
         readonly message?: PendingSessionMessage;
         readonly noticeMessageId?: string | null;
@@ -287,6 +290,9 @@ export class GatewayControlServer {
               parsed.params.threadId ?? null,
               {
                 ...(parsed.params.targetAgent ? { targetAgent: parsed.params.targetAgent } : {}),
+                ...(parsed.params.bindingCwd !== undefined
+                  ? { bindingCwd: parsed.params.bindingCwd }
+                  : {}),
                 ...(parsed.params.controls ? { controls: parsed.params.controls } : {}),
                 ...(parsed.params.message ? { message: parsed.params.message } : {}),
               },
@@ -400,13 +406,23 @@ function isControlRequest(value: unknown): value is ControlRequest {
   }
   if (value["method"] === "capabilities") {
     const params = value["params"];
-    return isRecord(params) && typeof params["chatId"] === "string";
+    return isControlScope(params);
   }
   if (value["method"] === "configureSession") {
     const params = value["params"];
-    if (!isRecord(params) || typeof params["chatId"] !== "string") return false;
+    if (!isControlScope(params)) return false;
     if (params["targetAgent"] !== undefined && !isPendingTargetAgent(params["targetAgent"])) {
       return false;
+    }
+    if (params["bindingCwd"] !== undefined) {
+      const targetAgent = params["targetAgent"];
+      if (
+        !isPendingTargetAgent(targetAgent) ||
+        !repositoryCwdSchema.safeParse(params["bindingCwd"]).success ||
+        params["bindingCwd"] !== targetAgent.cwd
+      ) {
+        return false;
+      }
     }
     if (params["controls"] !== undefined && !isSessionControlPatch(params["controls"])) {
       return false;
@@ -418,11 +434,7 @@ function isControlRequest(value: unknown): value is ControlRequest {
   }
   if (value["method"] === "sendMessage") {
     const params = value["params"];
-    return (
-      isRecord(params) &&
-      typeof params["chatId"] === "string" &&
-      isPendingSessionMessage(params["message"])
-    );
+    return isControlScope(params) && isPendingSessionMessage(params["message"]);
   }
   if (value["method"] === "bindSession") {
     const params = value["params"];
@@ -431,8 +443,7 @@ function isControlRequest(value: unknown): value is ControlRequest {
   if (value["method"] === "agentProbeFailed") {
     const params = value["params"];
     return (
-      isRecord(params) &&
-      typeof params["chatId"] === "string" &&
+      isControlScope(params) &&
       isAgentProbeFailureTarget(params["agent"]) &&
       typeof params["error"] === "string"
     );
@@ -458,8 +469,8 @@ function isAgentProbeFailureTarget(value: unknown): value is AgentProbeFailureTa
 function isSessionRecord(value: unknown): value is SessionRecord {
   return (
     isRecord(value) &&
-    typeof value["chatId"] === "string" &&
-    (typeof value["threadId"] === "string" || value["threadId"] === null) &&
+    isNonEmptyString(value["chatId"]) &&
+    (isNonEmptyString(value["threadId"]) || value["threadId"] === null) &&
     typeof value["sessionId"] === "string" &&
     typeof value["agentCommand"] === "string" &&
     Array.isArray(value["agentArgs"]) &&
@@ -468,6 +479,16 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     typeof value["createdAt"] === "number" &&
     typeof value["updatedAt"] === "number"
   );
+}
+
+function isControlScope(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !isNonEmptyString(value["chatId"])) return false;
+  const threadId = value["threadId"];
+  return threadId === undefined || threadId === null || isNonEmptyString(threadId);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

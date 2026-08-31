@@ -26,7 +26,12 @@
   },
   "bindings": {
     "oc_example_chat_id": {
-      "cwd": "/absolute/path/to/repo"
+      "cwd": "/absolute/path/to/repo",
+      "topics": {
+        "om_example_thread_id": {
+          "cwd": "/absolute/path/to/topic-repo"
+        }
+      }
     }
   }
 }

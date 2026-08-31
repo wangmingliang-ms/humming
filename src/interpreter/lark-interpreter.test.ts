@@ -52,27 +52,23 @@ function expectCommand(text: string): LarkCommand {
 }
 
 describe("interpretLarkMessage — bind commands", () => {
-  it("parses `/bind <path> <agent>`", () => {
-    expect(expectCommand("/bind ~/workspace/proj claude")).toEqual({
-      kind: "bind",
-      cwd: "~/workspace/proj",
-      agent: "claude",
-    });
+  it("rejects legacy `/bind <path> <agent>` as ordinary prompt text", () => {
+    expect(interpretLarkMessage(textEvent("/bind ~/workspace/proj claude")).kind).toBe("prompt");
   });
 
-  it("parses `/bind <path>` with no agent as agent:null", () => {
+  it("parses `/bind <path>` for the current scope", () => {
     expect(expectCommand("/bind /abs/path")).toEqual({
       kind: "bind",
       cwd: "/abs/path",
-      agent: null,
+      scope: "current",
     });
   });
 
-  it("keeps a multi-token raw agent command intact", () => {
-    expect(expectCommand("/bind ~/proj node ./my-acp.js --port 9000")).toEqual({
+  it("parses `/bind --chat <path>` for the chat scope", () => {
+    expect(expectCommand("/bind --chat /abs/path")).toEqual({
       kind: "bind",
-      cwd: "~/proj",
-      agent: "node ./my-acp.js --port 9000",
+      cwd: "/abs/path",
+      scope: "chat",
     });
   });
 
@@ -84,14 +80,6 @@ describe("interpretLarkMessage — bind commands", () => {
     expect(expectCommand("/bind   ")).toEqual({ kind: "bind-usage" });
   });
 
-  it("collapses extra spaces between path and agent", () => {
-    expect(expectCommand("/bind   ~/proj    codex")).toEqual({
-      kind: "bind",
-      cwd: "~/proj",
-      agent: "codex",
-    });
-  });
-
   it("does NOT match a prefixed lookalike like /bindfoo", () => {
     const result = interpretLarkMessage(textEvent("/bindfoo bar"));
     expect(result.kind).toBe("prompt");
@@ -99,8 +87,13 @@ describe("interpretLarkMessage — bind commands", () => {
 });
 
 describe("interpretLarkMessage — unbind / where", () => {
-  it.each(["/unbind", "/unpin"])("parses %s as unbind", (token) => {
-    expect(expectCommand(token)).toEqual({ kind: "unbind" });
+  it.each([
+    ["/unbind", "current"],
+    ["/unbind --chat", "chat"],
+    ["/unpin", "current"],
+    ["/unpin --chat", "chat"],
+  ] as const)("parses %s as scoped unbind", (token, scope) => {
+    expect(expectCommand(token)).toEqual({ kind: "unbind", scope });
   });
 
   it.each(["/where", "/pwd", "/binding"])("parses %s as where", (token) => {

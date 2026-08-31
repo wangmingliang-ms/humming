@@ -29,6 +29,7 @@ import {
   resolveStateDir,
   type FileConfig,
 } from "./config/load.js";
+import { effectiveRepositoryCwd } from "../../src/binding-store/binding-store.js";
 import { CliError, formatError } from "./errors.js";
 
 /** Logger that discards everything — used for CLI-side probes that must stay quiet on stdout. */
@@ -153,26 +154,24 @@ export interface AgentProbeTarget {
 
 /**
  * Resolve the raw (unvalidated) target cwd shared by both Agent-target
- * resolvers. Precedence: `--cwd` > the chat's bound repo (when `--chat-id`
- * is known) > that chat/thread's latest session cwd > `runtime.cwd` >
- * `runtime.unboundCwd`. Returns `undefined` when none apply — callers decide
- * whether that's a hard error or falls back to `process.cwd()`.
+ * resolvers. Precedence: `--cwd` > topic binding > chat binding >
+ * `runtime.cwd` > `runtime.unboundCwd`. Returns `undefined` when none apply —
+ * callers decide whether that's a hard error or falls back to `process.cwd()`.
  */
 function resolveRawTargetCwd(
   base: CliBase,
   opts: { readonly cwd?: string; readonly chatId?: string },
   threadId: string | null,
 ): string | undefined {
+  if (opts.cwd !== undefined) return opts.cwd;
   const binding = opts.chatId ? base.file.bindings[opts.chatId] : undefined;
-  const sessionCwd = opts.chatId
-    ? readLatestSessionCwd(base.dataDir, opts.chatId, threadId)
-    : undefined;
   return (
-    opts.cwd ??
-    binding?.cwd ??
-    sessionCwd ??
-    base.file.runtime.cwd ??
-    normalizeOptionalCwd(base.file.runtime.unboundCwd)
+    effectiveRepositoryCwd(
+      binding,
+      threadId,
+      base.file.runtime.cwd,
+      normalizeOptionalCwd(base.file.runtime.unboundCwd),
+    ) ?? undefined
   );
 }
 
@@ -252,38 +251,6 @@ export function resolveSessionRepoTarget(
 
 function normalizeOptionalCwd(value: string | undefined): string | undefined {
   return value === undefined || value.length === 0 ? undefined : value;
-}
-
-function readLatestSessionCwd(
-  dataDir: string,
-  chatId: string,
-  threadId: string | null,
-): string | undefined {
-  const sessionsPath = path.join(dataDir, "sessions.json");
-  if (!fs.existsSync(sessionsPath)) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fs.readFileSync(sessionsPath, "utf-8"));
-  } catch {
-    return undefined;
-  }
-  if (!isRecord(parsed)) return undefined;
-  const records = parsed[chatId];
-  if (!Array.isArray(records)) return undefined;
-  const latest = records
-    .filter((record): record is Record<string, unknown> => isRecord(record))
-    .filter((record) => (record["threadId"] ?? null) === threadId)
-    .sort((a, b) => numberField(b["updatedAt"]) - numberField(a["updatedAt"]))[0];
-  const cwd = latest?.["cwd"];
-  return typeof cwd === "string" && cwd.length > 0 ? cwd : undefined;
-}
-
-function numberField(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 // ---------- control socket ---------------------------------------------------

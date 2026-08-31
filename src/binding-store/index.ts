@@ -1,2 +1,8 @@
-export type { BindingStore, ChatBinding } from "./binding-store.js";
-export { SettingsBindingStore } from "./settings-binding-store.js";
+export { BindingValidationError } from "./binding-store.js";
+export type {
+  BindingStore,
+  ChatBinding,
+  RepositoryScope,
+  TopicRepositoryBinding,
+} from "./binding-store.js";
+export { SettingsBindingMutationError, SettingsBindingStore } from "./settings-binding-store.js";

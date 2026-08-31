@@ -80,8 +80,17 @@ export {
   sessionControlsSchema,
 } from "./session-store/session-record-schema.js";
 
-export type { BindingStore, ChatBinding } from "./binding-store/binding-store.js";
-export { SettingsBindingStore } from "./binding-store/settings-binding-store.js";
+export { BindingValidationError } from "./binding-store/binding-store.js";
+export type {
+  BindingStore,
+  ChatBinding,
+  RepositoryScope,
+  TopicRepositoryBinding,
+} from "./binding-store/binding-store.js";
+export {
+  SettingsBindingMutationError,
+  SettingsBindingStore,
+} from "./binding-store/settings-binding-store.js";
 
 export { LarkHttpClient } from "./lark/lark-http.js";
 export type { LarkHttpOptions } from "./lark/lark-http.js";

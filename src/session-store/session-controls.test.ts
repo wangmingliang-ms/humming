@@ -115,6 +115,23 @@ describe("mergePendingSessionConfiguration — field-level merge (spec §9.4)", 
 
     expect(merged.noticeMessageId).toBe("card_1");
   });
+
+  it("retains an explicit binding cwd until a later handoff replaces it", () => {
+    const pending = mergePendingSessionConfiguration(undefined, {
+      targetAgent: claude,
+      bindingCwd: "/repo-a",
+    });
+    const controlsMerged = mergePendingSessionConfiguration(pending, {
+      controls: { modeId: "agent" },
+    });
+    const replaced = mergePendingSessionConfiguration(controlsMerged, {
+      targetAgent: copilot,
+      bindingCwd: "/repo-b",
+    });
+
+    expect(controlsMerged.bindingCwd).toBe("/repo-a");
+    expect(replaced.bindingCwd).toBe("/repo-b");
+  });
 });
 
 describe("pendingConfigurationHasProfileField", () => {

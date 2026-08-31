@@ -148,6 +148,7 @@ describe("GatewayControlServer", () => {
           agentLabel: "copilot",
           cwd: "/repo",
         },
+        bindingCwd: "/repo",
         controls: { modelId: "gpt-5.5" },
         message: { prompt: "continue with copilot", createdAt: 123 },
         noticeMessageId: "om_notice",
@@ -162,6 +163,7 @@ describe("GatewayControlServer", () => {
         noticeMessageId: "om_notice",
         input: {
           targetAgent: { agentLabel: "copilot" },
+          bindingCwd: "/repo",
           controls: { modelId: "gpt-5.5" },
           message: { prompt: "continue with copilot", createdAt: 123 },
         },
@@ -468,6 +470,80 @@ describe("GatewayControlServer", () => {
           },
           controls: { gatewayPermissionMode: "bypass" },
         },
+      } as never),
+    ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
+
+    await expect(
+      sendControlRequest(socketPath, {
+        method: "configureSession",
+        params: { chatId: "oc_A", bindingCwd: "/repo" },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
+
+    await expect(
+      sendControlRequest(socketPath, {
+        method: "configureSession",
+        params: {
+          chatId: "oc_A",
+          targetAgent: {
+            sessionId: "profile:empty-cwd",
+            agentCommand: "npx",
+            agentArgs: ["agent"],
+            cwd: "/repo",
+          },
+          bindingCwd: "",
+        },
+      }),
+    ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
+
+    await expect(
+      sendControlRequest(socketPath, {
+        method: "configureSession",
+        params: {
+          chatId: "oc_A",
+          targetAgent: {
+            sessionId: "profile:relative-binding-cwd",
+            agentCommand: "npx",
+            agentArgs: ["agent"],
+            cwd: ".",
+          },
+          bindingCwd: ".",
+        },
+      } as never),
+    ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
+
+    await expect(
+      sendControlRequest(socketPath, {
+        method: "configureSession",
+        params: {
+          chatId: "oc_A",
+          targetAgent: {
+            sessionId: "profile:mismatched-cwd",
+            agentCommand: "npx",
+            agentArgs: ["agent"],
+            cwd: "/session-repo",
+          },
+          bindingCwd: "/binding-repo",
+        },
+      } as never),
+    ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
+
+    for (const malformedScope of ["", 0, { thread: "omt_1" }]) {
+      await expect(
+        sendControlRequest(socketPath, {
+          method: "configureSession",
+          params: {
+            chatId: "oc_A",
+            threadId: malformedScope,
+            controls: { modeId: "agent" },
+          },
+        } as never),
+      ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
+    }
+    await expect(
+      sendControlRequest(socketPath, {
+        method: "capabilities",
+        params: { chatId: "", threadId: "omt_1" },
       } as never),
     ).resolves.toMatchObject({ ok: false, error: "invalid control request" });
 

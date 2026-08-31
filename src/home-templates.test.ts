@@ -2,9 +2,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fileConfigSchema } from "../bin/cli/config/schema.js";
 import { installHomeTemplates } from "./home-templates.js";
 
 let dir: string;
+
+function requireRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("expected a JSON object");
+  }
+  return value;
+}
+
+function expectExactObjectKeys(value: unknown, expectedKeys: readonly string[]): void {
+  expect(Object.keys(requireRecord(value)).sort()).toEqual([...expectedKeys].sort());
+}
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-home-templates-"));
@@ -39,8 +51,25 @@ describe("installHomeTemplates", () => {
     expect(agents).toContain("### Bind sessions and repositories");
     expect(agents).toContain("### Choose Permission, Mode, or Config");
     expect(agents).toContain("### Handle scope and failures");
-    expect(agents).toContain("Bind/rebind chat repository");
-    expect(agents).toContain("Do not write Agent/Model/Mode/Permission/Config into `bindings`");
+    expect(agents).toContain("Bind/rebind repository");
+    const guide = agents.replace(/\s+/g, " ");
+    expect(guide).toContain("Topic overrides take precedence over the chat default.");
+    expect(guide).toContain(
+      "In a topic, `/bind <path>` sets that topic override; in the chat main conversation it sets the chat default.",
+    );
+    expect(guide).toContain("`/bind --chat <path>` explicitly sets the chat default from a topic.");
+    expect(guide).toContain(
+      "In a topic, `/unbind` removes that topic override so it inherits the chat default; in the chat main conversation it removes the chat default but keeps topic overrides.",
+    );
+    expect(guide).toContain("`/unbind --chat` removes the chat default from a topic.");
+    expect(guide).toContain(
+      "`/new` resets only the ACP session; it preserves the repository binding.",
+    );
+    expect(guide).toContain(
+      "`--cwd` is valid only with `session configure --agent`; it updates the current binding scope while switching Agent.",
+    );
+    expect(guide).toContain("do not migrate an override from historical `SessionRecord.cwd`.");
+    expect(agents).toContain("Agent/Model/Mode/Permission/Config into `bindings`");
     expect(agents).toContain("/agent [agent]");
     expect(agents).toContain("/model [model-id|auto]");
     expect(agents).toContain("/capabilities [agent]");
@@ -58,16 +87,33 @@ describe("installHomeTemplates", () => {
 
     expect(fs.existsSync(settingsPath)).toBe(false);
     expect(fs.existsSync(sessionsPath)).toBe(false);
-    expect(
-      JSON.parse(fs.readFileSync(path.join(dir, "settings.back.json"), "utf-8")),
-    ).toMatchObject({
+    const settingsExample: unknown = JSON.parse(
+      fs.readFileSync(path.join(dir, "settings.back.json"), "utf-8"),
+    );
+    const parsedSettingsExample = fileConfigSchema.safeParse(settingsExample);
+    expect(parsedSettingsExample.success).toBe(true);
+    if (!parsedSettingsExample.success) {
+      throw new Error("settings example must satisfy fileConfigSchema");
+    }
+    expect(parsedSettingsExample.data).toMatchObject({
       credentials: { appId: "cli_xxxxxxxxxxxxxxxx" },
       runtime: { agent: "claude" },
-      bindings: { oc_example_chat_id: { cwd: "/absolute/path/to/repo" } },
     });
-    expect(
-      JSON.parse(fs.readFileSync(path.join(dir, "settings.back.json"), "utf-8")),
-    ).not.toMatchObject({ bindings: { oc_example_chat_id: { agent: "claude" } } });
+
+    const bindings = requireRecord(requireRecord(settingsExample)["bindings"]);
+    expectExactObjectKeys(bindings, ["oc_example_chat_id"]);
+    const exampleBinding = requireRecord(bindings["oc_example_chat_id"]);
+    expectExactObjectKeys(exampleBinding, ["cwd", "topics"]);
+    expect(exampleBinding["cwd"]).toBe("/absolute/path/to/repo");
+    const exampleTopics = requireRecord(exampleBinding["topics"]);
+    expectExactObjectKeys(exampleTopics, ["om_example_thread_id"]);
+    const exampleTopicBinding = requireRecord(exampleTopics["om_example_thread_id"]);
+    expectExactObjectKeys(exampleTopicBinding, ["cwd"]);
+    expect(exampleTopicBinding["cwd"]).toBe("/absolute/path/to/topic-repo");
+    for (const forbiddenKey of ["agent", "model", "mode", "permission", "config"]) {
+      expect(exampleBinding).not.toHaveProperty(forbiddenKey);
+      expect(exampleTopicBinding).not.toHaveProperty(forbiddenKey);
+    }
     expect(
       JSON.parse(fs.readFileSync(path.join(dir, "sessions.back.json"), "utf-8")),
     ).toMatchObject({

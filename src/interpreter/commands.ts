@@ -8,6 +8,7 @@
 
 export type ProfileCommandName = "agent" | "model" | "mode" | "permission";
 export type ProfilePermissionMode = "alwaysAsk" | "alwaysAllow" | "alwaysDeny";
+export type BindingCommandScope = "current" | "chat";
 
 export type LarkCommand =
   | { readonly kind: "cancel" }
@@ -15,9 +16,9 @@ export type LarkCommand =
   | { readonly kind: "restart" }
   | { readonly kind: "help" }
   | { readonly kind: "capabilities"; readonly agent: string | null }
-  | { readonly kind: "bind"; readonly cwd: string; readonly agent: string | null }
+  | { readonly kind: "bind"; readonly cwd: string; readonly scope: BindingCommandScope }
   | { readonly kind: "bind-usage" }
-  | { readonly kind: "unbind" }
+  | { readonly kind: "unbind"; readonly scope: BindingCommandScope }
   | { readonly kind: "where" }
   | { readonly kind: "set-agent"; readonly agent: string }
   | { readonly kind: "list-agents" }
@@ -35,9 +36,9 @@ export type SlashCommandContext = {
   restart(): Promise<void>;
   help(): Promise<void>;
   capabilities(agent: string | null): Promise<void>;
-  bind(cwd: string, agent: string | null): Promise<void>;
+  bind(cwd: string, scope: BindingCommandScope): Promise<void>;
   bindUsage(): Promise<void>;
-  unbind(): Promise<void>;
+  unbind(scope: BindingCommandScope): Promise<void>;
   where(): Promise<void>;
   setAgent(agent: string): Promise<void>;
   listAgents(): Promise<void>;
@@ -78,11 +79,13 @@ export type SlashCommandInvocation = {
 };
 
 const PROFILE_PERMISSION_MODES = ["alwaysAsk", "alwaysAllow", "alwaysDeny"] as const;
+const BIND_CHAT_SCOPE_FLAG = "--chat";
+const CLI_FLAG_PREFIX = "--";
 
 function defineExactCommand(options: {
   readonly name: string;
   readonly tokens: readonly string[];
-  readonly kind: "cancel" | "new" | "restart" | "help" | "unbind" | "where";
+  readonly kind: "cancel" | "new" | "restart" | "help" | "where";
   readonly group: CommandGroup;
   readonly help: readonly CommandHelpEntry[];
   readonly handle: (context: SlashCommandContext) => Promise<void>;
@@ -251,20 +254,30 @@ const bindCommand: SlashCommand = {
   name: "bind",
   tokens: ["/bind"],
   group: "Repo / session",
-  help: [{ syntax: "/bind <路径>", description: "绑定当前 chat 到 repo" }],
+  help: [
+    { syntax: "/bind <路径>", description: "绑定当前 topic（主 chat 时为 chat 默认）到 repo" },
+    { syntax: "/bind --chat <路径>", description: "绑定整个 chat 的默认 repo" },
+  ],
   parse(input) {
     const rest = stripLeadingToken(input, this.tokens[0]);
     if (rest === null) return null;
     if (rest.length === 0) return { kind: "bind-usage" };
-    const firstSpace = rest.search(/\s/);
-    if (firstSpace < 0) return { kind: "bind", cwd: rest, agent: null };
-    const cwd = rest.slice(0, firstSpace);
-    const agent = rest.slice(firstSpace + 1).trim();
-    return { kind: "bind", cwd, agent: agent.length > 0 ? agent : null };
+    const tokens = rest.split(/\s+/);
+    if (tokens.length === 1 && !tokens[0].startsWith(CLI_FLAG_PREFIX)) {
+      return { kind: "bind", cwd: tokens[0], scope: "current" };
+    }
+    if (
+      tokens.length === 2 &&
+      tokens[0] === BIND_CHAT_SCOPE_FLAG &&
+      !tokens[1].startsWith(CLI_FLAG_PREFIX)
+    ) {
+      return { kind: "bind", cwd: tokens[1], scope: "chat" };
+    }
+    return null;
   },
   async handle(context, command) {
     if (command.kind === "bind-usage") return context.bindUsage();
-    if (command.kind === "bind") return context.bind(command.cwd, command.agent);
+    if (command.kind === "bind") return context.bind(command.cwd, command.scope);
     return rejectWrongCommand(this.name, command);
   },
 };
@@ -278,14 +291,27 @@ const whereCommand = defineExactCommand({
   handle: (context) => context.where(),
 });
 
-const unbindCommand = defineExactCommand({
+const unbindCommand: SlashCommand = {
   name: "unbind",
   tokens: ["/unbind", "/unpin"],
-  kind: "unbind",
   group: "Repo / session",
-  help: [{ syntax: "/unbind", aliases: ["/unpin"], description: "解除 repo binding" }],
-  handle: (context) => context.unbind(),
-});
+  help: [
+    { syntax: "/unbind", aliases: ["/unpin"], description: "解除当前 topic repo binding" },
+    { syntax: "/unbind --chat", description: "解除 chat 默认 repo binding" },
+  ],
+  parse(input) {
+    const rest = this.tokens
+      .map((token) => stripLeadingToken(input, token))
+      .find((candidate) => candidate !== null);
+    if (rest === "") return { kind: "unbind", scope: "current" };
+    if (rest === "--chat") return { kind: "unbind", scope: "chat" };
+    return null;
+  },
+  async handle(context, command) {
+    if (command.kind !== "unbind") return rejectWrongCommand(this.name, command);
+    await context.unbind(command.scope);
+  },
+};
 
 const newCommand = defineExactCommand({
   name: "new",

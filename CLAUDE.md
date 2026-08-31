@@ -77,9 +77,10 @@ humming autostart status        # 只读查询：已安装/已启用状态
   - `runtime.globalControlChatIds`：会把 Agent/Model/Mode/Permission/Config 变更写回全局默认的 DM 控制 chats。
   - `runtime.cwd` / `runtime.unboundCwd`：默认/接待区工作目录。
   - `agents`：内置 preset 覆盖和自定义 Agent presets。
-  - `bindings`：chat → repo 绑定，只存 `{ "cwd": "/absolute/path/to/repo" }`。
+  - `bindings`：chat → repo 绑定；`bindings.<chatId>.cwd` 是 chat default，`bindings.<chatId>.topics.<threadId>.cwd` 是 topic override。
   - per-topic session state 不写 `settings.json`，写 `sessions.json`。
-- Chat binding 只写 repo：`settings.json` 的 `bindings.<chatId>` 只保存 `{ "cwd": "/absolute/path/to/repo" }`。不要在 binding 里写 Agent / Model / Mode / Permission / Config。
+- Binding 只写 repo：`settings.json` 的 `bindings.<chatId>` 可保存 chat default `{ "cwd": "/absolute/path/to/repo" }`，其 `topics.<threadId>` 可保存 topic override `{ "cwd": "/absolute/path/to/topic-repo" }`。不要在 binding 里写 Agent / Model / Mode / Permission / Config，也不要从历史 `SessionRecord.cwd` 迁移 topic override。
+- `/bind <path>` 在 topic 中设置当前 topic override；在群聊主会话中设置 chat default。topic 中用 `/bind --chat <path>` 显式设置 chat default。`/unbind` 在 topic 中删除当前 override 并继承 chat default，在群聊主会话中删除 chat default 且保留 topic overrides；topic 中用 `/unbind --chat` 删除 chat default。`/new` 只重置 ACP session，保留 binding。
 - 查看 Humming 状态只用这些命令，不要翻各 Agent 缓存目录：
   - `humming agent list`
   - `humming session capabilities --json`
@@ -101,7 +102,7 @@ humming autostart status        # 只读查询：已安装/已启用状态
 
   多个 control 合并到一个命令。Model/Mode/Config 始终针对本次 `--agent`（或已有 pending/当前 Agent）校验，绝不用旧 Agent 的能力去校验新 Agent 的取值。
 
-- 纯 Agent 切换：`humming session configure --agent <agent>`。
+- 纯 Agent 切换：`humming session configure --agent <agent>`。显式指定 `--cwd` 时必须同时指定 `--agent`；它会更新当前 binding scope（topic 为 override，群聊主会话为 chat default）并切换 Agent。
 - 自然语言 handoff（Agent + controls/message 同一句）：用一次 `session configure` 调用，把 Message 挂在同一条命令上，这样 Profile 完全生效后才会发送 Message：
 
   ```bash
@@ -114,9 +115,9 @@ humming autostart status        # 只读查询：已安装/已启用状态
 
   不要把一次 handoff 拆成分开的 Agent 切换 + controls 调用，除非单次 `configure` 确实无法表达。
 
-- `session configure` 默认不加 `--cwd`；不要改 `runtime.agent`，不要把 Agent 写进 `bindings`。
+- `session configure` 默认不加 `--cwd`；不要改 `runtime.agent`，不要把 Agent 写进 `bindings`。有效 cwd 优先级是显式 command cwd > topic override > chat default > `runtime.cwd` > reception / `runtime.unboundCwd`。
 - 只发消息、不改变 Profile 时用 `humming session send --message ...`（或 `--message-file` / `--message-stdin`），不要把它和 `session configure` 的语义混用。
-- `session bind` 只绑定当前 chat repo 内的 session；不接受 `--cwd`。session 已绑定到别处时不要手改 `sessions.json` 绕过。
+- `session bind` 只绑定当前 scope 中已有的 Agent session；不接受 `--cwd`。session 已绑定到别处时不要手改 `sessions.json` 绕过。
 - 群聊里不要打印完整 session/chat/thread id。
 
 # TypeScript 工程准则（TypeScript 5.x / Strict Mode）

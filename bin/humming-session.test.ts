@@ -1,7 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+const sendControlRequestMock = vi.hoisted(() => vi.fn());
+const listAgentSessionsMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../src/gateway/control-server.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/gateway/control-server.js")>()),
+  sendControlRequest: sendControlRequestMock,
+}));
+vi.mock("../src/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/index.js")>()),
+  listAgentSessions: listAgentSessionsMock,
+}));
+
 import { buildProgram } from "./cli/program.js";
 
 const HUMMING_ENV_KEYS = [
@@ -19,6 +32,9 @@ let dir: string;
 beforeEach(() => {
   savedEnv = Object.fromEntries(HUMMING_ENV_KEYS.map((key) => [key, process.env[key]]));
   for (const key of HUMMING_ENV_KEYS) delete process.env[key];
+  sendControlRequestMock.mockReset();
+  sendControlRequestMock.mockRejectedValue(new Error("gateway unavailable"));
+  listAgentSessionsMock.mockReset();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "humming-session-"));
 });
 
@@ -52,6 +68,22 @@ describe("session list", () => {
       parse(["session", "list", "--home", dir, "--cwd", dir, "--bogus"]),
     ).rejects.toMatchObject({ code: "commander.unknownOption" });
   });
+
+  it("uses explicit --cwd only for the query without writing a binding", async () => {
+    fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ bindings: {} }));
+    listAgentSessionsMock.mockResolvedValue({
+      supportsResume: true,
+      supportsLoad: false,
+      sessions: [],
+    });
+
+    await parse(["session", "list", "--home", dir, "--chat-id", "oc_x", "--cwd", dir]);
+
+    expect(listAgentSessionsMock).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir }));
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf-8"))).toEqual({
+      bindings: {},
+    });
+  });
 });
 
 describe("session bind", () => {
@@ -82,6 +114,43 @@ describe("session bind", () => {
         dir,
       ]),
     ).rejects.toMatchObject({ code: "commander.unknownOption" });
+  });
+
+  it("uses the current topic-effective repository to find the requested session", async () => {
+    const chatRepo = path.join(dir, "chat-repo");
+    const topicRepo = path.join(dir, "topic-repo");
+    fs.mkdirSync(chatRepo);
+    fs.mkdirSync(topicRepo);
+    fs.writeFileSync(
+      path.join(dir, "settings.json"),
+      JSON.stringify({
+        bindings: { oc_x: { cwd: chatRepo, topics: { omt_x: { cwd: topicRepo } } } },
+      }),
+    );
+    listAgentSessionsMock.mockResolvedValue({
+      supportsResume: true,
+      supportsLoad: false,
+      sessions: [{ sessionId: "s1", cwd: topicRepo }],
+    });
+    sendControlRequestMock.mockResolvedValue({
+      ok: true,
+      result: { bound: true, sessionId: "s1" },
+    });
+
+    await parse([
+      "session",
+      "bind",
+      "--home",
+      dir,
+      "--chat-id",
+      "oc_x",
+      "--thread-id",
+      "omt_x",
+      "--session-id",
+      "s1",
+    ]);
+
+    expect(listAgentSessionsMock).toHaveBeenCalledWith(expect.objectContaining({ cwd: topicRepo }));
   });
 });
 
@@ -169,6 +238,55 @@ describe("session configure", () => {
         "no-equals-sign",
       ]),
     ).rejects.toThrowError(/--config requires/);
+  });
+
+  it("forwards bindingCwd only for an explicit Agent and cwd handoff", async () => {
+    sendControlRequestMock.mockResolvedValue({ ok: true, result: { applied: true } });
+
+    await parse([
+      "session",
+      "configure",
+      "--home",
+      dir,
+      "--chat-id",
+      "oc_x",
+      "--thread-id",
+      "omt_x",
+      "--agent",
+      "claude",
+      "--cwd",
+      dir,
+    ]);
+
+    expect(sendControlRequestMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        method: "configureSession",
+        params: expect.objectContaining({
+          chatId: "oc_x",
+          threadId: "omt_x",
+          bindingCwd: dir,
+          targetAgent: expect.objectContaining({ cwd: dir }),
+        }),
+      }),
+    );
+  });
+
+  it("does not forward bindingCwd for an Agent handoff without explicit cwd", async () => {
+    fs.writeFileSync(
+      path.join(dir, "settings.json"),
+      JSON.stringify({ bindings: { oc_x: { cwd: dir } } }),
+    );
+    sendControlRequestMock.mockResolvedValue({ ok: true, result: { applied: true } });
+
+    await parse(["session", "configure", "--home", dir, "--chat-id", "oc_x", "--agent", "claude"]);
+
+    const request = sendControlRequestMock.mock.calls[0]?.[1];
+    expect(request).toMatchObject({
+      method: "configureSession",
+      params: { targetAgent: { cwd: dir } },
+    });
+    expect(request).not.toMatchObject({ params: { bindingCwd: expect.anything() } });
   });
 });
 

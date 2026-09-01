@@ -68,6 +68,12 @@ describe("installHomeTemplates", () => {
     expect(guide).toContain(
       "`--cwd` is valid only with `session configure --agent`; it updates the current binding scope while switching Agent.",
     );
+    expect(guide).toContain(
+      "When the user asks in one natural-language request to bind the current topic to an existing Agent session in another repository",
+    );
+    expect(guide).toContain("humming session configure --agent <agent> --cwd <repo>");
+    expect(guide).toContain("humming session bind --agent <agent> --session-id <id>");
+    expect(guide).toContain("The configure-then-bind sequence is not atomic.");
     expect(guide).toContain("do not migrate an override from historical `SessionRecord.cwd`.");
     expect(agents).toContain("Agent/Model/Mode/Permission/Config into `bindings`");
     expect(agents).toContain("/agent [agent]");

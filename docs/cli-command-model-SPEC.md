@@ -323,8 +323,15 @@ humming session bind --agent claude --session-id sess_123
 ```
 
 All values remain named options. Binding must continue to verify that the selected Agent Session
-belongs to the current chat repository and must not implicitly change the chat-to-repository
-binding.
+belongs to the current binding scope's effective repository and must not implicitly change the
+repository binding. A topic override may therefore use a different repository from its chat default.
+
+When an Agent handles one natural-language request to bind the current topic to an existing Session
+in another repository, it may orchestrate the existing commands in order: query candidates with
+`session list --cwd <repo>` when needed, set the topic repository with
+`session configure --agent <agent> --cwd <repo>`, then call `session bind`. This sequence is not an
+atomic CLI transaction. If configure succeeds and bind fails, the new topic repository binding
+remains and the Agent must report the bind failure instead of silently rolling back.
 
 ## 12. State and invariants
 

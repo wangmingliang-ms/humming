@@ -420,6 +420,10 @@ describe("reception area", () => {
     expect(agents).toContain("oc_new");
     expect(agents).toContain("bindings");
     expect(agents).toContain(settingsPath);
+    expect(agents).toContain("HUMMING_THREAD_ID");
+    expect(agents).toContain("topic override");
+    expect(agents).toContain("session configure --agent <agent> --cwd <repo>");
+    expect(agents).toContain("session bind --agent <agent> --session-id <id>");
     expect(claude).toEqual(agents);
   });
 

@@ -127,7 +127,17 @@ the query fails or the requested value is absent, stop and tell the user what va
   chat default from a topic.
 - `/new` resets only the ACP session; it preserves the repository binding.
 - Bind an existing Agent session: list with `session list`, choose a session in the current binding
-  scope, then use `session bind`.
+  scope's effective cwd, then use `session bind`.
+- When the user asks in one natural-language request to bind the current topic to an existing Agent
+  session in another repository, orchestrate the whole request without asking them to repeat it:
+  1. If the session is not identified, query candidates with
+     `humming session list --agent <agent> --cwd <repo> --json`.
+  2. Set the current topic override and Agent with
+     `humming session configure --agent <agent> --cwd <repo>`.
+  3. Bind the selected session with
+     `humming session bind --agent <agent> --session-id <id>`.
+- The configure-then-bind sequence is not atomic. If configure succeeds but bind fails, keep the new
+  repository binding and report the exact bind failure; do not roll back unless the user asks.
 - Multiple sessions match: show short candidates and ask the user to choose.
 - Session already belongs to another topic: ask the user to reset the original topic; do not edit
   `sessions.json`.

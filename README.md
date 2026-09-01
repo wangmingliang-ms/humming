@@ -170,6 +170,10 @@ Humming 会把当前 chat/topic scope 和完整操作指引提供给 Agent。除
 ```
 
 ```text
+把当前 topic 绑定到 /home/me/work/project-b，并绑定 Claude 的已有 session <session-id>。
+```
+
+```text
 更新 Humming 到最新版并重启 Gateway。
 ```
 
@@ -341,12 +345,32 @@ humming session send --message-file /absolute/path/to/task.md
 
 ### 绑定已有 Agent Session
 
+当前 topic 与目标 session 已在同一 effective cwd 时：
+
 ```bash
 humming session list --agent claude --json
 humming session bind --agent claude --session-id <session-id>
 ```
 
 目标 session 必须属于当前 binding scope 的 effective cwd，而且不能已被另一个 topic 占用。
+
+如果 chat 默认绑定仓库 A，而要把当前 topic 绑定到仓库 B 中的已有 session，可以用一个自然语言请求让
+Agent 顺序完成整个编排。内部操作为：
+
+```bash
+# session 未明确时，只查询 B 中的候选，不改变当前 binding
+humming session list --agent claude --cwd /absolute/path/to/B --json
+
+# 把当前 topic override 设置为 B，并切换到目标 Agent
+humming session configure --agent claude --cwd /absolute/path/to/B
+
+# 把 B 中选定的 session 绑定到当前 topic
+humming session bind --agent claude --session-id <session-id>
+```
+
+`session bind` 本身仍不接受 `--cwd`，也不会隐式改变 repo。上述 configure-then-bind 是顺序编排而非
+原子事务：如果 topic 已成功切到 B、但 session 绑定失败，B override 会保留，Agent 必须准确报告失败；
+除非用户明确要求，否则不会自动回滚到 A。
 
 ## 配置
 

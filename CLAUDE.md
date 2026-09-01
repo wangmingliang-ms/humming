@@ -117,7 +117,8 @@ humming autostart status        # 只读查询：已安装/已启用状态
 
 - `session configure` 默认不加 `--cwd`；不要改 `runtime.agent`，不要把 Agent 写进 `bindings`。有效 cwd 优先级是显式 command cwd > topic override > chat default > `runtime.cwd` > reception / `runtime.unboundCwd`。
 - 只发消息、不改变 Profile 时用 `humming session send --message ...`（或 `--message-file` / `--message-stdin`），不要把它和 `session configure` 的语义混用。
-- `session bind` 只绑定当前 scope 中已有的 Agent session；不接受 `--cwd`。session 已绑定到别处时不要手改 `sessions.json` 绕过。
+- `session bind` 只绑定当前 scope 的有效 cwd 中已有的 Agent session；不接受 `--cwd`。session 已绑定到别处时不要手改 `sessions.json` 绕过。
+- 用户用一句自然语言要求“把当前 topic 绑定到另一个 repo 中的已有 session”时，把它作为一次编排连续完成，不要让用户重复请求：若 session 未明确，先用 `humming session list --agent <agent> --cwd <repo> --json` 查候选；再执行 `humming session configure --agent <agent> --cwd <repo>` 设置当前 topic override；最后执行 `humming session bind --agent <agent> --session-id <id>`。这两个变更不是原子事务：若 configure 成功而 bind 失败，保留新的 repo binding，准确报告失败；除非用户明确要求，否则不要擅自回滚。
 - 群聊里不要打印完整 session/chat/thread id。
 
 # TypeScript 工程准则（TypeScript 5.x / Strict Mode）

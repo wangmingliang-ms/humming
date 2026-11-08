@@ -29,8 +29,11 @@ export function conversationTimelineElementCount(
   entries: readonly ConversationElementLike[],
 ): number {
   return entries.reduce(
-    (count, _entry, index) =>
-      count + 1 + (conversationEntryHasLeadingDivider(entries, index) ? 1 : 0),
+    (count, entry, index) =>
+      count +
+      1 +
+      (entry.kind === "tool" && entries[index - 1]?.kind !== "tool" ? 1 : 0) +
+      (conversationEntryHasLeadingDivider(entries, index) ? 1 : 0),
     0,
   );
 }

@@ -279,16 +279,20 @@ function buildExpiredCard(reason: string): object {
   );
 }
 
-function buildThoughtPanel(text: string): object {
+function buildCollapsiblePanel(
+  title: string,
+  elements: readonly object[],
+  expanded = false,
+): object {
   // Aligned with the canonical v2 sample (plain_text title, icon_position
   // "right"). Lark's v2 renderer falls back to plaintext when any field on
   // collapsible_panel is unrecognized — so deviate from the sample only
   // when necessary.
   return {
     tag: "collapsible_panel",
-    expanded: false,
+    expanded,
     header: {
-      title: { tag: "plain_text", content: "💭 思考" },
+      title: { tag: "plain_text", content: title },
       vertical_align: "center",
       icon: {
         tag: "standard_icon",
@@ -302,7 +306,7 @@ function buildThoughtPanel(text: string): object {
     border: { color: "grey", corner_radius: "5px" },
     vertical_spacing: "8px",
     padding: "8px 8px 8px 8px",
-    elements: [{ tag: "markdown", content: text }],
+    elements,
   };
 }
 
@@ -311,7 +315,7 @@ function semanticEntryToCardElement(entry: ConversationTimelineEntry): object {
     case "text":
       return { tag: "markdown", content: stripCardImageMarkdown(entry.text) };
     case "thought":
-      return buildThoughtPanel(entry.text);
+      return buildCollapsiblePanel("💭 思考", [{ tag: "markdown", content: entry.text }]);
     case "tool": {
       const head = `**${entry.toolKind}**: ${entry.title}`;
       return {
@@ -601,10 +605,26 @@ function semanticEntries(view: ConversationCardView): object[] {
     if (message) elements.push({ tag: "markdown", content: message });
     return elements;
   }
-  view.entries.forEach((entry: ConversationTimelineEntry, index: number) => {
+  for (let index = 0; index < view.entries.length; index += 1) {
+    const entry = view.entries[index];
     if (conversationEntryHasLeadingDivider(view.entries, index)) elements.push({ tag: "hr" });
-    elements.push(semanticEntryToCardElement(entry));
-  });
+    if (entry.kind !== "tool") {
+      elements.push(semanticEntryToCardElement(entry));
+      continue;
+    }
+    const tools: object[] = [semanticEntryToCardElement(entry)];
+    while (view.entries[index + 1]?.kind === "tool") {
+      index += 1;
+      tools.push(semanticEntryToCardElement(view.entries[index]));
+    }
+    // Only the current tool run stays open. Messages, thoughts, permissions,
+    // card rotation and turn completion close earlier runs by default.
+    const expanded =
+      index === view.entries.length - 1 &&
+      view.kind === "active" &&
+      (view.header === "calling_tool" || view.header === "processing");
+    elements.push(buildCollapsiblePanel(`⚙️ 工具调用（${tools.length}）`, tools, expanded));
+  }
   return elements;
 }
 

@@ -17,18 +17,18 @@ describe("card text byte budget", () => {
     expect(CARD_MARKDOWN_ROTATION_BYTE_LIMIT).toBeLessThan(CARD_MARKDOWN_ELEMENT_BYTE_LIMIT);
   });
 
-  it("budgets actual top-level conversation elements below Feishu's hard limit", () => {
+  it("budgets tool panel containers and their children below Feishu's hard limit", () => {
     const entries = Array.from({ length: 18 }, () => ({ kind: "tool" }));
-    expect(conversationTimelineElementCount(entries)).toBe(18);
+    expect(conversationTimelineElementCount(entries)).toBe(19);
     expect(activeConversationCardElementCount(entries, { hasCancel: true, hasProfile: true })).toBe(
-      22,
+      23,
     );
     expect(
       activeConversationCardElementCount([...entries, { kind: "text" }], {
         hasCancel: true,
         hasProfile: true,
       }),
-    ).toBe(24);
+    ).toBe(25);
   });
 
   it("groups consecutive tools and bordered thoughts without removing text boundaries", () => {
@@ -39,8 +39,8 @@ describe("card text byte budget", () => {
         { kind: "thought" },
         { kind: "tool" },
       ]),
-    ).toBe(4);
-    expect(conversationTimelineElementCount([{ kind: "text" }, { kind: "tool" }])).toBe(3);
+    ).toBe(6);
+    expect(conversationTimelineElementCount([{ kind: "text" }, { kind: "tool" }])).toBe(4);
   });
 
   it("measures all card text with UTF-8 bytes", () => {

@@ -20,6 +20,8 @@ interface CardElement {
   tag?: string;
   content?: string;
   elements?: CardElement[];
+  expanded?: boolean;
+  header?: { title?: { content?: string } };
   text?: { content?: string };
   behaviors?: { type?: string; value?: Record<string, unknown> }[];
 }
@@ -277,11 +279,103 @@ describe("LarkCardPresenter card summary", () => {
     });
 
     expect(cards[0]?.body?.elements?.map((element) => element.tag)).toEqual([
-      "markdown",
-      "markdown",
       "collapsible_panel",
-      "markdown",
+      "collapsible_panel",
+      "collapsible_panel",
     ]);
+    const panels = cards[0]?.body?.elements;
+    expect(panels?.map((panel) => panel.expanded)).toEqual([false, false, true]);
+    expect(panels?.[0]?.header?.title?.content).toBe("⚙️ 工具调用（2）");
+    expect(panels?.[0]?.elements?.map((entry) => entry.content)).toEqual([
+      "**tool**: Read first file",
+      "**tool**: Read second file",
+    ]);
+  });
+
+  it("collapses a tool run when text or an image follows, then opens the next run", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+    const tool = {
+      kind: "tool",
+      toolCallId: "first",
+      title: "Read",
+      toolKind: "read",
+      status: "in_progress",
+    } as const;
+    for (const boundary of [
+      { kind: "text", text: "Should I continue?" },
+      { kind: "image", imageId: "image", status: "ready", imgKey: "img" },
+    ] as const) {
+      await presenter.sendConversationCard("message", {
+        kind: "active",
+        header: "calling_tool",
+        profile: null,
+        route: { c: "chat" },
+        entries: [tool, boundary, { ...tool, toolCallId: "second", title: "Run tests" }],
+      });
+    }
+    for (const card of cards) {
+      const panels = card.body?.elements?.filter((entry) => entry.tag === "collapsible_panel");
+      expect(panels?.map((panel) => panel.expanded)).toEqual([false, true]);
+      expect(panels?.map((panel) => panel.elements?.length)).toEqual([1, 1]);
+    }
+  });
+
+  it("collapses a trailing tool run after user confirmation, completion, cancellation or archival", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+    const entries = [
+      { kind: "tool", toolCallId: "tool", title: "Read", toolKind: "read", status: "completed" },
+    ] as const;
+    const route = { c: "chat" };
+    const views: ConversationCardView[] = [
+      { kind: "active", header: "waiting_user", entries, profile: null, route },
+      { kind: "active", header: "responding", entries, profile: null, route },
+      { kind: "archived", entries, summary: "Read", route },
+      { kind: "supplement", entries, route },
+      ...(["complete", "cancelled", "failed"] as const).map((header) => ({
+        kind: "terminal" as const,
+        header,
+        entries,
+        profile: null,
+        body: "content" as const,
+        route,
+      })),
+    ];
+    for (const view of views) await presenter.sendConversationCard("message", view);
+    for (const card of cards) {
+      expect(card.body?.elements?.[0]).toMatchObject({
+        tag: "collapsible_panel",
+        expanded: false,
+        elements: [{ tag: "markdown", content: "**read**: Read" }],
+      });
+    }
+  });
+
+  it("keeps the current consecutive run open until non-tool content arrives even between calls", async () => {
+    const cards: CardWithConfig[] = [];
+    const presenter = makePresenter(cards);
+    await presenter.sendConversationCard("message", {
+      kind: "active",
+      header: "processing",
+      profile: null,
+      route: { c: "chat" },
+      entries: [
+        { kind: "tool", toolCallId: "tool", title: "Read", toolKind: "read", status: "completed" },
+      ],
+    });
+    expect(cards[0]?.body?.elements?.[0]?.expanded).toBe(true);
+    await presenter.updateConversationCard("card_1", {
+      kind: "active",
+      header: "responding",
+      profile: null,
+      route: { c: "chat" },
+      entries: [
+        { kind: "tool", toolCallId: "tool", title: "Read", toolKind: "read", status: "completed" },
+        { kind: "text", text: "Done" },
+      ],
+    });
+    expect(cards[1]?.body?.elements?.[0]?.expanded).toBe(false);
   });
 
   it("labels a newly received semantic Response as received, not queued behind prior work", async () => {

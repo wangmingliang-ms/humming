@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 
 /** Strategy for handling agent-side permission requests. */
 export type PermissionMode = "alwaysAllow" | "alwaysDeny" | "alwaysAsk";

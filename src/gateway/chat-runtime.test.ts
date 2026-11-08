@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import { ChatRuntime } from "./chat-runtime.js";
 import { HummingClient } from "../acp/humming-client.js";
 import type { ChatRuntimeOptions } from "./chat-runtime.js";
@@ -625,7 +625,7 @@ function makeFakeAgent(): FakeAgentHandle {
         await gate;
       }
     },
-    unstable_setSessionModel: async () => ({}),
+    request: async () => ({}),
     setSessionMode: async () => ({}),
     setSessionConfigOption: async () => ({ configOptions: [] }),
     get closed() {
@@ -1901,10 +1901,10 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     // reject on that guard, and it must not send any notice itself — the
     // Gateway builds and sends the outcome notice.
     const fake = makeFakeAgent();
-    const setModel = vi.fn(async () => ({}));
+    const setModel = vi.fn(async (_params: unknown) => ({}));
     fake.agent.connection = {
       ...fake.agent.connection,
-      unstable_setSessionModel: setModel,
+      request: async (_method: string, params: unknown) => setModel(params),
     } as AgentProcess["connection"];
     spawnAgentMock.mockResolvedValue(fake.agent);
 
@@ -2092,10 +2092,10 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
   it("clears an explicit live model override for /model auto without sending literal auto", async () => {
     const fake = makeFakeAgent();
-    const setModel = vi.fn(async () => ({}));
+    const setModel = vi.fn(async (_params: unknown) => ({}));
     fake.agent.connection = {
       ...fake.agent.connection,
-      unstable_setSessionModel: setModel,
+      request: async (_method: string, params: unknown) => setModel(params),
     } as AgentProcess["connection"];
     spawnAgentMock.mockResolvedValue(fake.agent);
 
@@ -2138,7 +2138,8 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
   it("applies and reports session controls with ACP-shaped requests", async () => {
     const fake = makeFakeAgent();
-    const setModel = vi.fn(async () => ({}));
+    const setModel = vi.fn(async (_params: unknown) => ({}));
+    const request = vi.fn(async (_method: string, params: unknown) => setModel(params));
     const setMode = vi.fn(async () => ({}));
     const setConfig = vi.fn(async () => ({
       configOptions: [
@@ -2157,7 +2158,7 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     }));
     fake.agent.connection = {
       ...fake.agent.connection,
-      unstable_setSessionModel: setModel,
+      request,
       setSessionMode: setMode,
       setSessionConfigOption: setConfig,
     } as AgentProcess["connection"];
@@ -2200,6 +2201,10 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
     });
 
     expect(setModel).toHaveBeenCalledWith({ sessionId: "sess_fake", modelId: "model-new" });
+    expect(request).toHaveBeenCalledWith("session/set_model", {
+      sessionId: "sess_fake",
+      modelId: "model-new",
+    });
     expect(setMode).toHaveBeenCalledWith({ sessionId: "sess_fake", modeId: "agent" });
     expect(setConfig).toHaveBeenCalledWith({
       sessionId: "sess_fake",
@@ -2244,10 +2249,10 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
   it("rejects invalid controls without mutating runtime or persisted session", async () => {
     const fake = makeFakeAgent();
-    const setModel = vi.fn(async () => ({}));
+    const setModel = vi.fn(async (_params: unknown) => ({}));
     fake.agent.connection = {
       ...fake.agent.connection,
-      unstable_setSessionModel: setModel,
+      request: async (_method: string, params: unknown) => setModel(params),
     } as AgentProcess["connection"];
     spawnAgentMock.mockResolvedValue(fake.agent);
 
@@ -2291,13 +2296,13 @@ describe("ChatRuntime finalizes when the agent connection closes mid-prompt", ()
 
   it("rolls back ACP changes when a later control fails", async () => {
     const fake = makeFakeAgent();
-    const setModel = vi.fn(async () => ({}));
+    const setModel = vi.fn(async (_params: unknown) => ({}));
     const setMode = vi.fn(async () => {
       throw new Error("mode rejected");
     });
     fake.agent.connection = {
       ...fake.agent.connection,
-      unstable_setSessionModel: setModel,
+      request: async (_method: string, params: unknown) => setModel(params),
       setSessionMode: setMode,
     } as AgentProcess["connection"];
     spawnAgentMock.mockResolvedValue(fake.agent);

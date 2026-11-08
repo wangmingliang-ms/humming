@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import type { PromptToken } from "../presenter/conversation-card-view.js";
 import type {
   DiagnosticCorrelation,
@@ -89,7 +89,7 @@ function isSessionMetadata(
   }
 }
 
-export class PromptCallbackRouter implements acp.Client {
+export class PromptCallbackRouter {
   private route: Route = { phase: "idle" };
   private healthy = true;
 

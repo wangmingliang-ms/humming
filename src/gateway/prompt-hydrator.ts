@@ -11,7 +11,7 @@
  */
 
 import { pathToFileURL } from "node:url";
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import type { PromptSegment } from "../interpreter/lark-interpreter.js";
 import type { LarkLogger } from "../logger/logger.js";
 import { DEFAULT_INBOUND_DIR, inboundResourcePath } from "./inbound-store.js";

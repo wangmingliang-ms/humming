@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import { describe, it, expect, vi } from "vitest";
 import type { AgentProcess, SpawnAgentOptions } from "./agent-process.js";
 import {
@@ -95,7 +95,7 @@ describe("buildAgentSpawnOptions", () => {
 });
 
 describe("ACP client construction", () => {
-  it("supplies the exact PromptCallbackRouter instance and exact advertised capabilities", () => {
+  it("routes SDK app callbacks through PromptCallbackRouter without losing filesystem or permission handling", async () => {
     const session: SessionCallbacks = {
       readTextFile: vi.fn(async () => ({ content: "" })),
       writeTextFile: vi.fn(async () => ({})),
@@ -104,25 +104,64 @@ describe("ACP client construction", () => {
       onConfig: vi.fn(),
       onCommands: vi.fn(),
       onUsage: vi.fn(),
+      onOutOfTurnUpdate: vi.fn(async () => "discarded" as const),
     };
     const router = new PromptCallbackRouter(session, new RingBufferLifecycleDiagnosticSink());
-    let suppliedClient: acp.Client | undefined;
-    const stream = {} as acp.Stream;
-    const connection = { marker: "connection" } as unknown as acp.ClientSideConnection;
-    const Connection = vi.fn(function (
-      this: acp.ClientSideConnection,
-      toClient: (agent: acp.Agent) => acp.Client,
-      actualStream: acp.Stream,
-    ) {
-      suppliedClient = toClient({} as acp.Agent);
-      expect(actualStream).toBe(stream);
-      return connection;
+    const toAgent = new TransformStream<acp.AnyMessage, acp.AnyMessage>();
+    const toClient = new TransformStream<acp.AnyMessage, acp.AnyMessage>();
+    const peer = acp
+      .agent()
+      .onRequest(acp.methods.agent.initialize, async ({ params, client }) => {
+        expect(params.clientCapabilities).toMatchObject(ACP_CLIENT_CAPABILITIES);
+        expect(params.clientCapabilities?.terminal).toBe(false);
+        await client.request(acp.methods.client.fs.readTextFile, {
+          sessionId: "s",
+          path: "/repo/read.txt",
+        });
+        await client.request(acp.methods.client.fs.writeTextFile, {
+          sessionId: "s",
+          path: "/repo/write.txt",
+          content: "saved",
+        });
+        await client.notify(acp.methods.client.session.update, {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "message" },
+          },
+        });
+        expect(
+          await client.request(acp.methods.client.session.requestPermission, {
+            sessionId: "s",
+            toolCall: { toolCallId: "t", title: "Confirm" },
+            options: [],
+          }),
+        ).toEqual({ outcome: { outcome: "cancelled" } });
+        return { protocolVersion: acp.PROTOCOL_VERSION };
+      })
+      .connect({ writable: toClient.writable, readable: toAgent.readable });
+    const result = createClientSideConnection(router, {
+      writable: toAgent.writable,
+      readable: toClient.readable,
     });
-
-    const result = createClientSideConnection(router, stream, Connection);
-
-    expect(result).toBe(connection);
-    expect(suppliedClient).toBe(router);
+    try {
+      await result.initialize({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        clientCapabilities: ACP_CLIENT_CAPABILITIES,
+      });
+      expect(session.readTextFile).toHaveBeenCalledWith({ sessionId: "s", path: "/repo/read.txt" });
+      expect(session.writeTextFile).toHaveBeenCalledWith({
+        sessionId: "s",
+        path: "/repo/write.txt",
+        content: "saved",
+      });
+      expect(session.onOutOfTurnUpdate).toHaveBeenCalledWith({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "message" },
+      });
+    } finally {
+      peer.close();
+    }
     expect(ACP_CLIENT_CAPABILITIES).toEqual({
       fs: { readTextFile: true, writeTextFile: true },
     });

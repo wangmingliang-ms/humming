@@ -1,4 +1,5 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
+import type { SessionModelState } from "../acp/session-capabilities.js";
 
 /**
  * Persistent mapping from a `(chatId, threadId)` pair → ACP session(s), used
@@ -118,7 +119,7 @@ export type SessionConfigControlValue =
   // ACP select config requests use `{ value: <valueId> }` with no `type` field.
   | { readonly value: string };
 
-export type HummingSessionModelState = Omit<acp.SessionModelState, "currentModelId"> & {
+export type HummingSessionModelState = Omit<SessionModelState, "currentModelId"> & {
   /** Absent when Humming intentionally clears the explicit model override (`/model auto`). */
   readonly currentModelId?: string;
 };

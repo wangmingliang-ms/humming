@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import type { SessionCardMeta } from "../presenter/presenter.js";
 import type { ResponseId } from "./topic-conversation.js";
 import type { TopicConversationSession } from "./topic-conversation-session.js";

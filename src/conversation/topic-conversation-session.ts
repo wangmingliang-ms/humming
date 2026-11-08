@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import type { PermissionMode } from "../acp/humming-client.js";
 import type { LarkLogger } from "../logger/logger.js";
 import type {

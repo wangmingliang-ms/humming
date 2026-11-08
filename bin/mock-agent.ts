@@ -18,7 +18,7 @@
  */
 
 import { Readable, Writable } from "node:stream";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 
 const MOCK_TURN_DELAY_MS = 400;
 const PROTOCOL_LOG_PREFIX = "[mock-agent]";
@@ -91,11 +91,11 @@ interface SessionState {
   pendingPrompt: AbortController | null;
 }
 
-class MockAgent implements acp.Agent {
-  private readonly connection: acp.AgentSideConnection;
+class MockAgent {
+  private readonly connection: acp.AgentContext;
   private readonly sessions = new Map<string, SessionState>();
 
-  constructor(connection: acp.AgentSideConnection) {
+  constructor(connection: acp.AgentContext) {
     this.connection = connection;
   }
 
@@ -137,9 +137,7 @@ class MockAgent implements acp.Agent {
     };
   }
 
-  async unstable_resumeSession(
-    params: acp.ResumeSessionRequest,
-  ): Promise<acp.ResumeSessionResponse> {
+  async resumeSession(params: acp.ResumeSessionRequest): Promise<acp.ResumeSessionResponse> {
     this.sessions.set(params.sessionId, { pendingPrompt: null });
     return {};
   }
@@ -214,7 +212,7 @@ class MockAgent implements acp.Agent {
       rawInput: { path: MOCK_CONFIG_PATH, content: '{"mocked": true}' },
     });
 
-    const decision = await this.connection.requestPermission({
+    const decision = await this.connection.request(acp.methods.client.session.requestPermission, {
       sessionId,
       toolCall: {
         toolCallId: TOOL_CALL_EDIT_ID,
@@ -260,7 +258,7 @@ class MockAgent implements acp.Agent {
   }
 
   private async emitThought(sessionId: string, text: string): Promise<void> {
-    await this.connection.sessionUpdate({
+    await this.connection.notify(acp.methods.client.session.update, {
       sessionId,
       update: {
         sessionUpdate: "agent_thought_chunk",
@@ -270,7 +268,7 @@ class MockAgent implements acp.Agent {
   }
 
   private async emitMessage(sessionId: string, text: string): Promise<void> {
-    await this.connection.sessionUpdate({
+    await this.connection.notify(acp.methods.client.session.update, {
       sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
@@ -289,7 +287,7 @@ class MockAgent implements acp.Agent {
       rawInput: Record<string, unknown>;
     },
   ): Promise<void> {
-    await this.connection.sessionUpdate({
+    await this.connection.notify(acp.methods.client.session.update, {
       sessionId,
       update: {
         sessionUpdate: "tool_call",
@@ -307,7 +305,7 @@ class MockAgent implements acp.Agent {
     sessionId: string,
     args: { toolCallId: string; title: string; kind: acp.ToolKind; output: string },
   ): Promise<void> {
-    await this.connection.sessionUpdate({
+    await this.connection.notify(acp.methods.client.session.update, {
       sessionId,
       update: {
         sessionUpdate: "tool_call_update",
@@ -330,7 +328,7 @@ class MockAgent implements acp.Agent {
     sessionId: string,
     args: { toolCallId: string; title: string; kind: acp.ToolKind },
   ): Promise<void> {
-    await this.connection.sessionUpdate({
+    await this.connection.notify(acp.methods.client.session.update, {
       sessionId,
       update: {
         sessionUpdate: "tool_call_update",
@@ -374,7 +372,24 @@ function main(): void {
   const input = Writable.toWeb(process.stdout);
   const output = Readable.toWeb(process.stdin);
   const stream = acp.ndJsonStream(input, output);
-  new acp.AgentSideConnection((conn) => new MockAgent(conn), stream);
+  let agent: MockAgent;
+  acp
+    .agent()
+    .onConnect((connection) => {
+      agent = new MockAgent(connection.client);
+    })
+    .onRequest(acp.methods.agent.initialize, ({ params }) => agent.initialize(params))
+    .onRequest(acp.methods.agent.authenticate, ({ params }) => agent.authenticate(params))
+    .onRequest(acp.methods.agent.session.new, ({ params }) => agent.newSession(params))
+    .onRequest(acp.methods.agent.session.list, ({ params }) => agent.listSessions(params))
+    .onRequest(acp.methods.agent.session.resume, ({ params }) => agent.resumeSession(params))
+    .onRequest(
+      acp.methods.agent.session.setMode,
+      async ({ params }) => (await agent.setSessionMode(params)) ?? {},
+    )
+    .onRequest(acp.methods.agent.session.prompt, ({ params }) => agent.prompt(params))
+    .onNotification(acp.methods.agent.session.cancel, ({ params }) => agent.cancel(params))
+    .connect(stream);
   process.stderr.write(`${PROTOCOL_LOG_PREFIX} ready\n`);
 }
 

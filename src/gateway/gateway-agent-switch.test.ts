@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import type { LifecycleTransaction } from "../../bin/lifecycle-coordinator.js";
 import { LarkGateway, type ResolvedAgentInvocation } from "./gateway.js";
 import { slashCommandController, type SlashCommandInvocation } from "../interpreter/commands.js";
@@ -1040,7 +1040,7 @@ function fakeAgentProcess(
     connection: {
       prompt: async () => ({ stopReason: "end_turn" }),
       cancel: async () => {},
-      unstable_setSessionModel: async () => {},
+      request: async () => ({}),
       setSessionMode: async () => {},
       setSessionConfigOption: async () => ({
         configOptions: sessionCapabilities.configOptions ?? [],

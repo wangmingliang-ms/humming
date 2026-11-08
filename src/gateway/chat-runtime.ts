@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import type { LarkLogger } from "../logger/logger.js";
 import type { AgentStatus, LarkPresenter, SessionCardMeta } from "../presenter/presenter.js";
 import { HummingClient, PERMISSION_MODES, type PermissionMode } from "../acp/humming-client.js";
@@ -41,6 +41,16 @@ import {
 import { resolveImageBytes } from "./outbound-image-loader.js";
 
 const SHUTDOWN_FINALIZE_TIMEOUT_MS = 3_000;
+const LEGACY_SET_SESSION_MODEL_METHOD = "session/set_model";
+
+/** @throws when the Agent rejects the legacy model control. */
+async function setSessionModel(
+  connection: AgentProcess["connection"],
+  sessionId: string,
+  modelId: string,
+): Promise<void> {
+  await connection.request(LEGACY_SET_SESSION_MODEL_METHOD, { sessionId, modelId });
+}
 
 function renderableAgentUpdateKind(
   update: acp.SessionUpdate,
@@ -743,7 +753,7 @@ export class ChatRuntime {
     }
 
     const persisted = await this.persistSession(drainState.agent.sessionId);
-    const closeSession = drainState.agent.connection.unstable_closeSession;
+    const closeSession = drainState.agent.connection.closeSession;
     const supportsClose =
       drainState.agent.capabilities["sessionCapabilities"] !== null &&
       typeof drainState.agent.capabilities["sessionCapabilities"] === "object" &&
@@ -1243,19 +1253,13 @@ export class ChatRuntime {
       if (controls.modelId !== undefined) {
         const previousModelId = next.models?.currentModelId;
         try {
-          await state.agent.connection.unstable_setSessionModel({
-            sessionId: state.agent.sessionId,
-            modelId: controls.modelId,
-          });
+          await setSessionModel(state.agent.connection, state.agent.sessionId, controls.modelId);
         } catch (err) {
           throw new ControlApplyError("Model", controls.modelId, formatAgentError(err));
         }
         if (previousModelId && previousModelId !== controls.modelId) {
           rollbacks.push(() =>
-            state.agent.connection.unstable_setSessionModel({
-              sessionId: state.agent.sessionId,
-              modelId: previousModelId,
-            }),
+            setSessionModel(state.agent.connection, state.agent.sessionId, previousModelId),
           );
         }
         if (next.models) {
@@ -1276,12 +1280,12 @@ export class ChatRuntime {
           throw new ControlApplyError("Mode", controls.modeId, formatAgentError(err));
         }
         if (previousModeId && previousModeId !== controls.modeId) {
-          rollbacks.push(() =>
-            state.agent.connection.setSessionMode({
+          rollbacks.push(async () => {
+            await state.agent.connection.setSessionMode({
               sessionId: state.agent.sessionId,
               modeId: previousModeId,
-            }),
-          );
+            });
+          });
         }
         if (next.modes) {
           next = {
@@ -1306,13 +1310,13 @@ export class ChatRuntime {
           throw new ControlApplyError("Config", configId, formatAgentError(err));
         }
         if (previousOption) {
-          rollbacks.push(() =>
-            state.agent.connection.setSessionConfigOption({
+          rollbacks.push(async () => {
+            await state.agent.connection.setSessionConfigOption({
               sessionId: state.agent.sessionId,
               configId,
               ...configRollbackValue(previousOption),
-            }),
-          );
+            });
+          });
         }
       }
       if (controls.gatewayPermissionMode !== undefined) {

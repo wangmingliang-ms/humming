@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
 

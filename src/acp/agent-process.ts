@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { Writable, Readable } from "node:stream";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import type { LarkLogger } from "../logger/logger.js";
+import type { PromptScopedCallbacks, SessionCallbacks } from "./prompt-callback-router.js";
 import {
   capabilitiesFromSessionResponse,
   type SessionRuntimeCapabilities,
@@ -53,7 +54,7 @@ export function sanitizeChildEnv(
 
 export interface AgentProcess {
   process: ChildProcess;
-  connection: acp.ClientSideConnection;
+  connection: ReturnType<typeof createClientSideConnection>;
   sessionId: string;
   capabilities: Record<string, unknown>;
   sessionCapabilities: SessionRuntimeCapabilities;
@@ -92,7 +93,8 @@ export interface SpawnAgentOptions {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
-  client: acp.Client;
+  client: Pick<PromptScopedCallbacks, "sessionUpdate" | "requestPermission"> &
+    Partial<Pick<SessionCallbacks, "readTextFile" | "writeTextFile">>;
   logger: LarkLogger;
 }
 
@@ -111,17 +113,50 @@ export interface AgentChildProcessOptions {
   readonly windowsHide: boolean;
 }
 
-type ClientSideConnectionConstructor = new (
-  toClient: (agent: acp.Agent) => acp.Client,
-  stream: acp.Stream,
-) => acp.ClientSideConnection;
-
+/** Keep Humming's session operations at the ACP boundary while using the SDK app API. */
 export function createClientSideConnection(
-  client: acp.Client,
+  client: SpawnAgentOptions["client"],
   stream: acp.Stream,
-  Connection: ClientSideConnectionConstructor = acp.ClientSideConnection,
-): acp.ClientSideConnection {
-  return new Connection(() => client, stream);
+) {
+  const app = acp
+    .client()
+    .onNotification(acp.methods.client.session.update, ({ params }) => client.sessionUpdate(params))
+    .onRequest(acp.methods.client.session.requestPermission, ({ params }) =>
+      client.requestPermission(params),
+    );
+  if (client.readTextFile) {
+    const readTextFile = client.readTextFile.bind(client);
+    app.onRequest(acp.methods.client.fs.readTextFile, ({ params }) => readTextFile(params));
+  }
+  if (client.writeTextFile) {
+    const writeTextFile = client.writeTextFile.bind(client);
+    app.onRequest(acp.methods.client.fs.writeTextFile, ({ params }) => writeTextFile(params));
+  }
+  const connection = app.connect(stream);
+  const agent = connection.agent;
+  return {
+    closed: connection.closed,
+    initialize: (params: acp.InitializeRequest) =>
+      agent.request(acp.methods.agent.initialize, params),
+    newSession: (params: acp.NewSessionRequest) =>
+      agent.request(acp.methods.agent.session.new, params),
+    loadSession: (params: acp.LoadSessionRequest) =>
+      agent.request(acp.methods.agent.session.load, params),
+    resumeSession: (params: acp.ResumeSessionRequest) =>
+      agent.request(acp.methods.agent.session.resume, params),
+    listSessions: (params: acp.ListSessionsRequest) =>
+      agent.request(acp.methods.agent.session.list, params),
+    prompt: (params: acp.PromptRequest) => agent.request(acp.methods.agent.session.prompt, params),
+    cancel: (params: acp.CancelNotification) =>
+      agent.notify(acp.methods.agent.session.cancel, params),
+    setSessionMode: (params: acp.SetSessionModeRequest) =>
+      agent.request(acp.methods.agent.session.setMode, params),
+    setSessionConfigOption: (params: acp.SetSessionConfigOptionRequest) =>
+      agent.request(acp.methods.agent.session.setConfigOption, params),
+    closeSession: (params: acp.CloseSessionRequest) =>
+      agent.request(acp.methods.agent.session.close, params),
+    request: agent.request.bind(agent),
+  };
 }
 
 export function buildAgentSpawnOptions(
@@ -138,7 +173,7 @@ export function buildAgentSpawnOptions(
   };
 }
 
-class ListingClient implements acp.Client {
+class ListingClient {
   constructor(private readonly logger: LarkLogger) {}
 
   async requestPermission(
@@ -249,8 +284,8 @@ function authHintFor(command: string, args: readonly string[]): string {
 
 interface SpawnInternal {
   proc: ChildProcess;
-  connection: acp.ClientSideConnection;
-  initResult: Awaited<ReturnType<acp.ClientSideConnection["initialize"]>>;
+  connection: AgentProcess["connection"];
+  initResult: acp.InitializeResponse;
   getRecentStderr: () => readonly string[];
 }
 
@@ -370,7 +405,7 @@ export async function restartAgentAfterResumeFailure(
 
 /**
  * Spawn an agent and try to resume an existing session. Falls back to
- * `loadSession` if `unstable_resumeSession` is unavailable, then starts a new
+ * `loadSession` if `resumeSession` is unavailable, then starts a new
  * agent process with a fresh session if resume/load fails.
  *
  * A failed resume may leave the adapter connection unusable. In particular,
@@ -399,7 +434,7 @@ export async function spawnAndResumeAgent(
       let sessionCaps: SessionRuntimeCapabilities;
       if (hasResume) {
         const resumeResult = await withAgentRequest(
-          connection.unstable_resumeSession({
+          connection.resumeSession({
             sessionId: previousSessionId,
             cwd: opts.cwd,
             mcpServers: [],
@@ -505,7 +540,7 @@ export async function spawnAndStrictlyResumeAgent(
     let sessionCapabilities: SessionRuntimeCapabilities;
     if (supportsResume) {
       const resumeResult = await withAgentRequest(
-        connection.unstable_resumeSession({
+        connection.resumeSession({
           sessionId: previousSessionId,
           cwd: opts.cwd,
           mcpServers: [],
@@ -628,7 +663,7 @@ export function killAgent(proc: ChildProcess): void {
 
 function withAgentRequest<T>(
   promise: Promise<T>,
-  connection: acp.ClientSideConnection,
+  connection: AgentProcess["connection"],
   timeoutMs: number,
   label: string,
 ): Promise<T> {

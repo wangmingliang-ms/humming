@@ -1,4 +1,5 @@
 import type * as acp from "@agentclientprotocol/sdk/unstable";
+import { readFile } from "node:fs/promises";
 import type { LarkLogger } from "../logger/logger.js";
 import type { LarkHttpClient } from "../lark/lark-http.js";
 
@@ -22,6 +23,7 @@ import type {
 } from "./presenter.js";
 
 const HEADER_TEMPLATE_PERMISSION = "blue";
+const LOADING_SPINNER_URL = new URL("./loading-spinner.gif", import.meta.url);
 
 const HEADER_TEMPLATE_EXPIRED = "grey";
 
@@ -279,28 +281,24 @@ function buildExpiredCard(reason: string): object {
   );
 }
 
-function buildCollapsiblePanel(
-  title: string,
-  elements: readonly object[],
-  expanded = false,
-): object {
+function buildCollapsiblePanel(title: string, elements: readonly object[], icon?: object): object {
   // Aligned with the canonical v2 sample (plain_text title, icon_position
   // "right"). Lark's v2 renderer falls back to plaintext when any field on
   // collapsible_panel is unrecognized — so deviate from the sample only
   // when necessary.
   return {
     tag: "collapsible_panel",
-    expanded,
+    expanded: false,
     header: {
       title: { tag: "plain_text", content: title },
       vertical_align: "center",
-      icon: {
+      icon: icon ?? {
         tag: "standard_icon",
         token: "down-small-ccm_outlined",
         color: "",
         size: "16px 16px",
       },
-      icon_position: "right",
+      icon_position: icon ? "left" : "right",
       icon_expanded_angle: -180,
     },
     border: { color: "grey", corner_radius: "5px" },
@@ -598,7 +596,15 @@ function semanticSummary(
   }
 }
 
-function semanticEntries(view: ConversationCardView): object[] {
+function hasCurrentToolRun(view: ConversationCardView): boolean {
+  return (
+    view.kind === "active" &&
+    (view.header === "calling_tool" || view.header === "processing") &&
+    view.entries.at(-1)?.kind === "tool"
+  );
+}
+
+function semanticEntries(view: ConversationCardView, loadingIconKey: string | null): object[] {
   const elements: object[] = [];
   if (view.entries.length === 0) {
     const message = semanticEmptyMessage(view);
@@ -617,13 +623,23 @@ function semanticEntries(view: ConversationCardView): object[] {
       index += 1;
       tools.push(semanticEntryToCardElement(view.entries[index]));
     }
-    // Only the current tool run stays open. Messages, thoughts, permissions,
-    // card rotation and turn completion close earlier runs by default.
-    const expanded =
-      index === view.entries.length - 1 &&
-      view.kind === "active" &&
-      (view.header === "calling_tool" || view.header === "processing");
-    elements.push(buildCollapsiblePanel(`⚙️ 工具调用（${tools.length}）`, tools, expanded));
+    const callingTools = index === view.entries.length - 1 && hasCurrentToolRun(view);
+    const icon =
+      callingTools && loadingIconKey
+        ? { tag: "custom_icon", img_key: loadingIconKey, size: "16px 16px" }
+        : {
+            tag: "standard_icon",
+            token: callingTools ? "loading_outlined" : "setting_outlined",
+            color: "grey",
+            size: "16px 16px",
+          };
+    elements.push(
+      buildCollapsiblePanel(
+        `${callingTools ? "工具调用中" : "工具调用"}（${tools.length}）`,
+        tools,
+        icon,
+      ),
+    );
   }
   return elements;
 }
@@ -646,8 +662,11 @@ function semanticProfile(view: ConversationCardView): object | null {
   }
 }
 
-function buildSemanticConversationCard(view: ConversationCardView): object {
-  const elements = semanticEntries(view);
+function buildSemanticConversationCard(
+  view: ConversationCardView,
+  loadingIconKey: string | null,
+): object {
+  const elements = semanticEntries(view, loadingIconKey);
   switch (view.kind) {
     case "active":
       if (view.cancelAction !== undefined) {
@@ -918,10 +937,22 @@ export interface LarkCardPresenterOptions {
 export class LarkCardPresenter implements LarkPresenter {
   private readonly http: LarkHttpClient;
   private readonly logger: LarkLogger;
+  private loadingIconKey: Promise<string | null> | null = null;
 
   constructor(opts: LarkCardPresenterOptions) {
     this.http = opts.http;
     this.logger = opts.logger.child({ name: "presenter" });
+  }
+
+  private toolLoadingIcon(view: ConversationCardView): Promise<string | null> {
+    if (!hasCurrentToolRun(view)) return Promise.resolve(null);
+    this.loadingIconKey ??= readFile(LOADING_SPINNER_URL)
+      .then((bytes) => this.uploadCardImage(bytes))
+      .catch((err: unknown) => {
+        this.logger.warn({ err: conciseError(err) }, "loading spinner unavailable");
+        return null;
+      });
+    return this.loadingIconKey;
   }
 
   async sendConversationCard(
@@ -933,9 +964,14 @@ export class LarkCardPresenter implements LarkPresenter {
       return null;
     }
     try {
-      return await this.http.replyCard(replyToMessageId, buildSemanticConversationCard(view), {
-        replyInThread: view.route.th !== undefined,
-      });
+      const loadingIconKey = await this.toolLoadingIcon(view);
+      return await this.http.replyCard(
+        replyToMessageId,
+        buildSemanticConversationCard(view, loadingIconKey),
+        {
+          replyInThread: view.route.th !== undefined,
+        },
+      );
     } catch (err) {
       this.logger.warn({ err: conciseError(err) }, "sendConversationCard rejected");
       return null;
@@ -951,7 +987,8 @@ export class LarkCardPresenter implements LarkPresenter {
       return false;
     }
     try {
-      await this.http.patchCard(cardMessageId, buildSemanticConversationCard(view));
+      const loadingIconKey = await this.toolLoadingIcon(view);
+      await this.http.patchCard(cardMessageId, buildSemanticConversationCard(view, loadingIconKey));
       return true;
     } catch (err) {
       this.logger.warn({ err: conciseError(err) }, "updateConversationCard rejected");

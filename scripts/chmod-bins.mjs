@@ -9,7 +9,7 @@
 // has no POSIX execute bit and npm generates its own .cmd shims), so it does no
 // harm.
 
-import { chmodSync, existsSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,3 +29,9 @@ for (const relativePath of BIN_RELATIVE_PATHS) {
   }
   chmodSync(absolutePath, EXECUTABLE_MODE);
 }
+
+// Keep the animated status icon beside the compiled presenter, including npm packages.
+copyFileSync(
+  join(repoRoot, "src/presenter/loading-spinner.gif"),
+  join(repoRoot, "dist/src/presenter/loading-spinner.gif"),
+);

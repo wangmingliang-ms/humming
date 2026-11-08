@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   COMMAND_RESULT_BODY_BYTE_LIMIT,
   LarkCardPresenter,
@@ -21,7 +21,11 @@ interface CardElement {
   content?: string;
   elements?: CardElement[];
   expanded?: boolean;
-  header?: { title?: { content?: string } };
+  header?: {
+    title?: { content?: string };
+    icon?: { tag?: string; img_key?: string; token?: string };
+    icon_position?: string;
+  };
   text?: { content?: string };
   behaviors?: { type?: string; value?: Record<string, unknown> }[];
 }
@@ -45,7 +49,11 @@ const logger: LarkLogger = {
   child: () => logger,
 };
 
-function makePresenter(captured: CardWithConfig[], calls: ReplyCardCall[] = []): LarkCardPresenter {
+function makePresenter(
+  captured: CardWithConfig[],
+  calls: ReplyCardCall[] = [],
+  overrides: Partial<Pick<LarkHttpClient, "uploadImage">> = {},
+): LarkCardPresenter {
   const http = {
     replyCard: async (
       _messageId: string,
@@ -60,6 +68,8 @@ function makePresenter(captured: CardWithConfig[], calls: ReplyCardCall[] = []):
     patchCard: async (_messageId: string, card: object): Promise<void> => {
       captured.push(card as CardWithConfig);
     },
+    uploadImage: async () => "img_loading_spinner",
+    ...overrides,
   } as unknown as LarkHttpClient;
   return new LarkCardPresenter({ http, logger });
 }
@@ -284,15 +294,20 @@ describe("LarkCardPresenter card summary", () => {
       "collapsible_panel",
     ]);
     const panels = cards[0]?.body?.elements;
-    expect(panels?.map((panel) => panel.expanded)).toEqual([false, false, true]);
-    expect(panels?.[0]?.header?.title?.content).toBe("⚙️ 工具调用（2）");
+    expect(panels?.map((panel) => panel.expanded)).toEqual([false, false, false]);
+    expect(panels?.[0]?.header?.title?.content).toBe("工具调用（2）");
+    expect(panels?.[2]?.header).toMatchObject({
+      title: { content: "工具调用中（1）" },
+      icon: { tag: "custom_icon", img_key: "img_loading_spinner" },
+      icon_position: "left",
+    });
     expect(panels?.[0]?.elements?.map((entry) => entry.content)).toEqual([
       "**tool**: Read first file",
       "**tool**: Read second file",
     ]);
   });
 
-  it("collapses a tool run when text or an image follows, then opens the next run", async () => {
+  it("keeps all runs collapsed and marks only the current run as calling tools", async () => {
     const cards: CardWithConfig[] = [];
     const presenter = makePresenter(cards);
     const tool = {
@@ -316,7 +331,11 @@ describe("LarkCardPresenter card summary", () => {
     }
     for (const card of cards) {
       const panels = card.body?.elements?.filter((entry) => entry.tag === "collapsible_panel");
-      expect(panels?.map((panel) => panel.expanded)).toEqual([false, true]);
+      expect(panels?.map((panel) => panel.expanded)).toEqual([false, false]);
+      expect(panels?.map((panel) => panel.header?.title?.content)).toEqual([
+        "工具调用（1）",
+        "工具调用中（1）",
+      ]);
       expect(panels?.map((panel) => panel.elements?.length)).toEqual([1, 1]);
     }
   });
@@ -347,12 +366,16 @@ describe("LarkCardPresenter card summary", () => {
       expect(card.body?.elements?.[0]).toMatchObject({
         tag: "collapsible_panel",
         expanded: false,
+        header: {
+          title: { content: "工具调用（1）" },
+          icon: { tag: "standard_icon", token: "setting_outlined" },
+        },
         elements: [{ tag: "markdown", content: "**read**: Read" }],
       });
     }
   });
 
-  it("keeps the current consecutive run open until non-tool content arrives even between calls", async () => {
+  it("updates the folded title when non-tool content closes the current run", async () => {
     const cards: CardWithConfig[] = [];
     const presenter = makePresenter(cards);
     await presenter.sendConversationCard("message", {
@@ -364,7 +387,8 @@ describe("LarkCardPresenter card summary", () => {
         { kind: "tool", toolCallId: "tool", title: "Read", toolKind: "read", status: "completed" },
       ],
     });
-    expect(cards[0]?.body?.elements?.[0]?.expanded).toBe(true);
+    expect(cards[0]?.body?.elements?.[0]?.expanded).toBe(false);
+    expect(cards[0]?.body?.elements?.[0]?.header?.title?.content).toBe("工具调用中（1）");
     await presenter.updateConversationCard("card_1", {
       kind: "active",
       header: "responding",
@@ -376,6 +400,72 @@ describe("LarkCardPresenter card summary", () => {
       ],
     });
     expect(cards[1]?.body?.elements?.[0]?.expanded).toBe(false);
+    expect(cards[1]?.body?.elements?.[0]?.header?.title?.content).toBe("工具调用（1）");
+  });
+
+  it("shares one GIF upload across concurrent sends and subsequent card patches", async () => {
+    const cards: CardWithConfig[] = [];
+    const uploadImage = vi.fn(async (_bytes: Buffer) => "img_spinner");
+    const presenter = makePresenter(cards, [], { uploadImage });
+    const view: ConversationCardView = {
+      kind: "active",
+      header: "calling_tool",
+      profile: null,
+      route: { c: "chat" },
+      entries: [
+        {
+          kind: "tool",
+          toolCallId: "tool",
+          title: "Read",
+          toolKind: "read",
+          status: "in_progress",
+        },
+      ],
+    };
+    await Promise.all([
+      presenter.sendConversationCard("a", view),
+      presenter.sendConversationCard("b", view),
+    ]);
+    await presenter.updateConversationCard("a", view);
+    expect(uploadImage).toHaveBeenCalledTimes(1);
+    expect(uploadImage.mock.calls[0]?.[0].subarray(0, 6).toString()).toBe("GIF89a");
+    for (const card of cards)
+      expect(card.body?.elements?.[0]).toMatchObject({
+        expanded: false,
+        header: { icon: { tag: "custom_icon", img_key: "img_spinner" } },
+      });
+  });
+
+  it("keeps tool cards visible and folded when the GIF upload fails", async () => {
+    const cards: CardWithConfig[] = [];
+    const uploadImage = vi.fn(async () => {
+      throw new Error("image upload unavailable");
+    });
+    const presenter = makePresenter(cards, [], { uploadImage });
+    expect(
+      await presenter.sendConversationCard("a", {
+        kind: "active",
+        header: "calling_tool",
+        profile: null,
+        route: { c: "chat" },
+        entries: [
+          {
+            kind: "tool",
+            toolCallId: "tool",
+            title: "Read",
+            toolKind: "read",
+            status: "in_progress",
+          },
+        ],
+      }),
+    ).toBe("card_1");
+    expect(cards[0]?.body?.elements?.[0]).toMatchObject({
+      expanded: false,
+      header: {
+        title: { content: "工具调用中（1）" },
+        icon: { tag: "standard_icon", token: "loading_outlined" },
+      },
+    });
   });
 
   it("labels a newly received semantic Response as received, not queued behind prior work", async () => {
